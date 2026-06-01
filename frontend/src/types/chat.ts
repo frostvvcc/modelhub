@@ -21,6 +21,48 @@ export interface QuoteInfo {
   role: 'user' | 'assistant';
 }
 
+/** Agent 工具调用记录 */
+export interface ToolCallRecord {
+  tool: string;
+  args: any;
+  result?: any;
+  callId: string;
+  latencyMs?: number;
+  status: 'calling' | 'done' | 'error';
+}
+
+/** Agent Trace Span */
+export interface TraceSpan {
+  span_id: string;
+  name: string;
+  type: string;
+  latency_ms: number;
+  tokens_used: number;
+  status: string;
+  error?: string;
+}
+
+/** Agent 追踪信息 */
+export interface TraceInfo {
+  trace_id: string;
+  total_latency_ms: number;
+  total_tokens: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  llm_calls: number;
+  tool_calls: number;
+  spans: TraceSpan[];
+}
+
+/** 记忆管理统计 */
+export interface MemoryStats {
+  total_tokens: number;
+  max_tokens: number;
+  usage_ratio: number;
+  message_count: number;
+  needs_compression: boolean;
+}
+
 export class ChatMessage {
   role!: "system" | "user" | "assistant";
   content!: string;
@@ -47,6 +89,14 @@ export class ChatMessage {
     filenames: string[];
     errors?: string[];
   } | null;
+  /** Agent 相关字段 */
+  isStreaming?: boolean;
+  agentState?: string;
+  agentStateLabel?: string;
+  toolCalls?: ToolCallRecord[];
+  thinkingContent?: string;
+  trace?: TraceInfo;
+  memoryStats?: MemoryStats;
 }
 export class Conversation {
   id!: number;

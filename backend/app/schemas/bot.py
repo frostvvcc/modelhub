@@ -55,6 +55,12 @@ class BotChatRequest(BaseModel):
     conversation_id: Optional[str] = None
 
 
+class BotStreamChatRequest(BaseModel):
+    message: str = Field(..., min_length=1)
+    conversation_id: Optional[str] = None
+    use_agent: bool = True
+
+
 class BotChatResponse(BaseModel):
     answer: str
     conversation_id: Optional[str]

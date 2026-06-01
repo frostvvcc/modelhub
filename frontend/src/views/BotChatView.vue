@@ -5,6 +5,7 @@ import { ElMessage } from "element-plus";
 import { Back, Promotion, Close, ChatRound, CopyDocument, Download } from "@element-plus/icons-vue";
 import { botChat, getBot, type BotResponse, type BotChatSource, type BotChatRagInfo } from "../api/bot";
 import { DownloadFile } from "../api/vectorDb";
+import { streamBotChat, type StreamCallbacks } from "../utils/stream";
 
 import { marked } from 'marked';
 import hljs from 'highlight.js';
@@ -29,6 +30,15 @@ type QuoteInfo = {
   role: 'user' | 'assistant';
 };
 
+type ToolCallRecord = {
+  tool: string;
+  args: any;
+  result?: any;
+  callId: string;
+  latencyMs?: number;
+  status: 'calling' | 'done' | 'error';
+};
+
 type LocalMessage = {
   role: "user" | "assistant";
   content: string;
@@ -39,6 +49,11 @@ type LocalMessage = {
   sources?: BotChatSource[];
   grounded_ratio?: number;
   grounded_level?: string;
+  isStreaming?: boolean;
+  agentState?: string;
+  agentStateLabel?: string;
+  toolCalls?: ToolCallRecord[];
+  trace?: any;
 };
 
 const route = useRoute();
@@ -140,6 +155,14 @@ const handleDownloadSource = async (src: BotChatSource) => {
   } catch {}
 };
 
+const getToolLabel = (tool: string) => {
+  const labels: Record<string, string> = {
+    knowledge_search: '知识库检索', database_query: '数据库查询',
+    calculator: '计算器', datetime_info: '日期时间', topic_analysis: '话题分析',
+  };
+  return labels[tool] || tool;
+};
+
 const sendMessage = async () => {
   const content = input.value.trim();
   if (!content || sending.value) return;
@@ -149,28 +172,73 @@ const sendMessage = async () => {
   const userMsg: LocalMessage = { role: "user", content };
   if (pendingQuote) userMsg.quote = pendingQuote;
   messages.value.push(userMsg);
+
+  const aiMsg: LocalMessage = {
+    role: "assistant",
+    content: "",
+    isStreaming: true,
+    agentState: "planning",
+    agentStateLabel: "分析问题中...",
+    toolCalls: [],
+  };
+  messages.value.push(aiMsg);
   sending.value = true;
   scrollToBottom();
 
+  const msgIndex = messages.value.length - 1;
+  const callbacks: StreamCallbacks = {
+    onToken(token) {
+      messages.value[msgIndex].content += token;
+      scrollToBottom();
+    },
+    onStateChange(state, label) {
+      messages.value[msgIndex].agentState = state;
+      messages.value[msgIndex].agentStateLabel = label;
+    },
+    onToolCall(tool, args, callId) {
+      if (!messages.value[msgIndex].toolCalls) messages.value[msgIndex].toolCalls = [];
+      messages.value[msgIndex].toolCalls!.push({ tool, args, callId, status: 'calling' });
+      scrollToBottom();
+    },
+    onToolResult(tool, result, callId, latencyMs) {
+      const tc = messages.value[msgIndex].toolCalls?.find(t => t.callId === callId);
+      if (tc) { tc.result = result; tc.latencyMs = latencyMs; tc.status = result?.error ? 'error' : 'done'; }
+    },
+    onSources(sources) {
+      messages.value[msgIndex].sources = sources as any;
+    },
+    onMetadata(metadata) {
+      messages.value[msgIndex].grounded_ratio = metadata.grounded_ratio;
+      messages.value[msgIndex].grounded_level = metadata.grounded_level;
+      messages.value[msgIndex].model_name = metadata.model_name;
+      if (metadata.conversation_id) conversationId.value = metadata.conversation_id;
+    },
+    onConversation(info) {
+      if (info.conversation_id) conversationId.value = String(info.conversation_id);
+    },
+    onTrace(trace) {
+      messages.value[msgIndex].trace = trace;
+    },
+    onDone() {
+      messages.value[msgIndex].isStreaming = false;
+      messages.value[msgIndex].agentState = 'done';
+      sending.value = false;
+      scrollToBottom();
+    },
+    onError(message) {
+      if (!messages.value[msgIndex].content) messages.value[msgIndex].content = message;
+      messages.value[msgIndex].isStreaming = false;
+      sending.value = false;
+    },
+  };
+
   try {
-    const result = await botChat(botId, content, conversationId.value);
-    conversationId.value = result.conversation_id || conversationId.value;
-    messages.value.push({
-      role: "assistant",
-      content: result.answer,
-      forbidden_topic_hit: result.forbidden_topic_hit,
-      model_name: result.model_name,
-      rag_info: result.rag_info,
-      sources: result.sources,
-      grounded_ratio: result.grounded_ratio,
-      grounded_level: result.grounded_level,
-    });
+    await streamBotChat(botId, content, conversationId.value, true, callbacks);
   } catch (error: any) {
-    messages.value.push({
-      role: "assistant",
-      content: error?.response?.data?.detail || "发送失败，请检查助理模型配置和知识库权限。",
-    });
-  } finally {
+    if (!messages.value[msgIndex].content) {
+      messages.value[msgIndex].content = error?.message || "发送失败，请检查助理模型配置和知识库权限。";
+    }
+    messages.value[msgIndex].isStreaming = false;
     sending.value = false;
     scrollToBottom();
   }
@@ -282,11 +350,34 @@ onMounted(loadBot);
                 >
                   命中禁止话题：{{ message.forbidden_topic_hit }}
                 </div>
+
+                <!-- Agent 工具调用过程 -->
+                <div class="ds-agent-process" v-if="message.toolCalls && message.toolCalls.length > 0">
+                  <div class="ds-agent-header">
+                    <span>{{ message.agentStateLabel || 'Agent 推理过程' }}</span>
+                  </div>
+                  <div class="ds-agent-step" v-for="(tc, ti) in message.toolCalls" :key="ti"
+                       :class="{ 'is-calling': tc.status === 'calling' }">
+                    <span class="ds-step-icon">{{ tc.status === 'calling' ? '⏳' : tc.status === 'error' ? '❌' : '✅' }}</span>
+                    <span class="ds-step-tool">{{ getToolLabel(tc.tool) }}</span>
+                    <span v-if="tc.latencyMs" class="ds-step-time">{{ tc.latencyMs }}ms</span>
+                    <span v-if="tc.result?.count" class="ds-step-result">{{ tc.result.count }} 条结果</span>
+                  </div>
+                </div>
+
+                <!-- 流式打字指示器 -->
+                <div class="ds-streaming" v-if="message.isStreaming && !message.content && (!message.toolCalls || message.toolCalls.length === 0)">
+                  <span class="ds-dot"><span></span><span></span><span></span></span>
+                  <span class="ds-streaming-label">{{ message.agentStateLabel || '思考中...' }}</span>
+                </div>
+
                 <div
+                  v-if="message.content"
                   class="ds-msg-ai-text markdown-body"
                   v-html="renderMarkdown(message.content)"
                   @click="handleCiteClick"
                 ></div>
+                <span v-if="message.isStreaming && message.content" class="ds-typing-cursor"></span>
 
                 <!-- 元数据小卡片 -->
                 <div v-if="message.model_name || message.rag_info" class="ds-meta-card">
@@ -1195,6 +1286,33 @@ onMounted(loadBot);
   border-color: #1a1a1a;
 }
 .ds-cite-btn--primary:hover { background: #333; border-color: #333; }
+
+/* ===== Agent Process ===== */
+.ds-agent-process {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+}
+.ds-agent-header { font-size: 12px; font-weight: 600; color: #166534; margin-bottom: 6px; }
+.ds-agent-step { display: flex; align-items: center; gap: 6px; padding: 4px 8px; background: #fff; border-radius: 6px; margin-bottom: 4px; font-size: 12px; }
+.ds-agent-step.is-calling { background: #fffbeb; }
+.ds-step-icon { font-size: 12px; }
+.ds-step-tool { font-weight: 600; color: #1e293b; }
+.ds-step-time { color: #94a3b8; margin-left: auto; font-size: 11px; }
+.ds-step-result { color: #059669; font-size: 11px; }
+
+/* ===== Streaming ===== */
+.ds-streaming { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.ds-streaming-label { font-size: 13px; color: #94a3b8; }
+.ds-dot { display: inline-flex; gap: 3px; }
+.ds-dot span { width: 5px; height: 5px; border-radius: 50%; background: #94a3b8; animation: dsBounce 1.4s infinite ease-in-out both; }
+.ds-dot span:nth-child(1) { animation-delay: -0.32s; }
+.ds-dot span:nth-child(2) { animation-delay: -0.16s; }
+@keyframes dsBounce { 0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; } 40% { transform: scale(1); opacity: 1; } }
+.ds-typing-cursor { display: inline-block; width: 2px; height: 14px; background: #1a1a1a; animation: dsBlink 0.8s step-end infinite; vertical-align: text-bottom; }
+@keyframes dsBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 
 /* ===== 响应式 ===== */
 @media (max-width: 768px) {

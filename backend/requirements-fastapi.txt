@@ -45,6 +45,9 @@ python-pptx>=0.6.23  # PPT 解析
 # 混合检索
 rank-bm25>=0.2.2     # BM25 关键词检索
 
+# Token 计数
+tiktoken>=0.7.0      # OpenAI token 精确计数
+
 # OCR支持
 paddlepaddle>=2.6.0  # PaddleOCR 运行时
 paddleocr>=2.7.0  # PaddleOCR（中文识别效果好）
