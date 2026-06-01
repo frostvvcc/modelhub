@@ -1,0 +1,306 @@
+"""
+文档解析模块
+支持 PDF、Word（.docx/.doc）、纯文本、Excel、PPT、Markdown、图片（OCR）
+"""
+import os
+import tempfile
+from typing import Optional
+from app.utils.logger_config import get_logger
+
+logger = get_logger(__name__)
+
+
+def extract_text(file_path: str) -> Optional[str]:
+    """
+    统一入口：根据文件扩展名分发到对应的解析器。
+
+    Args:
+        file_path: 文件路径
+
+    Returns:
+        提取的文本内容，失败时返回 None
+    """
+    if not os.path.exists(file_path):
+        logger.error(f"文件不存在: {file_path}")
+        return None
+
+    ext = os.path.splitext(file_path)[1].lower()
+
+    if ext in ('.docx', '.doc'):
+        return _extract_docx(file_path)
+    elif ext == '.pdf':
+        return _extract_pdf(file_path)
+    elif ext in ('.xlsx', '.xls'):
+        return _extract_excel(file_path)
+    elif ext in ('.pptx', '.ppt'):
+        return _extract_pptx(file_path)
+    elif ext == '.md':
+        return _extract_markdown(file_path)
+    else:
+        # 纯文本（.txt、.csv 等）
+        return _extract_plain_text(file_path)
+
+
+# ------------------------------------------------------------------
+# Word (.docx / .doc)
+# ------------------------------------------------------------------
+
+def _extract_docx(file_path: str) -> Optional[str]:
+    """提取 Word 文档文本（支持 .docx 和 .doc）"""
+    ext = os.path.splitext(file_path)[1].lower()
+    try:
+        if ext == '.doc':
+            # 优先用 doc2text
+            try:
+                import doc2text
+                text = doc2text.extract(file_path)
+                if text and text.strip():
+                    return text.strip()
+            except (ImportError, Exception) as e:
+                logger.warning(f"doc2text 处理失败（{e}），尝试 python-docx")
+
+        # .docx 或 doc2text 失败后的 fallback
+        from docx import Document
+        doc = Document(file_path)
+        paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if row_text:
+                    paragraphs.append(' | '.join(row_text))
+        text = '\n'.join(paragraphs)
+        logger.info(f"Word 文档解析完成: {len(paragraphs)} 段落, {len(text)} 字符")
+        return text or None
+    except Exception as e:
+        logger.error(f"Word 文档解析失败 ({file_path}): {e}")
+        return None
+
+
+# ------------------------------------------------------------------
+# PDF
+# ------------------------------------------------------------------
+
+def _extract_pdf(file_path: str) -> Optional[str]:
+    """提取 PDF 文本（优先文本层，扫描件自动尝试 OCR）"""
+    try:
+        text_from_layer = None
+        try:
+            import pdfplumber
+            parts = []
+            with pdfplumber.open(file_path) as pdf:
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        parts.append(text)
+            text_from_layer = '\n'.join(parts).strip()
+            logger.info(f"PDF 解析完成 (pdfplumber): {len(text_from_layer)} 字符")
+        except ImportError:
+            pass
+
+        if not text_from_layer:
+            import PyPDF2
+            parts = []
+            with open(file_path, 'rb') as f:
+                reader = PyPDF2.PdfReader(f)
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text:
+                        parts.append(text)
+            text_from_layer = '\n'.join(parts).strip()
+            logger.info(f"PDF 解析完成 (PyPDF2): {len(text_from_layer)} 字符")
+
+        if text_from_layer and len(text_from_layer) >= 20:
+            return text_from_layer
+
+        ocr_text = _extract_pdf_with_ocr(file_path)
+        if ocr_text:
+            return ocr_text
+        return text_from_layer or None
+    except Exception as e:
+        logger.error(f"PDF 解析失败 ({file_path}): {e}")
+        return None
+
+
+def _extract_pdf_with_ocr(file_path: str) -> Optional[str]:
+    """将扫描版 PDF 页面渲染成图片后交给 PaddleOCR 识别。"""
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        logger.warning("PyMuPDF 未安装，无法对扫描版 PDF 做 OCR。可运行: pip install PyMuPDF")
+        return None
+
+    try:
+        from app.utils.ocr_utils import PADDLEOCR_AVAILABLE, get_ocr_processor
+        if not PADDLEOCR_AVAILABLE:
+            logger.warning("PaddleOCR 未安装，扫描版 PDF OCR 不可用")
+            return None
+
+        processor = get_ocr_processor()
+        if not processor:
+            logger.warning("PaddleOCR 初始化失败，扫描版 PDF OCR 不可用")
+            return None
+
+        parts = []
+        with tempfile.TemporaryDirectory(prefix="pdf_ocr_") as temp_dir:
+            with fitz.open(file_path) as doc:
+                page_count = len(doc)
+                for page_index in range(page_count):
+                    page = doc.load_page(page_index)
+                    pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                    image_path = os.path.join(temp_dir, f"page_{page_index + 1}.png")
+                    pixmap.save(image_path)
+                    page_text = processor.extract_text_from_image(image_path)
+                    if page_text:
+                        parts.append(f"第 {page_index + 1} 页\n{page_text.strip()}")
+
+        full_text = "\n\n".join(parts).strip()
+        logger.info(f"PDF OCR 解析完成: {len(full_text)} 字符")
+        return full_text or None
+    except Exception as e:
+        logger.error(f"PDF OCR 解析失败 ({file_path}): {e}")
+        return None
+
+
+# ------------------------------------------------------------------
+# Excel (.xlsx / .xls)
+# ------------------------------------------------------------------
+
+def _extract_excel(file_path: str) -> Optional[str]:
+    """
+    提取 Excel 文本。
+    每个 Sheet 输出为「Sheet名：\n表头 | 列1 | 列2 ...」格式，保留表头语义。
+    """
+    ext = os.path.splitext(file_path)[1].lower()
+    try:
+        if ext == '.xlsx':
+            import openpyxl
+            wb = openpyxl.load_workbook(file_path, data_only=True)
+            parts = []
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                rows = list(ws.iter_rows(values_only=True))
+                if not rows:
+                    continue
+                parts.append(f"【{sheet_name}】")
+                for row in rows:
+                    row_text = [str(c) if c is not None else '' for c in row]
+                    if any(t.strip() for t in row_text):
+                        parts.append(' | '.join(row_text))
+            text = '\n'.join(parts)
+            logger.info(f"Excel 解析完成: {len(wb.sheetnames)} 个 Sheet, {len(text)} 字符")
+            return text or None
+        else:
+            # .xls
+            import xlrd
+            wb = xlrd.open_workbook(file_path)
+            parts = []
+            for sheet in wb.sheets():
+                parts.append(f"【{sheet.name}】")
+                for r in range(sheet.nrows):
+                    row_text = [str(sheet.cell_value(r, c)) for c in range(sheet.ncols)]
+                    if any(t.strip() for t in row_text):
+                        parts.append(' | '.join(row_text))
+            text = '\n'.join(parts)
+            logger.info(f"XLS 解析完成: {len(text)} 字符")
+            return text or None
+    except ImportError as e:
+        logger.error(f"Excel 解析库未安装: {e}，请运行 pip install openpyxl xlrd")
+        return None
+    except Exception as e:
+        logger.error(f"Excel 解析失败 ({file_path}): {e}")
+        return None
+
+
+# ------------------------------------------------------------------
+# PowerPoint (.pptx / .ppt)
+# ------------------------------------------------------------------
+
+def _extract_pptx(file_path: str) -> Optional[str]:
+    """
+    提取 PPT 文本。
+    每张幻灯片提取文本框内容和备注，图片部分走 OCR（如可用）。
+    """
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == '.ppt':
+        logger.warning(f"旧版 .ppt 格式不支持直接解析，请转换为 .pptx")
+        return None
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches
+        prs = Presentation(file_path)
+        parts = []
+        for slide_idx, slide in enumerate(prs.slides, 1):
+            slide_texts = []
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    for para in shape.text_frame.paragraphs:
+                        text = para.text.strip()
+                        if text:
+                            slide_texts.append(text)
+            # 备注
+            if slide.has_notes_slide:
+                notes = slide.notes_slide.notes_text_frame.text.strip()
+                if notes:
+                    slide_texts.append(f"[备注] {notes}")
+            if slide_texts:
+                parts.append(f"【第{slide_idx}页】")
+                parts.extend(slide_texts)
+        text = '\n'.join(parts)
+        logger.info(f"PPT 解析完成: {len(prs.slides)} 页, {len(text)} 字符")
+        return text or None
+    except ImportError:
+        logger.error("python-pptx 未安装，请运行 pip install python-pptx")
+        return None
+    except Exception as e:
+        logger.error(f"PPT 解析失败 ({file_path}): {e}")
+        return None
+
+
+# ------------------------------------------------------------------
+# Markdown (.md)
+# ------------------------------------------------------------------
+
+def _extract_markdown(file_path: str) -> Optional[str]:
+    """
+    解析 Markdown 文件。
+    保留标题层级结构（作为后续分块策略的边界标记），去除 HTML 标签。
+    """
+    try:
+        from app.utils.encoding_utils import read_file_smart
+        text = read_file_smart(file_path)
+        if not text:
+            return None
+        # 去除 HTML 注释
+        import re
+        text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
+        logger.info(f"Markdown 解析完成: {len(text)} 字符")
+        return text.strip() or None
+    except Exception as e:
+        logger.error(f"Markdown 解析失败 ({file_path}): {e}")
+        return None
+
+
+# ------------------------------------------------------------------
+# 纯文本
+# ------------------------------------------------------------------
+
+def _extract_plain_text(file_path: str) -> Optional[str]:
+    """读取纯文本文件（自动检测编码）"""
+    try:
+        from app.utils.encoding_utils import read_file_smart
+        return read_file_smart(file_path)
+    except Exception as e:
+        logger.error(f"纯文本读取失败 ({file_path}): {e}")
+        return None
+
+
+# ------------------------------------------------------------------
+# 向后兼容类（供 vector_service.py 调用）
+# ------------------------------------------------------------------
+
+class DocumentParser:
+    """文档解析器类（封装，方便将来扩展）"""
+
+    @staticmethod
+    def extract(file_path: str) -> Optional[str]:
+        return extract_text(file_path)

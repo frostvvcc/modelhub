@@ -1,0 +1,1928 @@
+"""
+异步向量数据库 Service
+处理向量数据库相关的业务逻辑
+"""
+from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional, List, Dict, Any
+from app.utils.optimized_chromadb import get_chromadb_client
+from app.utils.EmbbedingModel import ChatEmbeddings
+from app.models.vector_db import VectorDb
+from app.models.document import Document
+from app.models.model_info import ModelInfo
+from app.models.user import User
+from app.mappers.vector_mapper import AsyncVectorMapper
+from app.mappers.model_mapper import AsyncModelMapper
+from app.mappers.organization_mapper import AsyncOrganizationMapper
+from app.services.permission_service import AsyncPermissionService
+from app.services.simple_permission_service import SimplePermissionService
+from app.utils.async_db import AsyncDB
+from app.config import settings
+from app.utils.logger_config import get_logger
+from app.utils.error_handler import (
+    NotFoundError,
+    ValidationError,
+    InternalServerError,
+    UnauthorizedError
+)
+import chromadb.errors
+import os
+import uuid
+import shutil
+import asyncio
+from pathlib import Path
+from datetime import datetime
+from app.utils.archive_utils import is_archive_file, extract_archive, organize_files_by_structure, is_image_file
+from app.utils.ocr_utils import process_image_with_ocr
+
+logger = get_logger(__name__)
+
+MAX_RETRIES = 5
+RETRY_DELAY = 2
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+BASE_DOCS_DIR = Path("data/knowledge_sources")
+OFFICIAL_VECTOR_DB_NAMES = {
+    "山东科技大学官方资料总库",
+    "默认智能对话知识库",
+}
+LAYERED_RAG_FALLBACK_THRESHOLD = float(os.getenv("RAG_FALLBACK_THRESHOLD", "0.40"))
+LAYERED_RAG_MAX_VECTOR_DBS = int(os.getenv("RAG_MAX_VECTOR_DBS", "5"))
+LAYERED_RAG_MAX_CONTEXTS = int(os.getenv("RAG_MAX_CONTEXTS", "5"))
+CHAT_ATTACHMENT_VECTOR_DB_PREFIX = "会话附件库"
+CHAT_ATTACHMENT_MAX_FILE_SIZE = 20 * 1024 * 1024
+CHAT_ATTACHMENT_EXTENSIONS = {
+    ".pdf", ".doc", ".docx", ".txt", ".md", ".csv",
+    ".xlsx", ".xls", ".pptx", ".ppt",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif", ".webp",
+    ".zip", ".tar", ".gz", ".tgz",
+}
+
+
+class AsyncVectorService:
+    """异步向量数据库服务类"""
+    
+    @staticmethod
+    async def create_chroma_collection(vector_db_id: int) -> bool:
+        """创建 ChromaDB 集合（异步，带重试）"""
+        from app.utils.retry import async_retry
+        
+        client = get_chromadb_client()
+        if not client:
+            logger.error("无法获取 ChromaDB 客户端")
+            return False
+        
+        collection_name = f"vector_db_{vector_db_id}"
+        
+        @async_retry(
+            max_attempts=MAX_RETRIES,
+            delay=RETRY_DELAY,
+            exceptions=(Exception,)
+        )
+        async def _create():
+            try:
+                await asyncio.to_thread(
+                    client.create_collection,
+                    name=collection_name,
+                    metadata={"hnsw:space": "cosine"},
+                )
+                logger.info(f"成功创建集合: {collection_name}")
+                return True
+            except chromadb.errors.UniqueConstraintError:
+                logger.info(f"集合已存在: {collection_name}")
+                return True
+        
+        try:
+            return await _create()
+        except Exception as e:
+            logger.error(f"创建集合最终失败: {collection_name}, 错误: {e}")
+            return False
+    
+    @staticmethod
+    async def get_chroma_collection(vector_db_id: int):
+        """获取 ChromaDB 集合（异步）"""
+        client = get_chromadb_client()
+        if not client:
+            return None
+        
+        collection_name = f"vector_db_{vector_db_id}"
+        try:
+            # 在后台线程执行同步操作
+            collection = await asyncio.to_thread(client.get_collection, name=collection_name)
+            return collection
+        except Exception as e:
+            logger.error(f"获取集合失败: {e}")
+            return None
+    
+    @staticmethod
+    async def ensure_collection_exists(vector_db_id: int) -> bool:
+        """确保 ChromaDB 集合存在（异步）"""
+        collection = await AsyncVectorService.get_chroma_collection(vector_db_id)
+        if collection:
+            return True
+        return await AsyncVectorService.create_chroma_collection(vector_db_id)
+    
+    @staticmethod
+    async def get_vector_db(
+        session: AsyncSession,
+        vector_db_id: int,
+        user_id: Optional[int] = None
+    ) -> Optional[Dict]:
+        """
+        获取向量数据库详情（异步，支持权限检查）
+        
+        Raises:
+            NotFoundError: 向量数据库不存在
+            UnauthorizedError: 无权限访问
+            InternalServerError: 获取失败
+        """
+        logger.debug(f"获取向量数据库详情: vector_db_id={vector_db_id}, user_id={user_id}")
+        try:
+            vector_db = await AsyncVectorMapper.get_vector_db(session, vector_db_id)
+            if not vector_db:
+                logger.warning(f"获取向量数据库失败: 不存在 - vector_db_id={vector_db_id}")
+                raise NotFoundError(f"向量数据库不存在: {vector_db_id}")
+            
+            # 权限检查
+            if user_id:
+                has_access = await AsyncVectorService.check_vector_db_access(
+                    session, user_id, vector_db_id
+                )
+                if not has_access:
+                    logger.warning(f"获取向量数据库失败: 无权限 - user_id={user_id}, vector_db_id={vector_db_id}")
+                    raise UnauthorizedError("无权限访问该向量数据库")
+            
+            # 获取文档列表
+            documents = await AsyncDB.filter_by(session, Document, vector_db_id=vector_db_id)
+            
+            logger.debug(f"成功获取向量数据库详情: vector_db_id={vector_db_id}")
+            return vector_db.to_dict(
+                include_documents=True,
+                documents_list=list(documents)
+            )
+        except NotFoundError:
+            raise
+        except UnauthorizedError:
+            raise
+        except Exception as e:
+            logger.error(f"获取向量数据库失败: {str(e)}", exc_info=True)
+            raise InternalServerError(f"获取向量数据库失败: {str(e)}")
+    
+    @staticmethod
+    async def check_vector_db_access(
+        session: AsyncSession,
+        user_id: int,
+        vector_db_id: int
+    ) -> bool:
+        """检查用户是否有权限访问向量数据库"""
+        return await SimplePermissionService.check_vector_db_access(
+            session, user_id, vector_db_id
+        )
+
+    @staticmethod
+    async def get_accessible_vector_dbs(
+        session: AsyncSession,
+        user_id: int,
+        school_id: Optional[int] = None,
+        organization_id: Optional[int] = None
+    ) -> List[Dict]:
+        """获取用户可访问的向量数据库列表"""
+        return await SimplePermissionService.get_accessible_vector_dbs(session, user_id)
+    
+    @staticmethod
+    async def upload_file(
+        session: AsyncSession,
+        vector_db_id: int,
+        file: Any,
+        user_id: int,
+        describe: str = "",
+        parent_id: Optional[int] = None,
+        chunk_strategy: str = "fixed",
+        chunk_size: int = 800,
+        chunk_overlap: int = 150,
+    ) -> Optional[int]:
+        """上传文件到向量数据库（异步）"""
+        from app.utils.performance import async_timer
+        
+        async with async_timer(f"文件上传 vector_db_{vector_db_id}"):
+            document = None
+            try:
+                # 确保集合存在
+                await AsyncVectorService.ensure_collection_exists(vector_db_id)
+                
+                # 获取向量数据库
+                vector_db = await AsyncVectorMapper.get_vector_db(session, vector_db_id)
+                if not vector_db:
+                    raise NotFoundError(f"向量数据库不存在: {vector_db_id}")
+                
+                # 保存文件（异步）
+                from app.utils.async_file_utils import save_uploaded_file_async
+                file_path = await save_uploaded_file_async(
+                    file,
+                    str(BASE_DOCS_DIR / f"vector_db_{vector_db_id}")
+                )
+                
+                if not file_path:
+                    raise ValidationError("文件保存失败")
+                
+                full_path = BASE_DOCS_DIR / f"vector_db_{vector_db_id}" / file_path
+                
+                # 验证父文件夹（如果指定）
+                folder_path = None
+                if parent_id:
+                    parent = await AsyncDB.get_by_id(session, Document, parent_id)
+                    if not parent:
+                        raise NotFoundError(f"父文件夹不存在: {parent_id}")
+                    if not parent.is_folder:
+                        raise ValidationError("父项不是文件夹")
+                    if parent.vector_db_id != vector_db_id:
+                        raise ValidationError("父文件夹不属于该向量数据库")
+                    if parent.folder_path:
+                        folder_path = f"{parent.folder_path}/{parent.id}"
+                    else:
+                        folder_path = str(parent.id)
+                
+                # 创建文档记录
+                filename = file.filename if hasattr(file, 'filename') else file_path
+                document = Document(
+                    vector_db_id=vector_db_id,
+                    user_id=user_id,
+                    name=filename,
+                    original_name=filename,
+                    type=filename.split('.')[-1] if '.' in filename else 'unknown',
+                    size=file.size if hasattr(file, 'size') else 0,
+                    save_path=str(full_path),
+                    describe=describe,
+                    status="processing",
+                    parent_id=parent_id,
+                    is_folder=False,
+                    folder_path=folder_path
+                )
+                document = await AsyncDB.create(session, document)
+                await AsyncDB.commit(session)
+                
+                # 处理文件并添加到向量数据库（异步执行）
+                await asyncio.to_thread(
+                    AsyncVectorService._process_and_add_file,
+                    vector_db_id,
+                    str(full_path),
+                    document.id,
+                    folder_path,
+                    parent_id,
+                    chunk_strategy,
+                    chunk_size,
+                    chunk_overlap,
+                )
+
+                document.status = "success"
+                document.error_message = None
+                document = await AsyncDB.update(session, document)
+                await AsyncDB.commit(session)
+                
+                return document.id
+            except (NotFoundError, ValidationError):
+                await AsyncDB.rollback(session)
+                raise
+            except Exception as e:
+                logger.error(f"文件上传失败: {str(e)}", exc_info=True)
+                await AsyncDB.rollback(session)
+                if document is not None:
+                    try:
+                        document.status = "failed"
+                        document.error_message = str(e)[:2000]
+                        await AsyncDB.update(session, document)
+                        await AsyncDB.commit(session)
+                    except Exception as status_exc:
+                        logger.warning(f"更新文档失败状态失败: document_id={getattr(document, 'id', None)}, 错误: {status_exc}")
+                raise InternalServerError(f"文件上传失败: {str(e)}")
+    
+    @staticmethod
+    def _process_and_add_file(
+        vector_db_id: int,
+        file_path: str,
+        document_id: int,
+        folder_hierarchy: Optional[str] = None,
+        parent_id: Optional[int] = None,
+        chunk_strategy: str = "fixed",
+        chunk_size: int = 800,
+        chunk_overlap: int = 150,
+    ):
+        """
+        处理文件并添加到向量数据库（同步方法，在后台线程执行）
+
+        Args:
+            vector_db_id: 向量数据库ID
+            file_path: 文件路径
+            document_id: 文档ID
+            folder_hierarchy: 文件夹层级路径 (如: "课程设计/第一章/1.1节")
+            parent_id: 父文件夹ID
+        """
+        ocr_text_path = None
+        try:
+            # 获取集合
+            client = get_chromadb_client()
+            if not client:
+                raise RuntimeError("ChromaDB 服务不可用，请检查 ChromaDB 是否已启动")
+            collection = client.get_collection(f"vector_db_{vector_db_id}")
+
+            # 检查是否为图片文件，如果是则进行OCR处理
+            actual_file_path = file_path
+            if is_image_file(file_path):
+                logger.info(f"检测到图片文件，开始OCR识别: {file_path}")
+                ocr_text_path = process_image_with_ocr(file_path, output_dir=os.path.dirname(file_path))
+                if ocr_text_path and os.path.exists(ocr_text_path):
+                    actual_file_path = ocr_text_path
+                    logger.info(f"OCR识别完成，使用文本文件: {ocr_text_path}")
+                else:
+                    raise RuntimeError(f"OCR识别失败，无法提取图片文字: {file_path}")
+
+            # 使用统一文档解析器（支持 PDF/Word/Excel/PPT/Markdown/文本/图片）
+            from app.services.rag.document_parser import extract_text
+            text_content = extract_text(actual_file_path)
+
+            if not text_content or not text_content.strip():
+                raise RuntimeError(f"文件内容为空，无法解析文件: {os.path.basename(file_path)}")
+
+            # 获取嵌入模型（使用配置）
+            from app.config import settings
+            embedding_model = ChatEmbeddings(
+                model=settings.embedding_model,
+                base_url=settings.embedding_base_url,
+                api_key=settings.embedding_api_key
+            )
+
+            # 分割文本为块（使用 rag/chunking 模块）
+            from app.services.rag.chunking import split_text_into_chunks, ChunkStrategy
+            try:
+                strategy = ChunkStrategy(chunk_strategy)
+            except ValueError:
+                logger.warning("未知切块策略 %s，已降级为 fixed", chunk_strategy)
+                strategy = ChunkStrategy.FIXED
+            safe_chunk_size = max(100, min(int(chunk_size or 800), 4000))
+            safe_overlap = max(0, min(int(chunk_overlap or 150), safe_chunk_size - 1))
+            chunks = split_text_into_chunks(
+                text_content,
+                strategy=strategy,
+                chunk_size=safe_chunk_size,
+                overlap=safe_overlap,
+            )
+
+            # 为每个文本块生成嵌入并添加到 ChromaDB
+            for i, chunk in enumerate(chunks):
+                # 生成嵌入向量
+                embedding = embedding_model.get_text_embedding(chunk)
+
+                # 准备元数据
+                metadata = {
+                    'source': os.path.basename(actual_file_path),
+                    'chunk_id': i,
+                    'total_chunks': len(chunks),
+                    'document_id': document_id,
+                    'chunk_strategy': strategy.value,
+                    'chunk_size': safe_chunk_size,
+                    'chunk_overlap': safe_overlap,
+                }
+
+                # ⭐ 添加层级路径信息
+                if folder_hierarchy:
+                    metadata['folder_hierarchy'] = folder_hierarchy
+                    logger.info(f"📁 文件层级路径: {folder_hierarchy}")
+
+                if parent_id:
+                    metadata['parent_id'] = str(parent_id)
+
+                # 如果是 OCR 识别的文本，添加额外元数据
+                if is_image_file(file_path):
+                    metadata['source_type'] = 'image_ocr'
+                    metadata['original_image'] = os.path.basename(file_path)
+
+                # 添加到 ChromaDB
+                collection.add(
+                    embeddings=[embedding],
+                    documents=[chunk],
+                    metadatas=[metadata],
+                    ids=[f"{document_id}_chunk_{i}"]
+                )
+
+            # 使 BM25 索引缓存失效（新文档入库后需重建）
+            from app.services.rag.retrieval import invalidate_bm25_cache
+            invalidate_bm25_cache(vector_db_id)
+            logger.info(f"文件处理完成: {file_path}")
+        except Exception as e:
+            logger.error(f"处理文件失败: {e}", exc_info=True)
+            raise
+        finally:
+            # 清理OCR临时文件（如果存在且不是原始文件）
+            if ocr_text_path and ocr_text_path != file_path and os.path.exists(ocr_text_path):
+                try:
+                    # 注意：这里不删除OCR文本文件，因为它可能被用于后续处理
+                    # 如果需要清理，可以在文档处理完成后统一清理
+                    pass
+                except Exception as e:
+                    logger.warning(f"清理OCR临时文件失败: {ocr_text_path}, 错误: {e}")
+
+    @staticmethod
+    def _extract_text_from_docx(file_path: str) -> Optional[str]:
+        """
+        从Word文档(.doc或.docx)中提取文本
+
+        Args:
+            file_path: doc或docx文件路径
+
+        Returns:
+            提取的文本内容
+        """
+        file_ext = os.path.splitext(file_path)[1].lower()
+
+        try:
+            if file_ext == '.doc':
+                # 处理 .doc 格式（旧版Word）
+                logger.info(f"处理旧版Word文档(.doc): {file_path}")
+
+                # 方法1: 使用 doc2text 处理 .doc（支持真正的旧版Word格式）
+                try:
+                    import doc2text
+                    # doc2text 专门处理 .doc 文件
+                    text_content = doc2text.extract(file_path)
+
+                    if text_content and text_content.strip():
+                        text_content = text_content.strip()
+                        logger.info(f"✅ 使用 doc2text 从 .doc 文件提取文本: {len(text_content)}字符")
+                        return text_content
+                    else:
+                        logger.warning(f"doc2text 提取的文本为空，尝试备用方法")
+
+                except ImportError:
+                    logger.warning("doc2text 库未安装，尝试使用其他方法")
+                except Exception as e:
+                    logger.warning(f"doc2text 处理失败: {e}")
+
+                # 方法2: 尝试用 python-docx 直接处理（某些.doc文件实际是docx格式）
+                try:
+                    from docx import Document
+                    doc = Document(file_path)
+
+                    paragraphs = []
+                    for para in doc.paragraphs:
+                        text = para.text.strip()
+                        if text:
+                            paragraphs.append(text)
+
+                    # 提取表格
+                    for table in doc.tables:
+                        for row in table.rows:
+                            row_text = []
+                            for cell in row.cells:
+                                cell_text = cell.text.strip()
+                                if cell_text:
+                                    row_text.append(cell_text)
+                            if row_text:
+                                paragraphs.append(' | '.join(row_text))
+
+                    full_text = '\n'.join(paragraphs)
+                    if full_text.strip():
+                        logger.info(f"✅ 用 python-docx 从 .doc 文件提取文本: {len(full_text)}字符")
+                        return full_text
+
+                except Exception as docx_error:
+                    logger.error(f"python-docx 无法处理 .doc 文件: {docx_error}")
+                    logger.error("💡 建议将 .doc 文件转换为 .docx 格式")
+
+            elif file_ext == '.docx':
+                # 处理 .docx 格式（新版Word）
+                logger.info(f"处理新版Word文档(.docx): {file_path}")
+
+                from docx import Document
+                doc = Document(file_path)
+
+                # 提取所有段落文本
+                paragraphs = []
+                for para in doc.paragraphs:
+                    text = para.text.strip()
+                    if text:
+                        paragraphs.append(text)
+
+                # 提取表格文本
+                for table in doc.tables:
+                    for row in table.rows:
+                        row_text = []
+                        for cell in row.cells:
+                            cell_text = cell.text.strip()
+                            if cell_text:
+                                row_text.append(cell_text)
+                        if row_text:
+                            paragraphs.append(' | '.join(row_text))
+
+                full_text = '\n'.join(paragraphs)
+                logger.info(f"✅ 从 .docx 文件提取文本: {len(paragraphs)}个段落, {len(full_text)}字符")
+
+                return full_text
+
+            return None
+
+        except ImportError:
+            logger.error("❌ 未安装必要的库")
+            logger.error("请运行以下命令安装依赖:")
+            logger.error("   pip install python-docx docx2txt")
+            return None
+        except Exception as e:
+            logger.error(f"❌ 提取Word文档失败: {e}")
+            logger.error(f"文件类型: {file_ext}, 文件路径: {file_path}")
+            logger.error("💡 建议: 将文件另存为 .docx 或 .pdf 格式后重新上传")
+            return None
+
+    @staticmethod
+    def _extract_text_from_pdf(file_path: str) -> Optional[str]:
+        """
+        从PDF文件中提取文本
+
+        Args:
+            file_path: pdf文件路径
+
+        Returns:
+            提取的文本内容
+        """
+        try:
+            # 优先使用pdfplumber(更好的中文支持)
+            try:
+                import pdfplumber
+
+                text_parts = []
+                with pdfplumber.open(file_path) as pdf:
+                    for page in pdf.pages:
+                        text = page.extract_text()
+                        if text:
+                            text_parts.append(text)
+
+                full_text = '\n'.join(text_parts)
+                logger.info(f"✅ 从pdf文件提取文本(pdfplumber): {len(full_text)}字符")
+                return full_text
+
+            except ImportError:
+                # 回退到PyPDF2
+                try:
+                    import PyPDF2
+
+                    text_parts = []
+                    with open(file_path, 'rb') as f:
+                        pdf_reader = PyPDF2.PdfReader(f)
+                        for page in pdf_reader.pages:
+                            text = page.extract_text()
+                            if text:
+                                text_parts.append(text)
+
+                    full_text = '\n'.join(text_parts)
+                    logger.info(f"✅ 从pdf文件提取文本(PyPDF2): {len(full_text)}字符")
+                    return full_text
+
+                except ImportError:
+                    logger.error("❌ PDF处理库未安装")
+                    logger.error("请运行: pip install pdfplumber 或 pip install PyPDF2")
+                    return None
+
+        except Exception as e:
+            logger.error(f"❌ 提取pdf文本失败: {e}")
+            return None
+
+    @staticmethod
+    async def delete_vector_db(
+        session: AsyncSession,
+        vector_db_id: int
+    ) -> bool:
+        """删除知识库、其文档、本地文件和 Chroma 集合。"""
+        logger.info(f"删除向量数据库: vector_db_id={vector_db_id}")
+        try:
+            vector_db = await AsyncDB.get_by_id(session, VectorDb, vector_db_id)
+            if not vector_db:
+                return False
+
+            from app.utils.async_file_utils import delete_file_async
+
+            documents = await AsyncDB.filter_by(session, Document, vector_db_id=vector_db_id)
+            collection = None
+            try:
+                collection = get_chromadb_client().get_collection(f"vector_db_{vector_db_id}")
+            except Exception as e:
+                logger.warning(f"获取向量集合失败，继续删除数据库记录: vector_db_id={vector_db_id}, 错误: {e}")
+
+            def delete_order(item: Document) -> tuple:
+                folder_depth = len([part for part in (item.folder_path or "").split("/") if part])
+                return (1 if item.is_folder else 0, -folder_depth, -item.id)
+
+            for document in sorted(documents, key=delete_order):
+                if not document.is_folder:
+                    if collection:
+                        try:
+                            await asyncio.to_thread(
+                                collection.delete,
+                                where={"document_id": document.id}
+                            )
+                        except Exception as e:
+                            logger.warning(f"删除文档向量失败: document_id={document.id}, 错误: {e}")
+                    if document.save_path:
+                        await delete_file_async(document.save_path)
+                await AsyncDB.delete(session, document)
+
+            try:
+                await asyncio.to_thread(
+                    get_chromadb_client().delete_collection,
+                    f"vector_db_{vector_db_id}"
+                )
+            except Exception as e:
+                logger.warning(f"删除 Chroma 集合失败: vector_db_id={vector_db_id}, 错误: {e}")
+
+            vector_dir = BASE_DOCS_DIR / f"vector_db_{vector_db_id}"
+            if vector_dir.exists():
+                await asyncio.to_thread(shutil.rmtree, vector_dir, ignore_errors=True)
+
+            try:
+                from app.services.rag.retrieval import invalidate_bm25_cache
+                invalidate_bm25_cache(vector_db_id)
+            except Exception as e:
+                logger.warning(f"BM25 缓存失效失败: vector_db_id={vector_db_id}, 错误: {e}")
+
+            from app.models.teaching_space import TeachingSpaceResource
+            from sqlalchemy import delete as sa_delete
+            await session.execute(
+                sa_delete(TeachingSpaceResource).where(
+                    TeachingSpaceResource.resource_type == "vector_db",
+                    TeachingSpaceResource.resource_id == vector_db_id
+                )
+            )
+
+            await AsyncDB.delete(session, vector_db)
+            await AsyncDB.commit(session)
+            logger.info(f"成功删除向量数据库: vector_db_id={vector_db_id}")
+            return True
+        except Exception as e:
+            logger.error(f"删除向量数据库失败: {str(e)}", exc_info=True)
+            await AsyncDB.rollback(session)
+            raise InternalServerError(f"删除向量数据库失败: {str(e)}")
+
+    @staticmethod
+    async def delete_file(
+        session: AsyncSession,
+        document_id: int
+    ) -> bool:
+        """
+        删除文档（异步）
+        
+        Raises:
+            NotFoundError: 文档不存在
+            InternalServerError: 删除失败
+        """
+        logger.info(f"删除文档: document_id={document_id}")
+        try:
+            document = await AsyncDB.get_by_id(session, Document, document_id)
+            if not document:
+                logger.warning(f"删除文档失败: 文档不存在 - document_id={document_id}")
+                raise NotFoundError(f"文档不存在: {document_id}")
+            
+            # 如果是文件夹，检查是否有子项
+            if document.is_folder:
+                from sqlalchemy import select
+                children = await session.execute(
+                    select(Document).where(Document.parent_id == document_id)
+                )
+                children_list = children.scalars().all()
+                if children_list:
+                    raise ValidationError("文件夹不为空，无法删除")
+            
+            # 删除文件（异步）
+            from app.utils.async_file_utils import delete_file_async
+            if document.save_path:
+                await delete_file_async(document.save_path)
+
+            # 从 ChromaDB 删除该文档对应的所有 chunk，避免数据库记录删除后旧向量仍被检索到。
+            if not document.is_folder:
+                try:
+                    collection = get_chromadb_client().get_collection(
+                        f"vector_db_{document.vector_db_id}"
+                    )
+                    await asyncio.to_thread(
+                        collection.delete,
+                        where={"document_id": document.id}
+                    )
+                    logger.info(f"从向量数据库删除: document_id={document.id}")
+                except Exception as e:
+                    logger.warning(f"从向量数据库删除失败，继续删除数据库记录: document_id={document.id}, 错误: {e}")
+
+                try:
+                    from app.services.rag.retrieval import invalidate_bm25_cache
+                    invalidate_bm25_cache(document.vector_db_id)
+                except Exception as e:
+                    logger.warning(f"BM25 缓存失效失败: vector_db_id={document.vector_db_id}, 错误: {e}")
+            
+            # 删除数据库记录
+            await AsyncDB.delete(session, document)
+            await AsyncDB.commit(session)
+            
+            logger.info(f"成功删除文档: document_id={document_id}")
+            return True
+        except NotFoundError:
+            raise
+        except Exception as e:
+            logger.error(f"删除文件失败: {str(e)}", exc_info=True)
+            raise
+
+    @staticmethod
+    async def _delete_document_vectors(vector_db_id: int, document_id: int) -> None:
+        try:
+            collection = get_chromadb_client().get_collection(f"vector_db_{vector_db_id}")
+            await asyncio.to_thread(collection.delete, where={"document_id": document_id})
+            from app.services.rag.retrieval import invalidate_bm25_cache
+            invalidate_bm25_cache(vector_db_id)
+        except Exception as e:
+            logger.warning(f"删除文档向量失败: vector_db_id={vector_db_id}, document_id={document_id}, 错误: {e}")
+
+    @staticmethod
+    async def _iter_document_subtree(session: AsyncSession, document: Document) -> List[Document]:
+        """返回文档及其子孙节点，文件夹在前，子项随后。"""
+        from sqlalchemy import select
+
+        result = [document]
+        if document.is_folder:
+            children_result = await session.execute(
+                select(Document).where(Document.parent_id == document.id).order_by(Document.is_folder.desc(), Document.name.asc())
+            )
+            for child in children_result.scalars().all():
+                result.extend(await AsyncVectorService._iter_document_subtree(session, child))
+        return result
+
+    @staticmethod
+    async def archive_document(session: AsyncSession, document_id: int) -> dict:
+        """归档文档或文件夹。归档后删除 Chroma 向量，不再参与检索，但保留原文件和数据库记录。"""
+        document = await AsyncDB.get_by_id(session, Document, document_id)
+        if not document:
+            raise NotFoundError(f"文档不存在: {document_id}")
+
+        try:
+            subtree = await AsyncVectorService._iter_document_subtree(session, document)
+            archived_ids = []
+            for item in subtree:
+                if not item.is_folder:
+                    await AsyncVectorService._delete_document_vectors(item.vector_db_id, item.id)
+                item.status = "archived"
+                item.archived_at = datetime.now()
+                item.error_message = None
+                await AsyncDB.update(session, item)
+                archived_ids.append(item.id)
+            await AsyncDB.commit(session)
+            return {"document_id": document_id, "archived_ids": archived_ids, "status": "archived"}
+        except Exception as e:
+            await AsyncDB.rollback(session)
+            logger.error(f"归档文档失败: document_id={document_id}, 错误: {e}", exc_info=True)
+            raise InternalServerError(f"归档文档失败: {str(e)}")
+
+    @staticmethod
+    async def restore_document(session: AsyncSession, document_id: int) -> dict:
+        """恢复归档文档或文件夹。恢复文件时重新解析并写入 Chroma。"""
+        document = await AsyncDB.get_by_id(session, Document, document_id)
+        if not document:
+            raise NotFoundError(f"文档不存在: {document_id}")
+
+        try:
+            await AsyncVectorService.ensure_collection_exists(document.vector_db_id)
+            subtree = await AsyncVectorService._iter_document_subtree(session, document)
+            restored_ids = []
+            failed_ids = []
+
+            for item in subtree:
+                if item.is_folder:
+                    item.status = "success"
+                    item.archived_at = None
+                    item.error_message = None
+                    await AsyncDB.update(session, item)
+                    restored_ids.append(item.id)
+                    continue
+
+                if not item.save_path or not os.path.exists(item.save_path):
+                    item.status = "failed"
+                    item.error_message = "原始文件不存在，无法恢复向量"
+                    await AsyncDB.update(session, item)
+                    failed_ids.append(item.id)
+                    continue
+
+                item.status = "processing"
+                item.error_message = None
+                item.archived_at = None
+                await AsyncDB.update(session, item)
+                await AsyncDB.commit(session)
+
+                await AsyncVectorService._delete_document_vectors(item.vector_db_id, item.id)
+                try:
+                    await asyncio.to_thread(
+                        AsyncVectorService._process_and_add_file,
+                        item.vector_db_id,
+                        item.save_path,
+                        item.id,
+                        item.folder_path,
+                        item.parent_id,
+                        "fixed",
+                        800,
+                        150,
+                    )
+                    item.status = "success"
+                    item.error_message = None
+                    restored_ids.append(item.id)
+                except Exception as exc:
+                    item.status = "failed"
+                    item.error_message = str(exc)[:2000]
+                    failed_ids.append(item.id)
+                await AsyncDB.update(session, item)
+
+            await AsyncDB.commit(session)
+            return {
+                "document_id": document_id,
+                "restored_ids": restored_ids,
+                "failed_ids": failed_ids,
+                "status": "restored" if not failed_ids else "partial_failed",
+            }
+        except Exception as e:
+            await AsyncDB.rollback(session)
+            logger.error(f"恢复归档文档失败: document_id={document_id}, 错误: {e}", exc_info=True)
+            raise InternalServerError(f"恢复归档文档失败: {str(e)}")
+
+    @staticmethod
+    async def delete_folder_recursive(
+        session: AsyncSession,
+        document_id: int
+    ) -> dict:
+        """
+        递归删除文件夹及其所有子项
+
+        Args:
+            session: 数据库会话
+            document_id: 文件夹ID
+
+        Returns:
+            删除统计信息: {'folders': int, 'files': int}
+
+        Raises:
+            NotFoundError: 文档不存在
+            ValidationError: 不是文件夹
+            InternalServerError: 删除失败
+        """
+        logger.info(f"递归删除文件夹: document_id={document_id}")
+
+        try:
+            document = await AsyncDB.get_by_id(session, Document, document_id)
+            if not document:
+                raise NotFoundError(f"文档不存在: {document_id}")
+
+            if not document.is_folder:
+                raise ValidationError("只能删除文件夹")
+
+            stats = {'folders': 0, 'files': 0}
+
+            # 递归删除函数
+            async def delete_recursive(folder_id: int):
+                """递归删除子文件夹和文件"""
+                from sqlalchemy import select
+
+                # 获取所有子项
+                children = await session.execute(
+                    select(Document).where(Document.parent_id == folder_id)
+                )
+                children_list = children.scalars().all()
+
+                for child in children_list:
+                    if child.is_folder:
+                        # 先递归删除子文件夹的内容
+                        await delete_recursive(child.id)
+                        # 然后删除子文件夹本身
+                        await AsyncDB.delete(session, child)
+                        stats['folders'] += 1
+                        logger.info(f"删除文件夹: {child.name} (id={child.id})")
+                    else:
+                        # 删除文件
+                        # 1. 删除物理文件
+                        if child.save_path:
+                            from app.utils.async_file_utils import delete_file_async
+                            await delete_file_async(child.save_path)
+
+                        # 2. 从向量数据库删除
+                        try:
+                            collection = await asyncio.to_thread(
+                                get_chromadb_client().get_collection,
+                                f"vector_db_{child.vector_db_id}"
+                            )
+                            await asyncio.to_thread(
+                                collection.delete, where={"document_id": child.id}
+                            )
+                            logger.info(f"从向量数据库删除: document_id={child.id}")
+                        except Exception as e:
+                            logger.warning(f"从向量数据库删除失败: {e}")
+
+                        # 3. 删除数据库记录
+                        await AsyncDB.delete(session, child)
+                        stats['files'] += 1
+                        logger.info(f"删除文件: {child.name} (id={child.id})")
+
+            # 开始递归删除
+            await delete_recursive(document_id)
+
+            # 最后删除文件夹本身
+            await AsyncDB.delete(session, document)
+            stats['folders'] += 1
+            await AsyncDB.commit(session)
+
+            try:
+                from app.services.rag.retrieval import invalidate_bm25_cache
+                invalidate_bm25_cache(document.vector_db_id)
+            except Exception as e:
+                logger.warning(f"BM25 缓存失效失败: vector_db_id={document.vector_db_id}, 错误: {e}")
+
+            logger.info(f"递归删除完成: 文件夹={stats['folders']}, 文件={stats['files']}")
+            return stats
+
+        except (NotFoundError, ValidationError):
+            await AsyncDB.rollback(session)
+            raise
+        except Exception as e:
+            logger.error(f"递归删除失败: {str(e)}", exc_info=True)
+            await AsyncDB.rollback(session)
+            raise InternalServerError(f"递归删除失败: {str(e)}")
+    
+    @staticmethod
+    async def create_folder(
+        session: AsyncSession,
+        vector_db_id: int,
+        name: str,
+        parent_id: Optional[int] = None,
+        user_id: int = None
+    ) -> dict:
+        """
+        创建文件夹
+        
+        Raises:
+            ValidationError: 参数错误
+            InternalServerError: 创建失败
+        """
+        logger.info(f"创建文件夹: vector_db_id={vector_db_id}, name={name}, parent_id={parent_id}")
+        try:
+            # 验证父文件夹是否存在
+            if parent_id:
+                parent = await AsyncDB.get_by_id(session, Document, parent_id)
+                if not parent:
+                    raise NotFoundError(f"父文件夹不存在: {parent_id}")
+                if not parent.is_folder:
+                    raise ValidationError("父项不是文件夹")
+                if parent.vector_db_id != vector_db_id:
+                    raise ValidationError("父文件夹不属于该向量数据库")
+                
+                # 计算路径
+                if parent.folder_path:
+                    folder_path = f"{parent.folder_path}/{parent.id}"
+                else:
+                    folder_path = str(parent.id)
+            else:
+                folder_path = None
+            
+            # 检查同名文件夹是否存在
+            from sqlalchemy import select, and_
+            existing = await session.execute(
+                select(Document).where(
+                    and_(
+                        Document.vector_db_id == vector_db_id,
+                        Document.parent_id == parent_id,
+                        Document.name == name,
+                        Document.is_folder == True
+                    )
+                )
+            )
+            if existing.scalar_one_or_none():
+                raise ValidationError("同名文件夹已存在")
+            
+            # 创建文件夹记录
+            folder = Document(
+                vector_db_id=vector_db_id,
+                user_id=user_id or 1,
+                name=name,
+                original_name=name,
+                type=None,
+                size=0,
+                save_path=None,
+                describe=None,
+                parent_id=parent_id,
+                is_folder=True,
+                folder_path=folder_path
+            )
+            
+            folder = await AsyncDB.create(session, folder)
+            await AsyncDB.commit(session)
+            
+            # 更新路径
+            if folder_path:
+                new_path = f"{folder_path}/{folder.id}"
+            else:
+                new_path = str(folder.id)
+            
+            folder.folder_path = new_path
+            await AsyncDB.update(session, folder)
+            await AsyncDB.commit(session)
+            
+            logger.info(f"成功创建文件夹: folder_id={folder.id}")
+            return folder.to_dict()
+        except (NotFoundError, ValidationError):
+            await AsyncDB.rollback(session)
+            raise
+        except Exception as e:
+            logger.error(f"创建文件夹失败: {str(e)}", exc_info=True)
+            await AsyncDB.rollback(session)
+            raise InternalServerError(f"创建文件夹失败: {str(e)}")
+    
+    @staticmethod
+    async def rename_document(
+        session: AsyncSession,
+        document_id: int,
+        new_name: str
+    ) -> dict:
+        """
+        重命名文档或文件夹
+        
+        Raises:
+            NotFoundError: 文档不存在
+            ValidationError: 参数错误
+            InternalServerError: 重命名失败
+        """
+        logger.info(f"重命名文档: document_id={document_id}, new_name={new_name}")
+        try:
+            document = await AsyncDB.get_by_id(session, Document, document_id)
+            if not document:
+                raise NotFoundError(f"文档不存在: {document_id}")
+            
+            # 检查同名项是否存在
+            from sqlalchemy import select, and_
+            existing = await session.execute(
+                select(Document).where(
+                    and_(
+                        Document.vector_db_id == document.vector_db_id,
+                        Document.parent_id == document.parent_id,
+                        Document.name == new_name,
+                        Document.id != document_id
+                    )
+                )
+            )
+            if existing.scalar_one_or_none():
+                raise ValidationError("同名项已存在")
+            
+            # 更新名称
+            document.name = new_name
+            if not document.is_folder:
+                document.original_name = new_name
+            
+            document = await AsyncDB.update(session, document)
+            await AsyncDB.commit(session)
+            
+            logger.info(f"成功重命名文档: document_id={document_id}")
+            return document.to_dict()
+        except (NotFoundError, ValidationError):
+            await AsyncDB.rollback(session)
+            raise
+        except Exception as e:
+            logger.error(f"重命名文档失败: {str(e)}", exc_info=True)
+            await AsyncDB.rollback(session)
+            raise InternalServerError(f"重命名文档失败: {str(e)}")
+    
+    @staticmethod
+    async def get_documents_tree(
+        session: AsyncSession,
+        vector_db_id: int
+    ) -> list:
+        """
+        获取文档树形结构
+        
+        Returns:
+            文档树列表（只包含根节点，子节点在 children 中）
+        """
+        logger.debug(f"获取文档树: vector_db_id={vector_db_id}")
+        try:
+            from sqlalchemy import select
+            # 获取所有文档
+            result = await session.execute(
+                select(Document).where(Document.vector_db_id == vector_db_id)
+            )
+            all_documents = result.scalars().all()
+            
+            # 构建树形结构
+            doc_dict = {}
+            root_docs = []
+            
+            # 第一遍：创建字典
+            for doc in all_documents:
+                doc_dict[doc.id] = doc.to_dict(include_children=False)
+                doc_dict[doc.id]['children'] = []
+            
+            # 第二遍：构建树
+            for doc in all_documents:
+                doc_data = doc_dict[doc.id]
+                if doc.parent_id:
+                    if doc.parent_id in doc_dict:
+                        doc_dict[doc.parent_id]['children'].append(doc_data)
+                else:
+                    root_docs.append(doc_data)
+            
+            # 排序：文件夹在前，然后按名称排序
+            def sort_docs(docs):
+                docs.sort(key=lambda x: (not x['is_folder'], x['name']))
+                for doc in docs:
+                    if doc['children']:
+                        sort_docs(doc['children'])
+            
+            sort_docs(root_docs)
+            
+            logger.debug(f"成功获取文档树: 共 {len(root_docs)} 个根节点")
+            return root_docs
+        except Exception as e:
+            logger.error(f"获取文档树失败: {str(e)}", exc_info=True)
+            raise InternalServerError(f"获取文档树失败: {str(e)}")
+    
+    @staticmethod
+    async def upload_archive(
+        session: AsyncSession,
+        vector_db_id: int,
+        archive_file: Any,
+        user_id: int,
+        describe: str = "",
+        parent_id: Optional[int] = None,
+        chunk_strategy: str = "fixed",
+        chunk_size: int = 800,
+        chunk_overlap: int = 150,
+    ) -> List[int]:
+        """
+        上传并解压压缩包，按结构组织文件
+        
+        Args:
+            session: 数据库会话
+            vector_db_id: 向量数据库ID
+            archive_file: 压缩包文件
+            user_id: 用户ID
+            describe: 描述
+            parent_id: 父文件夹ID
+            
+        Returns:
+            创建的文档ID列表
+        """
+        import tempfile
+        
+        logger.info(f"开始处理压缩包上传: vector_db_id={vector_db_id}")
+        
+        # 确保集合存在
+        await AsyncVectorService.ensure_collection_exists(vector_db_id)
+        
+        # 获取向量数据库
+        vector_db = await AsyncVectorMapper.get_vector_db(session, vector_db_id)
+        if not vector_db:
+            raise NotFoundError(f"向量数据库不存在: {vector_db_id}")
+        
+        # 验证父文件夹（如果指定）
+        folder_path = None
+        if parent_id:
+            parent = await AsyncDB.get_by_id(session, Document, parent_id)
+            if not parent:
+                raise NotFoundError(f"父文件夹不存在: {parent_id}")
+            if not parent.is_folder:
+                raise ValidationError("父项不是文件夹")
+            if parent.vector_db_id != vector_db_id:
+                raise ValidationError("父文件夹不属于该向量数据库")
+            if parent.folder_path:
+                folder_path = f"{parent.folder_path}/{parent.id}"
+            else:
+                folder_path = str(parent.id)
+        
+        # 创建临时目录
+        temp_dir = tempfile.mkdtemp()
+        archive_path = None
+        extract_dir = None
+        
+        try:
+            # 保存压缩包到临时目录
+            from app.utils.async_file_utils import save_uploaded_file_async
+            archive_filename = await save_uploaded_file_async(
+                archive_file,
+                temp_dir
+            )
+            
+            if not archive_filename:
+                raise ValidationError("压缩包保存失败")
+            
+            archive_path = os.path.join(temp_dir, archive_filename)
+            
+            # 创建解压目录
+            extract_dir = os.path.join(temp_dir, 'extracted')
+            os.makedirs(extract_dir, exist_ok=True)
+            
+            # 解压压缩包（同步执行）
+            extracted_files = await asyncio.to_thread(
+                extract_archive,
+                archive_path,
+                extract_dir
+            )
+            
+            if not extracted_files:
+                raise ValidationError("压缩包为空或没有支持的文件")
+            
+            # 组织文件结构
+            file_tree = organize_files_by_structure(extracted_files)
+            
+            # 创建文件夹和文件（递归）
+            document_ids = []
+            base_dir = BASE_DOCS_DIR / f"vector_db_{vector_db_id}"
+            
+            # 递归创建文件夹和文件
+            async def create_from_tree(tree: dict, current_parent_id: Optional[int], current_path: str = ""):
+                for name, item in tree.items():
+                    if item['type'] == 'dir':
+                        # ⭐ 检查文件夹是否已存在
+                        from sqlalchemy import select, and_
+                        existing_folder = await session.execute(
+                            select(Document).where(
+                                and_(
+                                    Document.vector_db_id == vector_db_id,
+                                    Document.parent_id == current_parent_id,
+                                    Document.name == name,
+                                    Document.is_folder == True
+                                )
+                            )
+                        )
+                        existing = existing_folder.scalar_one_or_none()
+
+                        if existing:
+                            # ⭐ 文件夹已存在,跳过创建,直接使用现有文件夹
+                            logger.info(f"⏭️ 文件夹已存在,跳过: {name}")
+                            folder_id = existing.id
+                            document_ids.append(folder_id)
+
+                            # 递归处理子项(在现有文件夹下添加)
+                            if item.get('children'):
+                                await create_from_tree(item['children'], folder_id, f"{current_path}/{name}")
+                        else:
+                            # 创建新文件夹
+                            folder = await AsyncVectorService.create_folder(
+                                session,
+                                vector_db_id,
+                                name,
+                                current_parent_id,
+                                user_id
+                            )
+                            folder_id = folder['id']
+                            document_ids.append(folder_id)
+
+                            # 递归处理子项
+                            if item.get('children'):
+                                await create_from_tree(item['children'], folder_id, f"{current_path}/{name}")
+                    else:
+                        # 创建文件
+                        file_full_path = item['full_path']
+                        file_size = item.get('size', 0)
+
+                        # ⭐ 检查文件是否已存在
+                        from sqlalchemy import select, and_
+                        existing_file = await session.execute(
+                            select(Document).where(
+                                and_(
+                                    Document.vector_db_id == vector_db_id,
+                                    Document.parent_id == current_parent_id,
+                                    Document.name == name,
+                                    Document.is_folder == False
+                                )
+                            )
+                        )
+                        existing = existing_file.scalar_one_or_none()
+
+                        if existing:
+                            # ⭐ 文件已存在,跳过
+                            logger.info(f"⏭️ 文件已存在,跳过: {name}")
+                            # 删除临时文件
+                            try:
+                                os.remove(file_full_path)
+                            except:
+                                pass
+                            continue
+
+                        # 移动文件到目标目录
+                        relative_path = f"{current_path}/{name}".lstrip('/')
+                        target_path = base_dir / relative_path
+                        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+                        shutil.move(file_full_path, str(target_path))
+
+                        # 计算文件的 folder_path
+                        file_folder_path = None
+                        if current_parent_id:
+                            # 获取父文件夹的路径
+                            parent_doc = await AsyncDB.get_by_id(session, Document, current_parent_id)
+                            if parent_doc and parent_doc.folder_path:
+                                file_folder_path = f"{parent_doc.folder_path}/{current_parent_id}"
+                            elif parent_doc:
+                                file_folder_path = str(current_parent_id)
+
+                        # 创建文档记录
+                        document = Document(
+                            vector_db_id=vector_db_id,
+                            user_id=user_id,
+                            name=name,
+                            original_name=name,
+                            type=Path(name).suffix.lstrip('.') or 'unknown',
+                            size=file_size,
+                            save_path=str(target_path),
+                            describe=describe,
+                            status="processing",
+                            parent_id=current_parent_id,
+                            is_folder=False,
+                            folder_path=file_folder_path
+                        )
+                        document = await AsyncDB.create(session, document)
+                        await AsyncDB.commit(session)
+                        document_ids.append(document.id)
+
+                        # 处理文件并添加到向量数据库（异步执行）
+                        # ⭐ 传递层级路径信息
+                        folder_hierarchy = current_path if current_path else None
+                        await asyncio.to_thread(
+                            AsyncVectorService._process_and_add_file,
+                            vector_db_id,
+                            str(target_path),
+                            document.id,
+                            folder_hierarchy,  # 层级路径
+                            current_parent_id,  # 父文件夹ID
+                            chunk_strategy,
+                            chunk_size,
+                            chunk_overlap,
+                        )
+
+                        document.status = "success"
+                        document.error_message = None
+                        document = await AsyncDB.update(session, document)
+                        await AsyncDB.commit(session)
+            
+            # 开始创建
+            await create_from_tree(file_tree, parent_id)
+            
+            logger.info(f"成功处理压缩包: 共创建 {len(document_ids)} 个文档/文件夹")
+            return document_ids
+            
+        except (NotFoundError, ValidationError):
+            await AsyncDB.rollback(session)
+            raise
+        except Exception as e:
+            logger.error(f"处理压缩包失败: {str(e)}", exc_info=True)
+            await AsyncDB.rollback(session)
+            raise InternalServerError(f"处理压缩包失败: {str(e)}")
+        finally:
+            # 清理临时目录
+            if temp_dir and os.path.exists(temp_dir):
+                try:
+                    shutil.rmtree(temp_dir)
+                except Exception as e:
+                    logger.warning(f"清理临时目录失败: {str(e)}")
+    
+    @staticmethod
+    async def query_vectors(
+        vector_db_id: int,
+        query_text: str,
+        n_results: int = 5
+    ) -> List[Dict]:
+        """
+        查询向量数据库（异步）。
+        委托给 rag/retrieval.VectorRetriever，保持原有返回格式。
+        """
+        from app.services.rag.retrieval import VectorRetriever
+        results = await VectorRetriever.query(vector_db_id, query_text, n_results)
+        return [
+            {
+                "text": r.content,
+                "score": r.vector_score,
+                "document_name": r.source or "未知来源",
+                "document_id": r.document_id,
+                "id": r.chunk_id,
+            }
+            for r in results
+        ]
+
+    @staticmethod
+    async def query_vectors_with_hierarchy(
+        vector_db_id: int,
+        query_text: str,
+        n_results: int = 5,
+        folder_path: Optional[str] = None,
+        parent_id: Optional[int] = None
+    ) -> List[Dict]:
+        """
+        支持层级过滤的向量查询（异步）。
+        委托给 rag/retrieval.VectorRetriever，保持原有返回格式。
+        """
+        from app.services.rag.retrieval import VectorRetriever
+        results = await VectorRetriever.query(
+            vector_db_id, query_text, n_results, folder_path, parent_id
+        )
+        return [
+            {
+                "document": r.content,
+                "distance": 1.0 - r.vector_score,
+                "id": r.chunk_id,
+                "metadata": r.metadata,
+            }
+            for r in results
+        ]
+
+    @staticmethod
+    def get_conversation_attachment_vector_db_name(user_id: int, conversation_id: int) -> str:
+        return f"{CHAT_ATTACHMENT_VECTOR_DB_PREFIX}-{conversation_id}-用户{user_id}"
+
+    @staticmethod
+    async def get_or_create_conversation_attachment_vector_db(
+        session: AsyncSession,
+        user_id: int,
+        conversation_id: int,
+        model_config_id: int,
+    ) -> VectorDb:
+        """为单个对话创建或复用用户私有附件知识库。"""
+        from sqlalchemy import select
+
+        name = AsyncVectorService.get_conversation_attachment_vector_db_name(user_id, conversation_id)
+        existing = await session.execute(select(VectorDb).where(VectorDb.name == name))
+        vector_db = existing.scalars().first()
+        if vector_db:
+            await AsyncVectorService.ensure_collection_exists(vector_db.id)
+            return vector_db
+
+        model_config = await AsyncModelMapper.get_model_config_by_id(session, model_config_id)
+        embedding_id = None
+        organization_id = None
+        school_id = None
+        if model_config:
+            organization_id = model_config.organization_id
+            school_id = model_config.school_id
+
+        if not embedding_id:
+            result = await session.execute(
+                select(ModelInfo)
+                .where(ModelInfo.type == "embedding")
+                .order_by(ModelInfo.is_default.desc(), ModelInfo.priority.desc(), ModelInfo.id)
+            )
+            embedding_model = result.scalars().first()
+            if not embedding_model:
+                raise ValidationError("未找到可用的嵌入模型，无法创建会话附件知识库")
+            embedding_id = embedding_model.id
+
+        vector_db = await AsyncVectorMapper.create_vector_db(
+            session,
+            user_id=user_id,
+            name=name,
+            embedding_id=embedding_id,
+            describe=f"对话 {conversation_id} 的用户私有上传附件库",
+            document_similarity=0.5,
+            organization_id=organization_id,
+            school_id=school_id,
+            scope="private",
+            access_level=None,
+        )
+        await AsyncVectorService.ensure_collection_exists(vector_db.id)
+        logger.info("已创建会话附件知识库: conversation_id=%s, vector_db_id=%s", conversation_id, vector_db.id)
+        return vector_db
+
+    @staticmethod
+    def _validate_chat_attachment(file: Any) -> None:
+        filename = getattr(file, "filename", "") or ""
+        if not filename:
+            raise ValidationError("上传文件缺少文件名")
+
+        ext = Path(filename).suffix.lower()
+        if ext not in CHAT_ATTACHMENT_EXTENSIONS:
+            raise ValidationError(
+                f"不支持的聊天附件类型: {ext or '无扩展名'}，请上传 PDF、Word、Excel、PPT、文本、图片或压缩包"
+            )
+
+        size = getattr(file, "size", None)
+        if size and size > CHAT_ATTACHMENT_MAX_FILE_SIZE:
+            raise ValidationError(f"聊天附件过大: {filename}，单个文件不能超过 20MB")
+
+        if ext in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif", ".webp"}:
+            from app.utils.ocr_utils import PADDLEOCR_AVAILABLE
+            if not PADDLEOCR_AVAILABLE:
+                raise ValidationError("当前本机未安装 PaddleOCR，聊天图片/扫描件附件暂不能识别；请先上传可复制文字的 PDF、DOCX 或 TXT")
+
+    @staticmethod
+    async def upload_conversation_attachments(
+        session: AsyncSession,
+        user_id: int,
+        conversation_id: int,
+        model_config_id: int,
+        files: Optional[List[Any]],
+    ) -> Dict[str, Any]:
+        """上传聊天附件到当前对话的私有知识库，并完成向量化。"""
+        valid_files = [file for file in (files or []) if getattr(file, "filename", "")]
+        if not valid_files:
+            return {
+                "vector_db_id": None,
+                "vector_db_name": None,
+                "document_ids": [],
+                "filenames": [],
+            }
+
+        for file in valid_files:
+            AsyncVectorService._validate_chat_attachment(file)
+
+        vector_db = await AsyncVectorService.get_or_create_conversation_attachment_vector_db(
+            session,
+            user_id,
+            conversation_id,
+            model_config_id,
+        )
+
+        document_ids = []
+        filenames = []
+        errors = []
+        for file in valid_files:
+            try:
+                await file.seek(0)
+                if is_archive_file(file.filename):
+                    archive_ids = await AsyncVectorService.upload_archive(
+                        session,
+                        vector_db_id=vector_db.id,
+                        archive_file=file,
+                        user_id=user_id,
+                        describe=f"对话 {conversation_id} 上传压缩包附件",
+                        parent_id=None,
+                        chunk_strategy="fixed",
+                        chunk_size=800,
+                        chunk_overlap=150,
+                    )
+                    if archive_ids:
+                        document_ids.extend(archive_ids)
+                        filenames.append(file.filename)
+                else:
+                    doc_id = await AsyncVectorService.upload_file(
+                        session,
+                        vector_db_id=vector_db.id,
+                        file=file,
+                        user_id=user_id,
+                        describe=f"对话 {conversation_id} 上传附件",
+                        parent_id=None,
+                        chunk_strategy="fixed",
+                        chunk_size=800,
+                        chunk_overlap=150,
+                    )
+                    if doc_id:
+                        document_ids.append(doc_id)
+                        filenames.append(file.filename)
+            except Exception as exc:
+                logger.warning("聊天附件上传失败: %s (%s)", getattr(file, "filename", ""), exc)
+                errors.append(f"{getattr(file, 'filename', 'unknown')}: {exc}")
+
+        if errors and not document_ids:
+            raise ValidationError("聊天附件上传失败：" + "；".join(errors))
+
+        return {
+            "vector_db_id": vector_db.id,
+            "vector_db_name": vector_db.name,
+            "document_ids": document_ids,
+            "filenames": filenames,
+            "errors": errors,
+        }
+
+    @staticmethod
+    async def delete_conversation_attachment_vector_db(
+        session: AsyncSession,
+        user_id: int,
+        conversation_id: int,
+    ) -> bool:
+        """删除某个对话对应的附件知识库、文件和向量集合。"""
+        from sqlalchemy import select
+        from app.utils.async_file_utils import delete_file_async
+
+        name = AsyncVectorService.get_conversation_attachment_vector_db_name(user_id, conversation_id)
+        result = await session.execute(select(VectorDb).where(VectorDb.name == name, VectorDb.user_id == user_id))
+        vector_db = result.scalars().first()
+        if not vector_db:
+            return False
+
+        documents = await AsyncDB.filter_by(session, Document, vector_db_id=vector_db.id)
+        collection = None
+        try:
+            collection = await asyncio.to_thread(
+                get_chromadb_client().get_collection, f"vector_db_{vector_db.id}"
+            )
+        except Exception as exc:
+            logger.warning("获取会话附件向量集合失败，继续删除数据库记录: vector_db_id=%s (%s)", vector_db.id, exc)
+
+        def delete_order(item: Document) -> tuple:
+            folder_depth = len([part for part in (item.folder_path or "").split("/") if part])
+            # 文件先删，文件夹按深度从深到浅删，避免 parent_id 外键约束残留。
+            return (1 if item.is_folder else 0, -folder_depth, -item.id)
+
+        for document in sorted(documents, key=delete_order):
+            if not document.is_folder:
+                if collection:
+                    try:
+                        await asyncio.to_thread(
+                            collection.delete, where={"document_id": document.id}
+                        )
+                    except Exception as exc:
+                        logger.warning("删除会话附件向量失败: document_id=%s (%s)", document.id, exc)
+                if document.save_path:
+                    await delete_file_async(document.save_path)
+            await AsyncDB.delete(session, document)
+
+        try:
+            await asyncio.to_thread(
+                get_chromadb_client().delete_collection, f"vector_db_{vector_db.id}"
+            )
+        except Exception as exc:
+            logger.warning("删除会话附件向量集合失败: vector_db_id=%s (%s)", vector_db.id, exc)
+
+        vector_dir = BASE_DOCS_DIR / f"vector_db_{vector_db.id}"
+        if vector_dir.exists():
+            await asyncio.to_thread(shutil.rmtree, vector_dir, ignore_errors=True)
+
+        await AsyncDB.delete(session, vector_db)
+        await AsyncDB.commit(session)
+        logger.info("已删除会话附件知识库: conversation_id=%s, vector_db_id=%s", conversation_id, vector_db.id)
+        return True
+
+    @staticmethod
+    def _empty_rag_result() -> Dict[str, Any]:
+        return {
+            "contexts": [],
+            "sources": [],
+            "used_knowledge_base": False,
+            "vector_db_id": None,
+            "vector_db_ids": [],
+            "queried_vector_db_ids": [],
+            "retrieval_layers": [],
+            "total_results": 0,
+            "avg_similarity": 0.0,
+            "fallback_used": False,
+        }
+
+    @staticmethod
+    def _serialize_retrieval_results(
+        vector_db: VectorDb,
+        layer: str,
+        results: list
+    ) -> Dict[str, Any]:
+        similarity_threshold = float(vector_db.document_similarity or 0.0)
+
+        all_sources = []
+        for result in results:
+            similarity = max(0.0, min(1.0, result.similarity))
+            all_sources.append({
+                "id": result.chunk_id,
+                "content": result.content,
+                "source": result.source,
+                "distance": 1.0 - similarity,
+                "similarity": similarity,
+                "vector_score": result.vector_score,
+                "bm25_score": result.bm25_score,
+                "final_score": result.score,
+                "retrieval_method": result.retrieval_method,
+                "document_id": result.document_id,
+                "vector_db_id": vector_db.id,
+                "vector_db_name": vector_db.name,
+                "retrieval_layer": layer,
+            })
+
+        if similarity_threshold > 0:
+            filtered = [s for s in all_sources if s["similarity"] >= similarity_threshold]
+            sources = filtered if filtered else all_sources[:3]
+        else:
+            sources = all_sources
+
+        total_similarity = sum(s["similarity"] for s in sources)
+        avg_similarity = total_similarity / len(sources) if sources else 0.0
+        return {
+            "contexts": [source["content"] for source in sources],
+            "sources": sources,
+            "used_knowledge_base": bool(sources),
+            "vector_db_id": vector_db.id if sources else None,
+            "vector_db_ids": [vector_db.id] if sources else [],
+            "queried_vector_db_ids": [vector_db.id],
+            "retrieval_layers": [layer],
+            "total_results": len(sources),
+            "avg_similarity": avg_similarity,
+            "fallback_used": layer != "primary",
+        }
+
+    @staticmethod
+    def _merge_layered_rag_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        merged_sources = []
+        seen = set()
+        queried_vector_db_ids = []
+        retrieval_layers = []
+
+        for result in results:
+            for vector_db_id in result.get("queried_vector_db_ids", []):
+                if vector_db_id not in queried_vector_db_ids:
+                    queried_vector_db_ids.append(vector_db_id)
+            for layer in result.get("retrieval_layers", []):
+                if layer not in retrieval_layers:
+                    retrieval_layers.append(layer)
+            for source in result.get("sources", []):
+                key = (source.get("vector_db_id"), source.get("id"), source.get("content", "")[:120])
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged_sources.append(source)
+
+        merged_sources.sort(
+            key=lambda source: max(
+                float(source.get("similarity") or 0.0),
+                float(source.get("final_score") or 0.0),
+            ),
+            reverse=True,
+        )
+        selected_sources = merged_sources[:LAYERED_RAG_MAX_CONTEXTS]
+        vector_db_ids = []
+        for source in selected_sources:
+            vector_db_id = source.get("vector_db_id")
+            if vector_db_id is not None and vector_db_id not in vector_db_ids:
+                vector_db_ids.append(vector_db_id)
+
+        avg_similarity = (
+            sum(float(source.get("similarity") or 0.0) for source in selected_sources) / len(selected_sources)
+            if selected_sources else 0.0
+        )
+        return {
+            "contexts": [source["content"] for source in selected_sources],
+            "sources": selected_sources,
+            "used_knowledge_base": bool(selected_sources),
+            "vector_db_id": vector_db_ids[0] if vector_db_ids else None,
+            "vector_db_ids": vector_db_ids,
+            "queried_vector_db_ids": queried_vector_db_ids,
+            "retrieval_layers": retrieval_layers,
+            "total_results": len(selected_sources),
+            "avg_similarity": avg_similarity,
+            "fallback_used": any(layer != "primary" for layer in retrieval_layers),
+        }
+
+    @staticmethod
+    async def _get_layered_vector_db_candidates(
+        session: AsyncSession,
+        user_id: int,
+        primary_vector_db_id: Optional[int],
+        extra_vector_db_ids: Optional[List[int]] = None,
+        skip_primary: bool = False,
+    ) -> List[tuple[VectorDb, str]]:
+        """按主库、用户私有库、官方总库的顺序生成候选知识库。"""
+        from sqlalchemy import select, or_
+
+        candidates: List[tuple[VectorDb, str]] = []
+        seen_ids = set()
+
+        async def add_candidate(vector_db: Optional[VectorDb], layer: str) -> None:
+            if not vector_db or vector_db.id in seen_ids:
+                return
+            has_access = await AsyncVectorService.check_vector_db_access(session, user_id, vector_db.id)
+            if not has_access:
+                return
+            seen_ids.add(vector_db.id)
+            candidates.append((vector_db, layer))
+
+        if not skip_primary and primary_vector_db_id and primary_vector_db_id > 0:
+            await add_candidate(await AsyncVectorMapper.get_vector_db(session, primary_vector_db_id), "primary")
+
+        has_user_selected = False
+        for vector_db_id in extra_vector_db_ids or []:
+            if vector_db_id and vector_db_id > 0:
+                vdb = await AsyncVectorMapper.get_vector_db(session, vector_db_id)
+                await add_candidate(vdb, "user_selected")
+                has_user_selected = True
+
+        if has_user_selected:
+            return candidates
+
+        # 回退：搜索用户有权访问的所有知识库（私有 + 组织级 + 教学空间）
+        from app.services.simple_permission_service import SimplePermissionService
+        accessible = await SimplePermissionService.get_accessible_vector_dbs(session, user_id)
+        for item in accessible:
+            if len(candidates) >= LAYERED_RAG_MAX_VECTOR_DBS:
+                break
+            vdb = await AsyncVectorMapper.get_vector_db(session, item["id"])
+            await add_candidate(vdb, "accessible_fallback")
+
+        return candidates
+
+    @staticmethod
+    async def _query_single_vector_db_layer(
+        vector_db: VectorDb,
+        layer: str,
+        message: str,
+        n_results: int = 3
+    ) -> Dict[str, Any]:
+        from app.services.rag.retrieval import VectorRetriever
+
+        if not vector_db:
+            return AsyncVectorService._empty_rag_result()
+
+        try:
+            rag_results = await VectorRetriever.hybrid_query(vector_db.id, message, n_results=n_results)
+            return AsyncVectorService._serialize_retrieval_results(vector_db, layer, rag_results)
+        except Exception as exc:
+            logger.warning(
+                "分层知识库检索失败: vector_db_id=%s, layer=%s (%s)",
+                vector_db.id,
+                layer,
+                exc,
+            )
+            empty = AsyncVectorService._empty_rag_result()
+            empty["queried_vector_db_ids"] = [vector_db.id]
+            empty["retrieval_layers"] = [layer]
+            return empty
+    
+    @staticmethod
+    async def query_vector_by_model(
+        session: AsyncSession,
+        model_config_id: int,
+        message: str,
+        user_id: Optional[int] = None,
+        extra_vector_db_ids: Optional[List[int]] = None,
+    ) -> Dict[str, Any]:
+        """
+        根据模型配置查询向量数据库（异步）。
+
+        分层检索：
+        1. 优先使用调用方指定的 extra_vector_db_ids；
+        2. 如果未指定，则查用户私有库；
+        3. 最后查官方公开总库兜底。
+
+        Returns:
+            包含检索结果和元数据的字典:
+            {
+                "contexts": List[str],  # 文档内容列表
+                "sources": List[Dict],  # 来源信息列表
+                "used_knowledge_base": bool,  # 是否使用了知识库
+                "vector_db_id": int,  # 向量数据库ID
+                "total_results": int,  # 总结果数
+                "avg_similarity": float  # 平均相似度
+            }
+            如果模型配置不存在或没有关联向量数据库则返回空结果
+        """
+        logger.debug(f"根据模型查询向量: model_config_id={model_config_id}")
+        try:
+            model_config = await AsyncModelMapper.get_model_config_by_id(session, model_config_id)
+            if not model_config:
+                logger.debug("根据模型查询向量: 模型配置不存在 - model_config_id=%s", model_config_id)
+                return AsyncVectorService._empty_rag_result()
+
+            if not user_id:
+                if extra_vector_db_ids:
+                    vdb = await AsyncVectorMapper.get_vector_db(session, extra_vector_db_ids[0])
+                    return await AsyncVectorService._query_single_vector_db_layer(
+                        vdb, "user_selected", message, n_results=3,
+                    ) if vdb else AsyncVectorService._empty_rag_result()
+                return AsyncVectorService._empty_rag_result()
+
+            candidates = await AsyncVectorService._get_layered_vector_db_candidates(
+                session,
+                user_id,
+                None,
+                extra_vector_db_ids=extra_vector_db_ids,
+                skip_primary=True,
+            )
+            if not candidates:
+                logger.debug("根据模型查询向量: 没有可访问的分层知识库 - model_config_id=%s", model_config_id)
+                return AsyncVectorService._empty_rag_result()
+
+            primary_result = None
+            fallback_candidates = candidates
+            if candidates[0][1] == "primary":
+                primary_vector_db, primary_layer = candidates[0]
+                primary_result = await AsyncVectorService._query_single_vector_db_layer(
+                    primary_vector_db,
+                    primary_layer,
+                    message,
+                    n_results=3,
+                )
+                fallback_candidates = candidates[1:]
+                if primary_result["used_knowledge_base"] and primary_result["avg_similarity"] >= LAYERED_RAG_FALLBACK_THRESHOLD:
+                    logger.info(
+                        "✅ [RAG] 主知识库命中: vector_db_id=%s, avg_similarity=%.4f",
+                        primary_vector_db.id,
+                        primary_result["avg_similarity"],
+                    )
+                    return primary_result
+
+            fallback_results = []
+            if fallback_candidates:
+                fallback_results = await asyncio.gather(*[
+                    AsyncVectorService._query_single_vector_db_layer(vector_db, layer, message, n_results=3)
+                    for vector_db, layer in fallback_candidates
+                ])
+
+            merged_inputs = []
+            if primary_result:
+                merged_inputs.append(primary_result)
+            merged_inputs.extend(fallback_results)
+            merged_result = AsyncVectorService._merge_layered_rag_results(merged_inputs)
+
+            logger.info(
+                "✅ [RAG] 分层检索完成: queried=%s, selected=%s, layers=%s, avg_similarity=%.4f",
+                merged_result["queried_vector_db_ids"],
+                merged_result["vector_db_ids"],
+                merged_result["retrieval_layers"],
+                merged_result["avg_similarity"],
+            )
+            return merged_result
+        except Exception as e:
+            logger.error(f"❌ [RAG] 向量检索失败: {str(e)}", exc_info=True)
+            return AsyncVectorService._empty_rag_result()

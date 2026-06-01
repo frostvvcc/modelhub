@@ -1,0 +1,6 @@
+# Optional OCR dependencies for images and scanned PDFs.
+# Install when you need to import screenshots, photos, or scanned notices.
+paddlepaddle>=2.6.0
+paddleocr>=2.7.0
+PyMuPDF>=1.24.0
+Pillow>=10.0.0

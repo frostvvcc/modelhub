@@ -1,0 +1,66 @@
+# FastAPI 核心依赖
+fastapi==0.115.12
+uvicorn[standard]==0.34.3
+python-multipart==0.0.9
+
+# 数据库
+sqlalchemy==2.0.23
+alembic==1.16.1
+PyMySQL>=1.1.0  # 纯 Python MySQL 驱动，无需编译（替代 mysqlclient）
+
+# 异步数据库驱动（用于真正的异步数据库）
+aiomysql==0.2.0  # MySQL 异步驱动
+# asyncpg==0.29.0  # PostgreSQL 异步驱动（如果使用 PostgreSQL）
+
+# 认证和安全
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.2.0
+
+# 配置管理
+pydantic==2.11.5
+pydantic-settings==2.6.1
+python-dotenv==1.1.0
+
+# 数据验证
+email-validator==2.2.0
+
+# 保持现有依赖
+chromadb>=0.5.17  # 与 pyproject.toml 保持一致
+langchain==0.3.25
+llama-index==0.12.42
+openai==1.86.0
+sentence-transformers==2.2.2
+redis==4.6.0
+
+# 文件处理
+aiofiles>=23.2.1
+python-docx==0.8.11
+doc2text>=0.1.0  # 支持 .doc 格式（旧版Word）
+PyPDF2==3.0.1
+pypdf==5.6.0
+openpyxl>=3.1.0      # Excel 解析
+python-pptx>=0.6.23  # PPT 解析
+
+# 混合检索
+rank-bm25>=0.2.2     # BM25 关键词检索
+
+# OCR支持
+paddlepaddle>=2.6.0  # PaddleOCR 运行时
+paddleocr>=2.7.0  # PaddleOCR（中文识别效果好）
+PyMuPDF>=1.24.0  # 扫描 PDF 渲染为图片后 OCR
+Pillow>=10.0.0  # 图片处理库
+
+# 云端OCR服务（可选）
+# requests已在上面定义，无需重复
+tencentcloud-sdk-python>=3.0.0  # 腾讯OCR（可选，需要时安装）
+
+# 其他工具
+requests==2.32.4
+
+# 测试依赖
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+httpx==0.25.2
+aiosqlite==0.19.0
