@@ -47,6 +47,23 @@ services:
       IS_PERSISTENT: "TRUE"
       ANONYMIZED_TELEMETRY: "FALSE"
 
+  elasticsearch:
+    image: elasticsearch:8.15.0
+    container_name: modelhub-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "${ES_PORT:-9200}:9200"
+    volumes:
+      - modelhub_es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\\|yellow\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
   backend:
     build:
       context: ./backend
@@ -62,6 +79,8 @@ services:
         condition: service_healthy
       chromadb:
         condition: service_started
+      elasticsearch:
+        condition: service_healthy
     environment:
       DB_CONNECTION: mysql
       DB_HOST: mysql
@@ -89,7 +108,7 @@ services:
     command: >
       sh -c "python scripts/create_tables.py &&
              if [ \"$${INIT_SAMPLE_DATA}\" = \"true\" ]; then python scripts/init_sample_data.py; fi &&
-             uvicorn main_fastapi:app --host 0.0.0.0 --port 5000"
+             gunicorn main_fastapi:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:5000 --timeout 120 --graceful-timeout 30"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=3)"]
       interval: 15s
@@ -173,3 +192,4 @@ volumes:
   modelhub_uploads:
   modelhub_backend_data:
   modelhub_neo4j_data:
+  modelhub_es_data:

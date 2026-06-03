@@ -3,6 +3,7 @@
 支持向量检索（ChromaDB）和混合检索（向量 + BM25，RRF 融合）
 """
 import asyncio
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -92,32 +93,54 @@ class RetrievalResult:
     metadata: Dict = field(default_factory=dict)
 
 
-def _dedup_by_document(results: List[RetrievalResult]) -> List[RetrievalResult]:
+_MMR_LAMBDA = float(os.getenv("RAG_MMR_LAMBDA", "0.7"))
+
+
+def _jaccard_ngram(a: str, b: str, n: int = 3) -> float:
+    if len(a) < n or len(b) < n:
+        return 1.0 if a == b else 0.0
+    set_a = set(a[i:i+n] for i in range(len(a) - n + 1))
+    set_b = set(b[i:i+n] for i in range(len(b) - n + 1))
+    intersection = set_a & set_b
+    union = set_a | set_b
+    return len(intersection) / len(union) if union else 0.0
+
+
+def _mmr_diversify(
+    results: List[RetrievalResult],
+    n_results: int,
+    lambda_param: float = _MMR_LAMBDA,
+) -> List[RetrievalResult]:
     """
-    去重：Parent-Child 策略按 (document_id, parent_index) 去重（保留同文档不同 parent），
-    普通策略按 document_id 去重。保持原有排序（按 score 降序）。
+    MMR (Maximal Marginal Relevance) 多样性重排。
+    在相关性和多样性之间取平衡，避免返回内容高度重复的 chunk。
+    lambda=1.0 纯相关性；lambda=0.0 最大多样性。
     """
-    best: Dict[str, RetrievalResult] = {}
-    for r in results:
-        parent_idx = r.metadata.get('parent_index')
-        if parent_idx is not None:
-            doc_key = f"{r.document_id}_p{parent_idx}"
+    if len(results) <= n_results:
+        return results
+
+    selected: List[RetrievalResult] = []
+    candidates = list(results)
+
+    selected.append(candidates.pop(0))
+
+    while len(selected) < n_results and candidates:
+        best_idx, best_mmr = -1, -float('inf')
+        for i, cand in enumerate(candidates):
+            relevance = cand.score
+            max_sim = max(
+                _jaccard_ngram(cand.content, s.content) for s in selected
+            )
+            mmr = lambda_param * relevance - (1 - lambda_param) * max_sim
+            if mmr > best_mmr:
+                best_mmr = mmr
+                best_idx = i
+        if best_idx >= 0:
+            selected.append(candidates.pop(best_idx))
         else:
-            doc_key = r.document_id or r.chunk_id
-        if doc_key not in best or r.score > best[doc_key].score:
-            best[doc_key] = r
-    seen = set()
-    deduped = []
-    for r in results:
-        parent_idx = r.metadata.get('parent_index')
-        if parent_idx is not None:
-            doc_key = f"{r.document_id}_p{parent_idx}"
-        else:
-            doc_key = r.document_id or r.chunk_id
-        if doc_key not in seen and best.get(doc_key) is r:
-            deduped.append(r)
-            seen.add(doc_key)
-    return deduped
+            break
+
+    return selected
 
 
 # ------------------------------------------------------------------
@@ -209,7 +232,7 @@ class VectorRetriever:
                         retrieval_method='vector',
                         metadata=meta,
                     ))
-            return _dedup_by_document(output)
+            return _mmr_diversify(output, n_results)
         except Exception as e:
             logger.error(f"向量检索失败 {collection_name}: {e}", exc_info=True)
             return []
@@ -255,7 +278,7 @@ class VectorRetriever:
             return vector_results[:n_results]
 
         merged = VectorRetriever._rrf_merge(vector_results, bm25_results, alpha, n_results)
-        return _dedup_by_document(merged)
+        return _mmr_diversify(merged, n_results)
 
     @staticmethod
     async def _bm25_query(
@@ -263,14 +286,37 @@ class VectorRetriever:
         query_text: str,
         n_results: int,
     ) -> List[RetrievalResult]:
-        """BM25 关键词检索（内存缓存 BM25 索引）"""
+        """BM25 关键词检索：优先 Elasticsearch，降级为内存 BM25"""
+        # 优先使用 Elasticsearch（分布式、支持大规模知识库）
+        try:
+            from app.services.rag.es_retrieval import ES_ENABLED, search as es_search
+            if ES_ENABLED:
+                es_results = await es_search(vector_db_id, query_text, n_results)
+                if es_results:
+                    max_score = max(r["score"] for r in es_results) if es_results else 1.0
+                    return [
+                        RetrievalResult(
+                            chunk_id=r["chunk_id"],
+                            content=r["content"],
+                            score=r["score"] / max_score if max_score > 0 else 0.0,
+                            bm25_score=r["score"] / max_score if max_score > 0 else 0.0,
+                            similarity=r["score"] / max_score if max_score > 0 else 0.0,
+                            source=r.get("source", ""),
+                            document_id=r.get("document_id", ""),
+                            retrieval_method="bm25_es",
+                        )
+                        for r in es_results
+                    ]
+        except Exception as es_err:
+            logger.warning(f"Elasticsearch 检索失败，降级为内存 BM25: {es_err}")
+
+        # 降级：内存 BM25
         try:
             from rank_bm25 import BM25Okapi
         except ImportError:
             logger.warning("rank-bm25 未安装，BM25 检索不可用")
             return []
 
-        # 构建 / 获取 BM25 索引
         index_data = await VectorRetriever._get_bm25_index(vector_db_id)
         if not index_data:
             return []
@@ -496,7 +542,7 @@ class VectorRetriever:
         else:
             final_results = coarse_results[:n_results]
 
-        return _dedup_by_document(final_results)
+        return _mmr_diversify(final_results, n_results)
 
 
 # ------------------------------------------------------------------

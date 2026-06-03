@@ -23,8 +23,8 @@ def _get_rewrite_client() -> AsyncOpenAI:
     global _rewrite_client
     if _rewrite_client is None:
         _rewrite_client = AsyncOpenAI(
-            api_key=settings.embedding_api_key,
-            base_url=settings.embedding_base_url,
+            api_key=settings.rag_llm_api_key or settings.embedding_api_key,
+            base_url=settings.rag_llm_base_url or settings.embedding_base_url,
         )
     return _rewrite_client
 
@@ -32,7 +32,7 @@ def _get_rewrite_client() -> AsyncOpenAI:
 async def rewrite_query(
     query: str,
     n_rewrites: int = 3,
-    model: str = "qwen-plus",
+    model: str = None,
 ) -> List[str]:
     """
     Multi-Query Rewriting：将用户的口语化问题改写为多个检索友好的 query。
@@ -49,11 +49,12 @@ async def rewrite_query(
     Returns:
         改写后的 query 列表（包含原始 query）
     """
+    model = model or settings.rag_llm_model
     client = _get_rewrite_client()
 
     prompt = (
         f"你是一个搜索查询优化器。用户提了一个问题，请将它改写成 {n_rewrites} 个不同角度的检索查询，"
-        f"用于在大学知识库中搜索相关文档。\n\n"
+        f"用于在{settings.rag_domain_description}中搜索相关文档。\n\n"
         f"要求：\n"
         f"1. 每个改写使用不同的关键词和表述方式\n"
         f"2. 覆盖问题可能涉及的不同方面\n"
@@ -93,7 +94,7 @@ async def rewrite_query(
 async def condense_follow_up(
     current_question: str,
     chat_history: List[Dict[str, str]],
-    model: str = "qwen-plus",
+    model: str = None,
 ) -> str:
     """
     Multi-turn Query Reformulation：结合对话历史，将追问补全为独立的检索查询。
@@ -114,6 +115,7 @@ async def condense_follow_up(
     Returns:
         补全后的独立查询（如果改写失败则返回原始问题）
     """
+    model = model or settings.rag_llm_model
     if not chat_history:
         return current_question
 
@@ -159,7 +161,7 @@ async def condense_follow_up(
 
 async def hyde_rewrite(
     query: str,
-    model: str = "qwen-plus",
+    model: str = None,
 ) -> str:
     """
     HyDE (Hypothetical Document Embedding)：
@@ -176,12 +178,14 @@ async def hyde_rewrite(
     Returns:
         假设的答案文本（用于替代原始 query 做向量检索）
     """
+    model = model or settings.rag_llm_model
     client = _get_rewrite_client()
 
     prompt = (
         "请针对以下问题，写一段简短的回答（100-200字），"
-        "假设你是大学教务处的工作人员，用正式的通知文体回答。\n"
-        "不需要完全准确，只需要风格和用词接近大学官方文档即可。\n\n"
+        f"假设你是该领域的工作人员，用正式的通知文体回答。\n"
+        f"领域：{settings.rag_domain_description}\n"
+        "不需要完全准确，只需要风格和用词接近官方文档即可。\n\n"
         f"问题：{query}\n\n回答："
     )
 

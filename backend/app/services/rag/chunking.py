@@ -1,11 +1,13 @@
 """
 文本分块策略模块
-支持 fixed、sentence、markdown、parent_child 四种策略
+支持 fixed、sentence、markdown、parent_child、semantic 五种策略
 """
 import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import List
+
+import numpy as np
 from app.utils.logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -16,6 +18,7 @@ class ChunkStrategy(str, Enum):
     SENTENCE = "sentence"
     MARKDOWN = "markdown"
     PARENT_CHILD = "parent_child"
+    SEMANTIC = "semantic"
 
 
 @dataclass
@@ -40,6 +43,9 @@ def split_text_into_chunks(
         return []
 
     text = text.strip()
+
+    if strategy == ChunkStrategy.SEMANTIC:
+        raise ValueError("SEMANTIC 策略需要 embedding_fn，请直接调用 split_semantic()")
 
     if strategy == ChunkStrategy.PARENT_CHILD:
         pc = split_parent_child(text, parent_size=chunk_size, child_size=max(100, chunk_size // 4))
@@ -91,6 +97,84 @@ def split_parent_child(
         f"parent_size={parent_size}, child_size={child_size}"
     )
     return results
+
+
+def split_semantic(
+    text: str,
+    embedding_fn,
+    max_chunk_size: int = 1000,
+    similarity_threshold: float = 0.5,
+    min_sentences: int = 3,
+) -> List[str]:
+    """
+    语义分块：基于相邻句子 embedding 余弦相似度在语义边界处切分。
+
+    原理：相邻句子 embedding 相似度高表示语义连续，
+    相似度骤降处即为话题切换点，在此处切分保证语义完整性。
+
+    Args:
+        text: 待分块文本
+        embedding_fn: 批量 embedding 函数，签名 (List[str]) -> List[List[float]]
+        max_chunk_size: 单个 chunk 最大字符数
+        similarity_threshold: 低于此阈值视为语义边界
+        min_sentences: chunk 最少包含的句子数
+    """
+    if not text or not text.strip():
+        return []
+
+    text = text.strip()
+
+    sentence_endings = re.compile(r'(?<=[。！？.!?\n])\s*')
+    sentences = [s.strip() for s in sentence_endings.split(text) if s.strip()]
+
+    if len(sentences) <= min_sentences:
+        return [text] if text else []
+
+    try:
+        embeddings = embedding_fn(sentences)
+        emb_array = np.array(embeddings, dtype=np.float32)
+    except Exception as e:
+        logger.warning(f"语义分块 embedding 失败，降级为固定分块: {e}")
+        return _chunk_fixed(text, max_chunk_size, 150)
+
+    norms = np.linalg.norm(emb_array, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1, norms)
+    normalized = emb_array / norms
+    similarities = np.sum(normalized[:-1] * normalized[1:], axis=1)
+
+    split_points = [0]
+    for i, sim in enumerate(similarities):
+        if sim < similarity_threshold:
+            split_points.append(i + 1)
+    split_points.append(len(sentences))
+
+    raw_chunks = []
+    for start_idx, end_idx in zip(split_points[:-1], split_points[1:]):
+        chunk_text = ''.join(sentences[start_idx:end_idx]).strip()
+        if not chunk_text:
+            continue
+        if len(chunk_text) > max_chunk_size:
+            raw_chunks.extend(_chunk_fixed(chunk_text, max_chunk_size, 0))
+        else:
+            raw_chunks.append(chunk_text)
+
+    merged = []
+    buffer = ""
+    for chunk in raw_chunks:
+        if len(buffer) + len(chunk) <= max_chunk_size:
+            buffer += chunk
+        else:
+            if buffer:
+                merged.append(buffer)
+            buffer = chunk
+    if buffer:
+        merged.append(buffer)
+
+    logger.info(
+        f"语义分块: {len(sentences)} 句 → {len(merged)} 块, "
+        f"threshold={similarity_threshold}, 切分点={len(split_points)-2}"
+    )
+    return merged
 
 
 # ------------------------------------------------------------------

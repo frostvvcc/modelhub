@@ -403,16 +403,19 @@ class AsyncVectorService:
             pc_chunks = []
 
             if strategy == ChunkStrategy.PARENT_CHILD:
-                # 父子分块：child 做 embedding 检索，parent 存 metadata 供 LLM 消费
                 child_size = max(100, safe_chunk_size // 4)
                 pc_chunks = split_parent_child(
                     text_content,
                     parent_size=safe_chunk_size,
                     child_size=child_size,
                 )
-                for i, pc in enumerate(pc_chunks):
-                    embedding = embedding_model.get_text_embedding(pc.child_content)
-                    metadata = {
+                texts_to_embed = [pc.child_content for pc in pc_chunks]
+                all_embeddings = embedding_model._get_text_embeddings(texts_to_embed)
+
+                all_ids = [f"{document_id}_chunk_{i}" for i in range(len(pc_chunks))]
+                all_documents = texts_to_embed
+                all_metadatas = [
+                    {
                         **base_meta,
                         'chunk_id': i,
                         'total_chunks': len(pc_chunks),
@@ -421,33 +424,72 @@ class AsyncVectorService:
                         'child_index': pc.child_index,
                         'is_child_chunk': True,
                     }
-                    collection.add(
-                        embeddings=[embedding],
-                        documents=[pc.child_content],
-                        metadatas=[metadata],
-                        ids=[f"{document_id}_chunk_{i}"]
-                    )
+                    for i, pc in enumerate(pc_chunks)
+                ]
+                collection.add(
+                    embeddings=all_embeddings,
+                    documents=all_documents,
+                    metadatas=all_metadatas,
+                    ids=all_ids,
+                )
+            elif strategy == ChunkStrategy.SEMANTIC:
+                from app.services.rag.chunking import split_semantic
+                chunks = split_semantic(
+                    text_content,
+                    embedding_fn=embedding_model._get_text_embeddings,
+                    max_chunk_size=safe_chunk_size,
+                )
+                all_embeddings = embedding_model._get_text_embeddings(chunks)
+                all_ids = [f"{document_id}_chunk_{i}" for i in range(len(chunks))]
+                all_metadatas = [
+                    {**base_meta, 'chunk_id': i, 'total_chunks': len(chunks)}
+                    for i in range(len(chunks))
+                ]
+                collection.add(
+                    embeddings=all_embeddings,
+                    documents=chunks,
+                    metadatas=all_metadatas,
+                    ids=all_ids,
+                )
             else:
-                # 常规分块策略
                 chunks = split_text_into_chunks(
                     text_content,
                     strategy=strategy,
                     chunk_size=safe_chunk_size,
                     overlap=safe_overlap,
                 )
-                for i, chunk in enumerate(chunks):
-                    embedding = embedding_model.get_text_embedding(chunk)
-                    metadata = {
-                        **base_meta,
-                        'chunk_id': i,
-                        'total_chunks': len(chunks),
-                    }
-                    collection.add(
-                        embeddings=[embedding],
-                        documents=[chunk],
-                        metadatas=[metadata],
-                        ids=[f"{document_id}_chunk_{i}"]
-                    )
+                all_embeddings = embedding_model._get_text_embeddings(chunks)
+                all_ids = [f"{document_id}_chunk_{i}" for i in range(len(chunks))]
+                all_metadatas = [
+                    {**base_meta, 'chunk_id': i, 'total_chunks': len(chunks)}
+                    for i in range(len(chunks))
+                ]
+                collection.add(
+                    embeddings=all_embeddings,
+                    documents=chunks,
+                    metadatas=all_metadatas,
+                    ids=all_ids,
+                )
+
+            # Elasticsearch 同步索引（ES 可用时写入，不可用时跳过）
+            try:
+                from app.services.rag.es_retrieval import ES_ENABLED, index_chunks as es_index_chunks
+                if ES_ENABLED:
+                    es_chunks = [
+                        {
+                            "chunk_id": f"{document_id}_chunk_{i}",
+                            "content": (pc_chunks[i].child_content if pc_chunks else chunks[i]) if i < len(pc_chunks or chunks) else "",
+                            "source": base_meta.get("source", ""),
+                            "document_id": str(document_id),
+                        }
+                        for i in range(len(pc_chunks) if pc_chunks else len(chunks))
+                    ]
+                    import asyncio as _es_aio
+                    _es_loop = _es_aio.new_event_loop()
+                    _es_loop.run_until_complete(es_index_chunks(vector_db_id, es_chunks))
+                    _es_loop.close()
+            except Exception as es_err:
+                logger.warning(f"Elasticsearch 索引写入失败（不影响主流程）: {es_err}")
 
             # GraphRAG：从入库的 chunk 中抽取三元组写入 Neo4j
             try:
@@ -485,169 +527,6 @@ class AsyncVectorService:
                     pass
                 except Exception as e:
                     logger.warning(f"清理OCR临时文件失败: {ocr_text_path}, 错误: {e}")
-
-    @staticmethod
-    def _extract_text_from_docx(file_path: str) -> Optional[str]:
-        """
-        从Word文档(.doc或.docx)中提取文本
-
-        Args:
-            file_path: doc或docx文件路径
-
-        Returns:
-            提取的文本内容
-        """
-        file_ext = os.path.splitext(file_path)[1].lower()
-
-        try:
-            if file_ext == '.doc':
-                # 处理 .doc 格式（旧版Word）
-                logger.info(f"处理旧版Word文档(.doc): {file_path}")
-
-                # 方法1: 使用 doc2text 处理 .doc（支持真正的旧版Word格式）
-                try:
-                    import doc2text
-                    # doc2text 专门处理 .doc 文件
-                    text_content = doc2text.extract(file_path)
-
-                    if text_content and text_content.strip():
-                        text_content = text_content.strip()
-                        logger.info(f"✅ 使用 doc2text 从 .doc 文件提取文本: {len(text_content)}字符")
-                        return text_content
-                    else:
-                        logger.warning(f"doc2text 提取的文本为空，尝试备用方法")
-
-                except ImportError:
-                    logger.warning("doc2text 库未安装，尝试使用其他方法")
-                except Exception as e:
-                    logger.warning(f"doc2text 处理失败: {e}")
-
-                # 方法2: 尝试用 python-docx 直接处理（某些.doc文件实际是docx格式）
-                try:
-                    from docx import Document
-                    doc = Document(file_path)
-
-                    paragraphs = []
-                    for para in doc.paragraphs:
-                        text = para.text.strip()
-                        if text:
-                            paragraphs.append(text)
-
-                    # 提取表格
-                    for table in doc.tables:
-                        for row in table.rows:
-                            row_text = []
-                            for cell in row.cells:
-                                cell_text = cell.text.strip()
-                                if cell_text:
-                                    row_text.append(cell_text)
-                            if row_text:
-                                paragraphs.append(' | '.join(row_text))
-
-                    full_text = '\n'.join(paragraphs)
-                    if full_text.strip():
-                        logger.info(f"✅ 用 python-docx 从 .doc 文件提取文本: {len(full_text)}字符")
-                        return full_text
-
-                except Exception as docx_error:
-                    logger.error(f"python-docx 无法处理 .doc 文件: {docx_error}")
-                    logger.error("💡 建议将 .doc 文件转换为 .docx 格式")
-
-            elif file_ext == '.docx':
-                # 处理 .docx 格式（新版Word）
-                logger.info(f"处理新版Word文档(.docx): {file_path}")
-
-                from docx import Document
-                doc = Document(file_path)
-
-                # 提取所有段落文本
-                paragraphs = []
-                for para in doc.paragraphs:
-                    text = para.text.strip()
-                    if text:
-                        paragraphs.append(text)
-
-                # 提取表格文本
-                for table in doc.tables:
-                    for row in table.rows:
-                        row_text = []
-                        for cell in row.cells:
-                            cell_text = cell.text.strip()
-                            if cell_text:
-                                row_text.append(cell_text)
-                        if row_text:
-                            paragraphs.append(' | '.join(row_text))
-
-                full_text = '\n'.join(paragraphs)
-                logger.info(f"✅ 从 .docx 文件提取文本: {len(paragraphs)}个段落, {len(full_text)}字符")
-
-                return full_text
-
-            return None
-
-        except ImportError:
-            logger.error("❌ 未安装必要的库")
-            logger.error("请运行以下命令安装依赖:")
-            logger.error("   pip install python-docx docx2txt")
-            return None
-        except Exception as e:
-            logger.error(f"❌ 提取Word文档失败: {e}")
-            logger.error(f"文件类型: {file_ext}, 文件路径: {file_path}")
-            logger.error("💡 建议: 将文件另存为 .docx 或 .pdf 格式后重新上传")
-            return None
-
-    @staticmethod
-    def _extract_text_from_pdf(file_path: str) -> Optional[str]:
-        """
-        从PDF文件中提取文本
-
-        Args:
-            file_path: pdf文件路径
-
-        Returns:
-            提取的文本内容
-        """
-        try:
-            # 优先使用pdfplumber(更好的中文支持)
-            try:
-                import pdfplumber
-
-                text_parts = []
-                with pdfplumber.open(file_path) as pdf:
-                    for page in pdf.pages:
-                        text = page.extract_text()
-                        if text:
-                            text_parts.append(text)
-
-                full_text = '\n'.join(text_parts)
-                logger.info(f"✅ 从pdf文件提取文本(pdfplumber): {len(full_text)}字符")
-                return full_text
-
-            except ImportError:
-                # 回退到PyPDF2
-                try:
-                    import PyPDF2
-
-                    text_parts = []
-                    with open(file_path, 'rb') as f:
-                        pdf_reader = PyPDF2.PdfReader(f)
-                        for page in pdf_reader.pages:
-                            text = page.extract_text()
-                            if text:
-                                text_parts.append(text)
-
-                    full_text = '\n'.join(text_parts)
-                    logger.info(f"✅ 从pdf文件提取文本(PyPDF2): {len(full_text)}字符")
-                    return full_text
-
-                except ImportError:
-                    logger.error("❌ PDF处理库未安装")
-                    logger.error("请运行: pip install pdfplumber 或 pip install PyPDF2")
-                    return None
-
-        except Exception as e:
-            logger.error(f"❌ 提取pdf文本失败: {e}")
-            return None
 
     @staticmethod
     async def delete_vector_db(

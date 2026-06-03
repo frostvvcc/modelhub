@@ -83,7 +83,16 @@ class Settings(BaseSettings):
     chroma_server_host: str = os.getenv("CHROMA_SERVER_HOST", "localhost")
     chroma_server_port: int = int(os.getenv("CHROMA_SERVER_PORT", "8002"))
     chroma_api_path: str = os.getenv("CHROMA_API_PATH", "/api/v1")
-    
+
+    # RAG 增强管线 LLM 配置（与 embedding 解耦）
+    rag_llm_model: str = os.getenv("RAG_LLM_MODEL", "qwen-plus")
+    rag_llm_api_key: str = os.getenv("RAG_LLM_API_KEY", "")
+    rag_llm_base_url: str = os.getenv("RAG_LLM_BASE_URL", "")
+    rag_domain_description: str = os.getenv(
+        "RAG_DOMAIN_DESCRIPTION",
+        "大学教务知识库，包含通知公告、规章制度、办事指南等官方文档"
+    )
+
     # OCR配置
     ocr_provider: str = os.getenv("OCR_PROVIDER", "local")  # local, baidu, tencent, aliyun
     # 百度OCR配置

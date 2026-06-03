@@ -86,8 +86,13 @@ def process_document_task(
 
             self.update_state(state="PROGRESS", meta={"progress": 30, "step": "embedding", "total_chunks": total})
 
+            child_texts = [pc.child_content for pc in pc_chunks]
+            all_embeddings = embedding_model._get_text_embeddings(child_texts)
+
+            all_ids = [f"{document_id}_chunk_{i}" for i in range(total)]
+            all_documents = child_texts
+            all_metadatas = []
             for i, pc in enumerate(pc_chunks):
-                embedding = embedding_model.get_text_embedding(pc.child_content)
                 metadata = {
                     "source": os.path.basename(file_path),
                     "chunk_id": i,
@@ -103,28 +108,30 @@ def process_document_task(
                     metadata["folder_hierarchy"] = folder_hierarchy
                 if parent_id:
                     metadata["parent_id"] = str(parent_id)
+                all_metadatas.append(metadata)
 
-                collection.add(
-                    embeddings=[embedding],
-                    documents=[pc.child_content],
-                    metadatas=[metadata],
-                    ids=[f"{document_id}_chunk_{i}"],
-                )
+            collection.add(
+                embeddings=all_embeddings,
+                documents=all_documents,
+                metadatas=all_metadatas,
+                ids=all_ids,
+            )
 
-                progress = 30 + int(60 * (i + 1) / total)
-                if (i + 1) % 5 == 0 or i == total - 1:
-                    self.update_state(state="PROGRESS", meta={
-                        "progress": progress, "step": "embedding",
-                        "current": i + 1, "total_chunks": total,
-                    })
+            self.update_state(state="PROGRESS", meta={
+                "progress": 90, "step": "embedding",
+                "current": total, "total_chunks": total,
+            })
         else:
             chunks = split_text_into_chunks(text_content, strategy=strategy, chunk_size=safe_chunk_size, overlap=safe_overlap)
             total = len(chunks)
 
             self.update_state(state="PROGRESS", meta={"progress": 30, "step": "embedding", "total_chunks": total})
 
+            all_embeddings = embedding_model._get_text_embeddings(chunks)
+
+            all_ids = [f"{document_id}_chunk_{i}" for i in range(total)]
+            all_metadatas = []
             for i, chunk in enumerate(chunks):
-                embedding = embedding_model.get_text_embedding(chunk)
                 metadata = {
                     "source": os.path.basename(file_path),
                     "chunk_id": i,
@@ -136,20 +143,19 @@ def process_document_task(
                     metadata["folder_hierarchy"] = folder_hierarchy
                 if parent_id:
                     metadata["parent_id"] = str(parent_id)
+                all_metadatas.append(metadata)
 
-                collection.add(
-                    embeddings=[embedding],
-                    documents=[chunk],
-                    metadatas=[metadata],
-                    ids=[f"{document_id}_chunk_{i}"],
-                )
+            collection.add(
+                embeddings=all_embeddings,
+                documents=chunks,
+                metadatas=all_metadatas,
+                ids=all_ids,
+            )
 
-                progress = 30 + int(60 * (i + 1) / total)
-                if (i + 1) % 5 == 0 or i == total - 1:
-                    self.update_state(state="PROGRESS", meta={
-                        "progress": progress, "step": "embedding",
-                        "current": i + 1, "total_chunks": total,
-                    })
+            self.update_state(state="PROGRESS", meta={
+                "progress": 90, "step": "embedding",
+                "current": total, "total_chunks": total,
+            })
 
         # GraphRAG 三元组抽取
         self.update_state(state="PROGRESS", meta={"progress": 92, "step": "graph_extraction"})

@@ -4,6 +4,7 @@ from llama_index.core.bridge.pydantic import Field, PrivateAttr
 from llama_index.core.embeddings import BaseEmbedding
 from openai import OpenAI
 import asyncio  # 添加 asyncio 导入
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 # 嵌入模型封装类
 class ChatEmbeddings(BaseEmbedding):
@@ -49,6 +50,11 @@ class ChatEmbeddings(BaseEmbedding):
         return "ChatEmbeddings"
 
     # 通用嵌入生成方法
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        reraise=True,
+    )
     def get_general_text_embedding(self, prompt: str) -> List[float]:
         response = self._get_client().embeddings.create(
             model=self.model,
@@ -61,6 +67,11 @@ class ChatEmbeddings(BaseEmbedding):
         return self.get_general_text_embedding(text)
 
     # 批量文本嵌入方法（单次 API 调用）
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        reraise=True,
+    )
     def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
         if not texts:
             return []

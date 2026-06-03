@@ -102,7 +102,7 @@ class AsyncChatService:
         max_context_chars: Optional[int],
     ) -> tuple[str, List[Dict[str, Any]], List[str]]:
         """把检索结果编排成带来源编号的上下文块，并按字符预算截断。"""
-        budget = max(1000, min(int(max_context_chars or 6000), 30000))
+        budget = max(1000, min(int(max_context_chars or 4000), 20000))
         blocks: List[str] = []
         enriched_sources: List[Dict[str, Any]] = []
         labels: List[str] = []
@@ -579,6 +579,24 @@ class AsyncChatService:
             grounded_ratio = max(0.0, min(1.0, rag_result["avg_similarity"])) if rag_result["used_knowledge_base"] else 0.0
             grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
 
+            # Claim-Level Grounding 验证（检测 LLM 回复中的幻觉）
+            grounding_detail = None
+            if rag_result["used_knowledge_base"] and source_citations:
+                try:
+                    from app.services.rag.grounding import verify_grounding
+                    grounding_detail = await verify_grounding(content, source_citations)
+                    if grounding_detail.get("grounded_ratio") is not None:
+                        grounded_ratio = grounding_detail["grounded_ratio"]
+                        grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
+                    unsupported = grounding_detail.get("unsupported_claims", [])
+                    if unsupported:
+                        warning = "\n\n⚠️ 以下内容未在知识库中找到明确依据：\n"
+                        for uc in unsupported[:3]:
+                            warning += f"- {uc.get('text', '')}\n"
+                        content += warning
+                except Exception as grounding_err:
+                    logger.warning(f"Grounding 验证失败（不影响回答）: {grounding_err}")
+
             # 保存助手回复（含富数据）
             assistant_metadata = {}
             if source_citations:
@@ -586,6 +604,8 @@ class AsyncChatService:
             if grounded_ratio:
                 assistant_metadata["grounded_ratio"] = round(grounded_ratio, 4)
                 assistant_metadata["grounded_level"] = grounded_level
+            if grounding_detail:
+                assistant_metadata["grounding_detail"] = grounding_detail
             if rag_result["used_knowledge_base"]:
                 assistant_metadata["rag_info"] = {
                     "used_knowledge_base": True,

@@ -89,7 +89,7 @@ class KnowledgeSearchTool(BaseTool):
             for i, s in enumerate(sources[:3]):
                 formatted.append({
                     "index": i + 1,
-                    "content": (s.get("content") or "")[:300],
+                    "content": (s.get("content") or "")[:1500],
                     "source": s.get("source", "未知"),
                     "similarity": round(s.get("similarity", 0), 4),
                 })

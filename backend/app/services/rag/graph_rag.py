@@ -45,8 +45,8 @@ def _get_llm_client() -> AsyncOpenAI:
     global _llm_client
     if _llm_client is None:
         _llm_client = AsyncOpenAI(
-            api_key=settings.embedding_api_key,
-            base_url=settings.embedding_base_url,
+            api_key=settings.rag_llm_api_key or settings.embedding_api_key,
+            base_url=settings.rag_llm_base_url or settings.embedding_base_url,
         )
     return _llm_client
 
@@ -64,9 +64,10 @@ async def extract_triples(
     text: str,
     chunk_id: str = "",
     document_id: str = "",
-    model: str = "qwen-plus",
+    model: str = None,
 ) -> List[Triple]:
     """用 LLM 从文本块中抽取三元组"""
+    model = model or settings.rag_llm_model
     client = _get_llm_client()
     prompt = (
         "从以下文本中抽取实体和关系三元组。\n\n"
@@ -148,9 +149,10 @@ def store_triples(triples: List[Triple], vector_db_id: int) -> int:
 
 async def extract_query_entities(
     query: str,
-    model: str = "qwen-plus",
+    model: str = None,
 ) -> List[str]:
     """从用户查询中提取关键实体"""
+    model = model or settings.rag_llm_model
     client = _get_llm_client()
     prompt = (
         "从以下问题中提取关键实体名词（人名、机构名、政策名、课程名等）。\n"

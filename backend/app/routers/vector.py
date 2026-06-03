@@ -4,6 +4,7 @@
 from fastapi import APIRouter, Depends, status, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
 from typing import List, Optional
+import asyncio
 import time
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -585,6 +586,7 @@ class DebugResult(_BaseModel):
 
 class DebugQueryResponse(_BaseModel):
     query: str
+    rewritten_queries: List[str] = []
     results: List[DebugResult]
     total_time_ms: float
     vector_search_time_ms: float
@@ -612,49 +614,67 @@ async def debug_query(
         raise HTTPException(status_code=403, detail="无权访问该知识库")
 
     t0 = time.time()
+    rewritten_queries: List[str] = []
+    pipeline = "vector"
 
-    use_enhanced = request.use_rewrite or request.use_rerank or request.use_hyde
-    if use_enhanced:
-        t_vec_start = time.time()
-        results = await VectorRetriever.enhanced_query(
-            vector_db_id=vector_id,
-            query_text=request.query,
-            n_results=request.n_results,
-            alpha=request.alpha,
-            use_rewrite=request.use_rewrite,
-            use_rerank=request.use_rerank,
-            use_hyde=request.use_hyde,
-        )
-        vector_time = (time.time() - t_vec_start) * 1000
-        bm25_time = 0.0
-        pipeline = "enhanced"
-    elif request.use_hybrid:
-        t_vec_start = time.time()
-        results = await VectorRetriever.hybrid_query(
-            vector_db_id=vector_id,
-            query_text=request.query,
-            n_results=request.n_results,
-            alpha=request.alpha,
-        )
-        vector_time = (time.time() - t_vec_start) * 1000
-        bm25_time = 0.0
-        pipeline = "hybrid"
+    # Step 1: Query 增强（可选）
+    extra_queries: List[str] = []
+    hyde_text = None
+    if request.use_rewrite:
+        from app.services.rag.query_rewriter import rewrite_query
+        rewrites = await rewrite_query(request.query, n_rewrites=3)
+        extra_queries = [q for q in rewrites if q != request.query]
+        rewritten_queries = extra_queries
+    if request.use_hyde:
+        from app.services.rag.query_rewriter import hyde_rewrite
+        hyde_text = await hyde_rewrite(request.query)
+
+    # Step 2: 检索
+    t_vec_start = time.time()
+    all_queries = [request.query] + extra_queries
+    use_enhanced = request.use_rewrite or request.use_hyde
+
+    if use_enhanced or request.use_hybrid:
+        tasks = [
+            VectorRetriever.hybrid_query(
+                vector_db_id=vector_id, query_text=q,
+                n_results=request.n_results, alpha=request.alpha,
+            )
+            for q in all_queries
+        ]
+        if hyde_text:
+            tasks.append(VectorRetriever.query(vector_id, hyde_text, request.n_results))
+
+        multi_results = await asyncio.gather(*tasks)
+        seen = set()
+        results = []
+        for batch in multi_results:
+            for r in batch:
+                if r.chunk_id not in seen:
+                    results.append(r)
+                    seen.add(r.chunk_id)
+        results.sort(key=lambda r: r.score, reverse=True)
+        pipeline = "enhanced" if use_enhanced else "hybrid"
     else:
-        t_vec_start = time.time()
         results = await VectorRetriever.query(
             vector_db_id=vector_id,
             query_text=request.query,
             n_results=request.n_results,
         )
-        vector_time = (time.time() - t_vec_start) * 1000
-        bm25_time = 0.0
-        pipeline = "vector"
+
+    vector_time = (time.time() - t_vec_start) * 1000
+
+    # Step 3: Rerank（可选）
+    if request.use_rerank and len(results) > request.n_results:
+        from app.services.rag.reranker import rerank
+        results = await rerank(request.query, results, top_k=request.n_results)
+        pipeline = f"{pipeline}+rerank"
 
     total_time = (time.time() - t0) * 1000
     query_terms = VectorRetriever._tokenize(request.query)
 
     debug_results = []
-    for rank, r in enumerate(results, start=1):
+    for rank, r in enumerate(results[:request.n_results], start=1):
         debug_results.append(DebugResult(
             rank=rank,
             chunk_id=r.chunk_id,
@@ -670,10 +690,11 @@ async def debug_query(
 
     return DebugQueryResponse(
         query=request.query,
+        rewritten_queries=rewritten_queries,
         results=debug_results,
         total_time_ms=round(total_time, 2),
         vector_search_time_ms=round(vector_time, 2),
-        bm25_search_time_ms=round(bm25_time, 2),
+        bm25_search_time_ms=0.0,
         alpha=request.alpha,
         n_results=request.n_results,
         pipeline=pipeline,
