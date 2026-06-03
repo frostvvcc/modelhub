@@ -80,24 +80,94 @@ def _extract_docx(file_path: str) -> Optional[str]:
 # PDF
 # ------------------------------------------------------------------
 
-def _extract_pdf(file_path: str) -> Optional[str]:
-    """提取 PDF 文本（优先文本层，扫描件自动尝试 OCR）"""
+def _extract_pdf_with_marker(file_path: str) -> Optional[str]:
+    """用 Marker 将 PDF 高保真转为结构化 Markdown（保留表格、标题层级、公式）"""
     try:
+        from marker.converters.pdf import PdfConverter
+        # marker >= 1.0: PdfConverter() 自动加载模型
+        converter = PdfConverter()
+        rendered = converter(file_path)
+
+        # marker >= 1.0 返回 Document 对象，有 .markdown 属性
+        # marker 0.x 返回 tuple (text, images, metadata)
+        if hasattr(rendered, 'markdown'):
+            md_text = rendered.markdown.strip()
+        elif isinstance(rendered, tuple) and len(rendered) >= 1:
+            md_text = str(rendered[0]).strip()
+        else:
+            md_text = ""
+
+        if md_text and len(md_text) >= 20:
+            logger.info(f"PDF 解析完成 (Marker): {len(md_text)} 字符")
+            return md_text
+        return None
+    except ImportError:
+        return None
+    except Exception as e:
+        logger.warning(f"Marker PDF 解析失败，降级到 pdfplumber: {e}")
+        return None
+
+
+def _extract_pdf_with_tables(file_path: str) -> Optional[str]:
+    """用 pdfplumber 提取文本 + 表格（表格转 Markdown 格式，排除表格区域避免重复）"""
+    try:
+        import pdfplumber
+    except ImportError:
+        return None
+
+    parts = []
+    with pdfplumber.open(file_path) as pdf:
+        for page_idx, page in enumerate(pdf.pages):
+            tables = page.find_tables() or []
+            table_bboxes = [t.bbox for t in tables]
+
+            # 提取表格并转 Markdown
+            for table in tables:
+                table_data = table.extract()
+                if not table_data:
+                    continue
+                rows = []
+                for ri, row in enumerate(table_data):
+                    cells = [str(c or '').strip() for c in row]
+                    rows.append('| ' + ' | '.join(cells) + ' |')
+                    if ri == 0:
+                        rows.append('| ' + ' | '.join(['---'] * len(cells)) + ' |')
+                parts.append('\n'.join(rows))
+
+            # 提取非表格区域的文本，避免内容重复
+            if table_bboxes:
+                filtered_page = page
+                for bbox in table_bboxes:
+                    filtered_page = filtered_page.outside_bbox(bbox)
+                text = filtered_page.extract_text()
+            else:
+                text = page.extract_text()
+
+            if text and text.strip():
+                parts.append(text.strip())
+
+    result = '\n\n'.join(parts).strip()
+    if result:
+        logger.info(f"PDF 解析完成 (pdfplumber+tables): {len(result)} 字符")
+    return result or None
+
+
+def _extract_pdf(file_path: str) -> Optional[str]:
+    """提取 PDF 文本：Marker（高保真 Markdown）→ pdfplumber+tables → PyPDF2 → OCR"""
+    try:
+        # 优先：Marker 高保真 PDF→Markdown（保留表格/标题/公式）
+        marker_text = _extract_pdf_with_marker(file_path)
+        if marker_text:
+            return marker_text
+
+        # 次选：pdfplumber 带表格提取
+        plumber_text = _extract_pdf_with_tables(file_path)
+        if plumber_text and len(plumber_text) >= 20:
+            return plumber_text
+
+        # 降级：PyPDF2 纯文本
         text_from_layer = None
         try:
-            import pdfplumber
-            parts = []
-            with pdfplumber.open(file_path) as pdf:
-                for page in pdf.pages:
-                    text = page.extract_text()
-                    if text:
-                        parts.append(text)
-            text_from_layer = '\n'.join(parts).strip()
-            logger.info(f"PDF 解析完成 (pdfplumber): {len(text_from_layer)} 字符")
-        except ImportError:
-            pass
-
-        if not text_from_layer:
             import PyPDF2
             parts = []
             with open(file_path, 'rb') as f:
@@ -107,11 +177,15 @@ def _extract_pdf(file_path: str) -> Optional[str]:
                     if text:
                         parts.append(text)
             text_from_layer = '\n'.join(parts).strip()
-            logger.info(f"PDF 解析完成 (PyPDF2): {len(text_from_layer)} 字符")
+            if text_from_layer:
+                logger.info(f"PDF 解析完成 (PyPDF2): {len(text_from_layer)} 字符")
+        except ImportError:
+            pass
 
         if text_from_layer and len(text_from_layer) >= 20:
             return text_from_layer
 
+        # 最后兜底：OCR
         ocr_text = _extract_pdf_with_ocr(file_path)
         if ocr_text:
             return ocr_text

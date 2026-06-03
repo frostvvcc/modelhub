@@ -1,0 +1,187 @@
+"""
+文档入库异步任务
+
+将耗时的文档解析 → 分块 → Embedding → 向量入库 → 三元组抽取流程
+从同步请求中解耦，上传接口立即返回 task_id，后台 Worker 异步处理。
+
+支持：进度上报（self.update_state）、失败自动重试（指数退避 3 次）、
+任务状态查询（PENDING → STARTED → PROGRESS → SUCCESS / FAILURE）。
+"""
+import logging
+from app.celery_app import celery_app
+
+logger = logging.getLogger(__name__)
+
+
+@celery_app.task(
+    bind=True,
+    name="document.process",
+    max_retries=3,
+    default_retry_delay=10,
+    acks_late=True,
+)
+def process_document_task(
+    self,
+    vector_db_id: int,
+    file_path: str,
+    document_id: int,
+    folder_hierarchy: str = None,
+    parent_id: int = None,
+    chunk_strategy: str = "fixed",
+    chunk_size: int = 800,
+    chunk_overlap: int = 150,
+):
+    """
+    异步文档入库任务。
+
+    上传接口调用：
+        task = process_document_task.delay(vector_db_id, file_path, document_id, ...)
+        return {"task_id": task.id}
+
+    前端轮询：
+        GET /tasks/{task_id} → {"state": "PROGRESS", "progress": 60, "step": "embedding"}
+    """
+    try:
+        self.update_state(state="PROGRESS", meta={"progress": 0, "step": "parsing"})
+
+        from app.utils.optimized_chromadb import get_chromadb_client
+        from app.utils.EmbbedingModel import ChatEmbeddings
+        from app.services.rag.document_parser import extract_text
+        from app.services.rag.chunking import split_text_into_chunks, split_parent_child, ChunkStrategy
+        from app.config import settings
+        import os
+
+        client = get_chromadb_client()
+        if not client:
+            raise RuntimeError("ChromaDB 服务不可用")
+        collection = client.get_collection(f"vector_db_{vector_db_id}")
+
+        text_content = extract_text(file_path)
+        if not text_content or not text_content.strip():
+            raise RuntimeError(f"文件内容为空: {os.path.basename(file_path)}")
+
+        self.update_state(state="PROGRESS", meta={"progress": 20, "step": "chunking"})
+
+        try:
+            strategy = ChunkStrategy(chunk_strategy)
+        except ValueError:
+            strategy = ChunkStrategy.FIXED
+
+        safe_chunk_size = max(100, min(int(chunk_size or 800), 4000))
+        safe_overlap = max(0, min(int(chunk_overlap or 150), safe_chunk_size - 1))
+
+        embedding_model = ChatEmbeddings(
+            model=settings.embedding_model,
+            base_url=settings.embedding_base_url,
+            api_key=settings.embedding_api_key,
+        )
+
+        chunks = []
+        pc_chunks = []
+
+        if strategy == ChunkStrategy.PARENT_CHILD:
+            child_size = max(100, safe_chunk_size // 4)
+            pc_chunks = split_parent_child(text_content, parent_size=safe_chunk_size, child_size=child_size)
+            total = len(pc_chunks)
+
+            self.update_state(state="PROGRESS", meta={"progress": 30, "step": "embedding", "total_chunks": total})
+
+            for i, pc in enumerate(pc_chunks):
+                embedding = embedding_model.get_text_embedding(pc.child_content)
+                metadata = {
+                    "source": os.path.basename(file_path),
+                    "chunk_id": i,
+                    "total_chunks": total,
+                    "document_id": document_id,
+                    "chunk_strategy": "parent_child",
+                    "parent_content": pc.parent_content,
+                    "parent_index": pc.parent_index,
+                    "child_index": pc.child_index,
+                    "is_child_chunk": True,
+                }
+                if folder_hierarchy:
+                    metadata["folder_hierarchy"] = folder_hierarchy
+                if parent_id:
+                    metadata["parent_id"] = str(parent_id)
+
+                collection.add(
+                    embeddings=[embedding],
+                    documents=[pc.child_content],
+                    metadatas=[metadata],
+                    ids=[f"{document_id}_chunk_{i}"],
+                )
+
+                progress = 30 + int(60 * (i + 1) / total)
+                if (i + 1) % 5 == 0 or i == total - 1:
+                    self.update_state(state="PROGRESS", meta={
+                        "progress": progress, "step": "embedding",
+                        "current": i + 1, "total_chunks": total,
+                    })
+        else:
+            chunks = split_text_into_chunks(text_content, strategy=strategy, chunk_size=safe_chunk_size, overlap=safe_overlap)
+            total = len(chunks)
+
+            self.update_state(state="PROGRESS", meta={"progress": 30, "step": "embedding", "total_chunks": total})
+
+            for i, chunk in enumerate(chunks):
+                embedding = embedding_model.get_text_embedding(chunk)
+                metadata = {
+                    "source": os.path.basename(file_path),
+                    "chunk_id": i,
+                    "total_chunks": total,
+                    "document_id": document_id,
+                    "chunk_strategy": strategy.value,
+                }
+                if folder_hierarchy:
+                    metadata["folder_hierarchy"] = folder_hierarchy
+                if parent_id:
+                    metadata["parent_id"] = str(parent_id)
+
+                collection.add(
+                    embeddings=[embedding],
+                    documents=[chunk],
+                    metadatas=[metadata],
+                    ids=[f"{document_id}_chunk_{i}"],
+                )
+
+                progress = 30 + int(60 * (i + 1) / total)
+                if (i + 1) % 5 == 0 or i == total - 1:
+                    self.update_state(state="PROGRESS", meta={
+                        "progress": progress, "step": "embedding",
+                        "current": i + 1, "total_chunks": total,
+                    })
+
+        # GraphRAG 三元组抽取
+        self.update_state(state="PROGRESS", meta={"progress": 92, "step": "graph_extraction"})
+        try:
+            from app.services.rag.graph_rag import NEO4J_ENABLED, extract_triples, store_triples
+            if NEO4J_ENABLED:
+                import asyncio
+                loop = asyncio.new_event_loop()
+                all_triples = []
+                graph_texts = ([pc.parent_content for pc in pc_chunks] if pc_chunks else chunks)[:30]
+                for idx, text in enumerate(graph_texts):
+                    triples = loop.run_until_complete(extract_triples(
+                        text, chunk_id=f"{document_id}_chunk_{idx}", document_id=str(document_id),
+                    ))
+                    all_triples.extend(triples)
+                loop.close()
+                if all_triples:
+                    store_triples(all_triples, vector_db_id)
+        except Exception as graph_err:
+            logger.warning(f"Celery 任务 GraphRAG 抽取失败: {graph_err}")
+
+        from app.services.rag.retrieval import invalidate_bm25_cache
+        invalidate_bm25_cache(vector_db_id)
+
+        self.update_state(state="PROGRESS", meta={"progress": 100, "step": "done"})
+        logger.info(f"[Celery] 文档入库完成: document_id={document_id}")
+
+        return {"document_id": document_id, "status": "success"}
+
+    except Exception as exc:
+        logger.error(f"[Celery] 文档入库失败: {exc}", exc_info=True)
+        try:
+            self.retry(exc=exc, countdown=10 * (self.request.retries + 1))
+        except self.MaxRetriesExceededError:
+            return {"document_id": document_id, "status": "failed", "error": str(exc)}

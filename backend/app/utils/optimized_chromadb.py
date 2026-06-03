@@ -56,3 +56,10 @@ def reset_chromadb_client():
         _chroma_client = None
         logger.info("ChromaDB客户端已重置")
 
+
+def get_vector_store():
+    """获取可插拔向量存储实例（按 VECTOR_STORE_BACKEND 环境变量选择后端）。
+    新代码应优先使用此接口，旧代码通过 get_chromadb_client() 保持兼容。"""
+    from app.utils.vector_store import get_vector_store as _get
+    return _get()
+

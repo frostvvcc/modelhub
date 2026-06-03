@@ -87,24 +87,33 @@ class RetrievalResult:
     similarity: float = 0.0  # 归一化综合相似度 [0, 1]，用于展示和阈值判断
     source: str = ""
     document_id: str = ""
-    retrieval_method: str = "vector"  # "vector" | "bm25" | "hybrid"
+    rerank_score: float = 0.0
+    retrieval_method: str = "vector"  # "vector" | "bm25" | "hybrid" | "hybrid+rerank"
     metadata: Dict = field(default_factory=dict)
 
 
 def _dedup_by_document(results: List[RetrievalResult]) -> List[RetrievalResult]:
     """
-    按 document_id 去重：同一文档的多个 chunk 只保留得分最高的那条。
-    保持原有排序（按 score 降序）。
+    去重：Parent-Child 策略按 (document_id, parent_index) 去重（保留同文档不同 parent），
+    普通策略按 document_id 去重。保持原有排序（按 score 降序）。
     """
     best: Dict[str, RetrievalResult] = {}
     for r in results:
-        doc_key = r.document_id or r.chunk_id
+        parent_idx = r.metadata.get('parent_index')
+        if parent_idx is not None:
+            doc_key = f"{r.document_id}_p{parent_idx}"
+        else:
+            doc_key = r.document_id or r.chunk_id
         if doc_key not in best or r.score > best[doc_key].score:
             best[doc_key] = r
     seen = set()
     deduped = []
     for r in results:
-        doc_key = r.document_id or r.chunk_id
+        parent_idx = r.metadata.get('parent_index')
+        if parent_idx is not None:
+            doc_key = f"{r.document_id}_p{parent_idx}"
+        else:
+            doc_key = r.document_id or r.chunk_id
         if doc_key not in seen and best.get(doc_key) is r:
             deduped.append(r)
             seen.add(doc_key)
@@ -187,9 +196,11 @@ class VectorRetriever:
                     chunk_id = results['ids'][0][i] if results.get('ids') else str(i)
                     meta = (results['metadatas'][0][i] if results.get('metadatas') else {}) or {}
                     similarity = _distance_to_similarity(distance, dist_fn)
+                    # Parent-Child: child 匹配但返回 parent 内容给 LLM
+                    content = meta.get('parent_content') or doc
                     output.append(RetrievalResult(
                         chunk_id=chunk_id,
-                        content=doc,
+                        content=content,
                         score=similarity,
                         vector_score=similarity,
                         similarity=similarity,
@@ -281,16 +292,19 @@ class VectorRetriever:
             if scores[idx] <= 0:
                 continue
             normalized = scores[idx] / max_score if max_score > 0 else 0.0
+            meta = metas[idx]
+            # Parent-Child: child 匹配但返回 parent 内容给 LLM
+            content = meta.get('parent_content') or contents[idx]
             results.append(RetrievalResult(
                 chunk_id=chunk_ids[idx],
-                content=contents[idx],
+                content=content,
                 score=normalized,
                 bm25_score=normalized,
                 similarity=normalized,
-                source=metas[idx].get('source', ''),
-                document_id=str(metas[idx].get('document_id', '')),
+                source=meta.get('source', ''),
+                document_id=str(meta.get('document_id', '')),
                 retrieval_method='bm25',
-                metadata=metas[idx],
+                metadata=meta,
             ))
         return results
 
@@ -410,6 +424,79 @@ class VectorRetriever:
 
         fused.sort(key=lambda r: r.score, reverse=True)
         return fused[:n_results]
+
+    # ---- 增强检索：Query 改写 + HyDE + 混合检索 + Reranker 精排 ----
+
+    @staticmethod
+    async def enhanced_query(
+        vector_db_id: int,
+        query_text: str,
+        n_results: int = 5,
+        alpha: float = 0.7,
+        use_rewrite: bool = True,
+        use_rerank: bool = True,
+        use_hyde: bool = False,
+        folder_path: Optional[str] = None,
+        parent_id: Optional[int] = None,
+    ) -> List[RetrievalResult]:
+        """
+        增强检索管线：Query 改写 → (可选)HyDE → 多路混合检索 → RRF 融合 → Reranker 精排
+        """
+        queries = [query_text]
+        if use_rewrite:
+            try:
+                from app.services.rag.query_rewriter import rewrite_query
+                queries = await rewrite_query(query_text, n_rewrites=3)
+            except Exception as e:
+                logger.warning(f"Query 改写失败，使用原始 query: {e}")
+
+        hyde_text = None
+        if use_hyde:
+            try:
+                from app.services.rag.query_rewriter import hyde_rewrite
+                hyde_text = await hyde_rewrite(query_text)
+            except Exception as e:
+                logger.warning(f"HyDE 生成失败: {e}")
+
+        coarse_n = n_results * 4 if use_rerank else n_results
+
+        retrieval_tasks = [
+            VectorRetriever.hybrid_query(
+                vector_db_id, q, coarse_n, alpha, folder_path, parent_id,
+            )
+            for q in queries
+        ]
+        if hyde_text:
+            retrieval_tasks.append(
+                VectorRetriever.query(
+                    vector_db_id, hyde_text, coarse_n, folder_path, parent_id,
+                )
+            )
+
+        multi_results = await asyncio.gather(*retrieval_tasks)
+
+        seen_chunks = set()
+        all_results: List[RetrievalResult] = []
+        for results in multi_results:
+            for r in results:
+                if r.chunk_id not in seen_chunks:
+                    all_results.append(r)
+                    seen_chunks.add(r.chunk_id)
+
+        all_results.sort(key=lambda r: r.score, reverse=True)
+        coarse_results = all_results[:coarse_n]
+
+        if use_rerank and len(coarse_results) > n_results:
+            try:
+                from app.services.rag.reranker import rerank
+                final_results = await rerank(query_text, coarse_results, top_k=n_results)
+            except Exception as e:
+                logger.warning(f"Reranker 失败，降级为粗排: {e}")
+                final_results = coarse_results[:n_results]
+        else:
+            final_results = coarse_results[:n_results]
+
+        return _dedup_by_document(final_results)
 
 
 # ------------------------------------------------------------------

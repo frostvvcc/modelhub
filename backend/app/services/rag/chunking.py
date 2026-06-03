@@ -1,8 +1,9 @@
 """
 文本分块策略模块
-支持 fixed（固定大小）、sentence（句子边界）、markdown（标题层级）三种策略
+支持 fixed、sentence、markdown、parent_child 四种策略
 """
 import re
+from dataclasses import dataclass
 from enum import Enum
 from typing import List
 from app.utils.logger_config import get_logger
@@ -11,9 +12,19 @@ logger = get_logger(__name__)
 
 
 class ChunkStrategy(str, Enum):
-    FIXED = "fixed"         # 固定大小分块（默认，兼容现有数据）
-    SENTENCE = "sentence"   # 按句子边界分块
-    MARKDOWN = "markdown"   # 按 Markdown 标题层级分块
+    FIXED = "fixed"
+    SENTENCE = "sentence"
+    MARKDOWN = "markdown"
+    PARENT_CHILD = "parent_child"
+
+
+@dataclass
+class ParentChildChunk:
+    """父子分块结果：child 用于向量检索（精度高），parent 用于喂给 LLM（上下文完整）"""
+    child_content: str
+    parent_content: str
+    parent_index: int
+    child_index: int
 
 
 def split_text_into_chunks(
@@ -23,28 +34,63 @@ def split_text_into_chunks(
     overlap: int = 150,
 ) -> List[str]:
     """
-    将文本分割成块。
-
-    Args:
-        text: 要分割的文本
-        strategy: 分块策略
-        chunk_size: 每块最大字符数（FIXED/SENTENCE 策略使用）
-        overlap: 块之间的重叠字符数（FIXED 策略使用）
-
-    Returns:
-        文本块列表
+    将文本分割成块。parent_child 策略请直接调用 split_parent_child()。
     """
     if not text or not text.strip():
         return []
 
     text = text.strip()
 
+    if strategy == ChunkStrategy.PARENT_CHILD:
+        pc = split_parent_child(text, parent_size=chunk_size, child_size=max(100, chunk_size // 4))
+        return [c.child_content for c in pc]
     if strategy == ChunkStrategy.MARKDOWN:
         return _chunk_by_markdown(text, chunk_size)
     elif strategy == ChunkStrategy.SENTENCE:
         return _chunk_by_sentence(text, chunk_size, overlap)
     else:
         return _chunk_fixed(text, chunk_size, overlap)
+
+
+def split_parent_child(
+    text: str,
+    parent_size: int = 800,
+    child_size: int = 200,
+    parent_overlap: int = 100,
+    child_overlap: int = 50,
+) -> List[ParentChildChunk]:
+    """
+    父子分块：Small-to-Big 检索策略。
+
+    先切出大块（parent，800 字），再把每个 parent 切成小块（child，200 字）。
+    检索时用 child embedding 做精准向量匹配，命中后返回 parent 给 LLM 保证上下文完整。
+    """
+    if not text or not text.strip():
+        return []
+
+    text = text.strip()
+    parents = _chunk_fixed(text, parent_size, parent_overlap)
+
+    results: List[ParentChildChunk] = []
+    for pi, parent in enumerate(parents):
+        if len(parent) <= child_size:
+            results.append(ParentChildChunk(
+                child_content=parent, parent_content=parent,
+                parent_index=pi, child_index=0,
+            ))
+        else:
+            children = _chunk_fixed(parent, child_size, child_overlap)
+            for ci, child in enumerate(children):
+                results.append(ParentChildChunk(
+                    child_content=child, parent_content=parent,
+                    parent_index=pi, child_index=ci,
+                ))
+
+    logger.info(
+        f"父子分块: {len(parents)} 个 parent → {len(results)} 个 child, "
+        f"parent_size={parent_size}, child_size={child_size}"
+    )
+    return results
 
 
 # ------------------------------------------------------------------
