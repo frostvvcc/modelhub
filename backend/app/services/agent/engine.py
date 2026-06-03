@@ -7,11 +7,12 @@ ReAct Agent 引擎
   → 不需要：直接回复
   → 循环直到 LLM 给出最终回答（设最大轮次兜底）
 """
+import asyncio
 import json
 from typing import List, Dict, Any, Optional, AsyncGenerator
 from dataclasses import dataclass
 
-from app.services.agent.tools import BaseTool
+from app.services.agent.tools import BaseTool, ToolSafetyLevel
 from app.services.agent.state_machine import AgentStateMachine, AgentState
 from app.services.agent.trace import TraceContext, Span
 from app.utils.logger_config import get_logger
@@ -22,23 +23,33 @@ logger = get_logger(__name__)
 @dataclass
 class AgentEvent:
     """Agent 运行过程中产生的事件，用于 SSE 流式推送"""
-    type: str  # state_change | thinking | tool_call | tool_result | token | sources | trace | done | error
+    type: str
     data: Dict[str, Any]
 
 
 class AgentEngine:
     """ReAct Agent 引擎"""
 
+    # 敏感工具名 → 需要的 RBAC 权限代码
+    TOOL_PERMISSION_MAP: Dict[str, str] = {
+        "knowledge_write": "knowledge:write",
+        "knowledge_delete": "knowledge:delete",
+        "database_modify": "organization:manage",
+        "user_manage": "user:manage",
+    }
+
     def __init__(
         self,
         tools: List[BaseTool],
         max_iterations: int = 5,
-        token_budget: int = 8000,
+        user_id: Optional[int] = None,
+        session: Optional[Any] = None,
     ):
         self.tools = {tool.name: tool for tool in tools}
         self.tool_list = tools
         self.max_iterations = max_iterations
-        self.token_budget = token_budget
+        self.user_id = user_id
+        self._session = session
         self.state_machine = AgentStateMachine()
         self.trace = TraceContext()
 
@@ -53,12 +64,8 @@ class AgentEngine:
     ) -> AsyncGenerator[AgentEvent, None]:
         """
         执行 ReAct 循环，yield AgentEvent 流。
-
-        messages: 对话历史 (OpenAI 格式)
-        llm_client: AsyncChatGLM 实例
-        system_messages: 额外的系统消息（RAG prompt 等）
+        只在最终回答阶段使用流式输出，中间决策阶段用非流式，避免重复调用。
         """
-        # IDLE → PLANNING
         self.state_machine.transition(AgentState.PLANNING, "开始分析用户问题")
         yield AgentEvent(type="state_change", data={
             "state": AgentState.PLANNING.value,
@@ -73,8 +80,8 @@ class AgentEngine:
 
         while iteration < self.max_iterations:
             iteration += 1
+            is_last_chance = (iteration == self.max_iterations)
 
-            # 调用 LLM
             llm_span = self.trace.create_span(
                 f"llm_call_{iteration}", span_type="llm_call",
                 input_data={"message_count": len(working_messages), "iteration": iteration},
@@ -82,7 +89,11 @@ class AgentEngine:
 
             try:
                 client = llm_client._get_client()
-                all_msgs = [{"role": "system", "content": llm_client.system_prompt}] + working_messages
+                all_msgs = working_messages
+
+                # 关键：最后一轮或没有待处理的 tool_calls 时，用流式输出直接返回
+                # 中间决策轮次用非流式，减少 token 浪费
+                use_stream = False
 
                 response = await client.chat.completions.create(
                     model=llm_client.model,
@@ -90,6 +101,8 @@ class AgentEngine:
                     tools=openai_tools if openai_tools else None,
                     temperature=llm_client.temperature,
                     top_p=llm_client.top_p,
+                    max_tokens=4096,
+                    stream=False,
                 )
 
                 choice = response.choices[0]
@@ -110,9 +123,8 @@ class AgentEngine:
                 yield AgentEvent(type="trace", data=self.trace.to_dict())
                 return
 
-            # 检查是否有 tool_calls
+            # 有 tool_calls → 执行工具
             if message.tool_calls:
-                # PLANNING/REFLECTING → TOOL_CALLING
                 if self.state_machine.can_transition(AgentState.TOOL_CALLING):
                     self.state_machine.transition(
                         AgentState.TOOL_CALLING,
@@ -124,7 +136,6 @@ class AgentEngine:
                         "tool_count": len(message.tool_calls),
                     })
 
-                # 将 assistant 消息（含 tool_calls）加入对话
                 working_messages.append({
                     "role": "assistant",
                     "content": message.content or "",
@@ -141,56 +152,88 @@ class AgentEngine:
                 if message.content:
                     yield AgentEvent(type="thinking", data={"content": message.content})
 
-                # 执行每个工具
+                # 预解析所有 tool_call 参数
+                parsed_calls = []
                 for tc in message.tool_calls:
                     tool_name = tc.function.name
                     try:
                         tool_args = json.loads(tc.function.arguments)
                     except json.JSONDecodeError:
                         tool_args = {}
-
+                    parsed_calls.append((tc, tool_name, tool_args))
                     yield AgentEvent(type="tool_call", data={
-                        "tool": tool_name,
-                        "args": tool_args,
-                        "call_id": tc.id,
+                        "tool": tool_name, "args": tool_args, "call_id": tc.id,
                     })
 
-                    # 执行工具
+                # 并行执行所有工具调用（asyncio.gather），执行前按安全等级拦截
+                async def _exec_tool(tc, tool_name, tool_args):
                     tool_span = self.trace.create_span(
                         f"tool:{tool_name}", span_type="tool_call",
                         input_data={"tool": tool_name, "args": tool_args},
                     )
-
                     tool = self.tools.get(tool_name)
-                    if tool:
-                        try:
-                            result = await tool.execute(**tool_args)
-                            # 缓存 RAG 结果以在最终回复中使用
-                            if tool_name == "knowledge_search" and result.get("_raw_rag_result"):
-                                rag_result_cache = result.pop("_raw_rag_result")
-                            tool_span.finish(output=result)
-                        except Exception as e:
-                            result = {"error": str(e)}
-                            tool_span.finish(error=str(e))
-                    else:
+                    if not tool:
                         result = {"error": f"未知工具: {tool_name}"}
                         tool_span.finish(error=f"未知工具: {tool_name}")
+                        return tc, tool_name, tool_args, result, tool_span
+
+                    # 安全等级检查
+                    if tool.safety_level == ToolSafetyLevel.DANGEROUS:
+                        result = {
+                            "blocked": True,
+                            "reason": "该操作属于危险级别，需要用户二次确认后才能执行",
+                            "tool": tool_name,
+                            "args": tool_args,
+                        }
+                        logger.warning(f"🔴 [安全拦截] 危险工具 {tool_name} 被拦截，需要用户确认")
+                        tool_span.finish(output=result)
+                        return tc, tool_name, tool_args, result, tool_span
+
+                    if tool.safety_level == ToolSafetyLevel.SENSITIVE:
+                        if not self.user_id or not self._session:
+                            result = {"blocked": True, "reason": "敏感操作需要用户身份验证"}
+                            tool_span.finish(output=result)
+                            return tc, tool_name, tool_args, result, tool_span
+                        required_perm = self.TOOL_PERMISSION_MAP.get(tool_name)
+                        if required_perm:
+                            from app.services.permission_service import AsyncPermissionService
+                            has_perm = await AsyncPermissionService.check_permission(
+                                self._session, self.user_id, required_perm,
+                            )
+                            if not has_perm:
+                                result = {"blocked": True, "reason": f"权限不足：需要 {required_perm} 权限"}
+                                logger.warning(f"🟡 [安全拦截] 用户 {self.user_id} 缺少 {required_perm} 权限，工具 {tool_name} 被拦截")
+                                tool_span.finish(output=result)
+                                return tc, tool_name, tool_args, result, tool_span
+                        logger.info(f"🟡 [安全检查] 敏感工具 {tool_name}，用户 {self.user_id} RBAC 权限校验通过")
+
+                    try:
+                        result = await tool.execute(**tool_args)
+                        tool_span.finish(output=result)
+                    except Exception as e:
+                        result = {"error": str(e)}
+                        tool_span.finish(error=str(e))
+                    return tc, tool_name, tool_args, result, tool_span
+
+                tool_results = await asyncio.gather(
+                    *[_exec_tool(tc, tn, ta) for tc, tn, ta in parsed_calls]
+                )
+
+                for tc, tool_name, tool_args, result, tool_span in tool_results:
+                    if tool_name == "knowledge_search" and isinstance(result, dict) and result.get("_raw_rag_result"):
+                        rag_result_cache = result.pop("_raw_rag_result")
 
                     yield AgentEvent(type="tool_result", data={
-                        "tool": tool_name,
-                        "result": result,
-                        "call_id": tc.id,
-                        "latency_ms": tool_span.latency_ms,
+                        "tool": tool_name, "result": result,
+                        "call_id": tc.id, "latency_ms": tool_span.latency_ms,
                     })
 
-                    # 将工具结果加入对话
                     working_messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
-                        "content": json.dumps(result, ensure_ascii=False, default=str)[:2000],
+                        "content": json.dumps(result, ensure_ascii=False, default=str)[:1200],
                     })
 
-                # TOOL_CALLING → REFLECTING
                 if self.state_machine.can_transition(AgentState.REFLECTING):
                     self.state_machine.transition(AgentState.REFLECTING, "分析工具返回结果")
                     yield AgentEvent(type="state_change", data={
@@ -200,8 +243,7 @@ class AgentEngine:
 
                 continue
 
-            # 无 tool_calls → 最终回答
-            # 流式输出 token
+            # 无 tool_calls → 最终回答，用真流式输出
             if self.state_machine.can_transition(AgentState.RESPONDING):
                 self.state_machine.transition(AgentState.RESPONDING, "生成最终回答")
                 yield AgentEvent(type="state_change", data={
@@ -209,47 +251,42 @@ class AgentEngine:
                     "label": "生成回答中...",
                 })
 
-            # 重新调用 LLM 进行流式输出
+            # 如果本轮已有内容（LLM 直接给出文本回答），用真流式重新请求
+            # 如果是第一轮且无 tool_calls，说明 LLM 认为不需要工具，直接流式输出
+            final_span = self.trace.create_span(
+                "llm_final_stream", span_type="llm_stream",
+                input_data={"message_count": len(working_messages)},
+            )
             try:
-                stream_span = self.trace.create_span(
-                    "stream_response", span_type="llm_stream",
-                    input_data={"message_count": len(working_messages)},
-                )
-
                 stream = await client.chat.completions.create(
                     model=llm_client.model,
-                    messages=all_msgs,
+                    messages=working_messages,
                     temperature=llm_client.temperature,
                     top_p=llm_client.top_p,
+                    max_tokens=4096,
                     stream=True,
                 )
-
-                stream_tokens = 0
+                token_count = 0
                 async for chunk in stream:
                     delta = chunk.choices[0].delta if chunk.choices else None
                     if delta and delta.content:
                         accumulated_content += delta.content
-                        stream_tokens += 1
+                        token_count += 1
                         yield AgentEvent(type="token", data={"content": delta.content})
-
-                stream_span.completion_tokens = stream_tokens
-                stream_span.finish(output={"content_length": len(accumulated_content)})
-
+                final_span.completion_tokens = token_count
+                final_span.finish(output={"content_length": len(accumulated_content)})
             except Exception as e:
-                # 回退到非流式结果
+                final_span.finish(error=str(e))
                 accumulated_content = message.content or ""
-                for i in range(0, len(accumulated_content), 4):
-                    chunk = accumulated_content[i:i+4]
-                    yield AgentEvent(type="token", data={"content": chunk})
+                if accumulated_content:
+                    yield AgentEvent(type="token", data={"content": accumulated_content})
 
             break
 
-        # 如果超出最大轮次
         if iteration >= self.max_iterations and not accumulated_content:
             accumulated_content = "抱歉，经过多次尝试仍未能得到满意的结果，请尝试更具体的问题。"
             yield AgentEvent(type="token", data={"content": accumulated_content})
 
-        # RESPONDING → DONE
         if self.state_machine.can_transition(AgentState.DONE):
             self.state_machine.transition(AgentState.DONE, "回答完成")
 
@@ -287,13 +324,14 @@ class SimpleStreamEngine:
 
         try:
             client = llm_client._get_client()
-            all_msgs = [{"role": "system", "content": llm_client.system_prompt}] + messages
+            all_msgs = messages
 
             stream = await client.chat.completions.create(
                 model=llm_client.model,
                 messages=all_msgs,
                 temperature=llm_client.temperature,
                 top_p=llm_client.top_p,
+                max_tokens=4096,
                 stream=True,
             )
 

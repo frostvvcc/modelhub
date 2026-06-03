@@ -85,9 +85,10 @@ class RetrievalResult:
     vector_score: float = 0.0
     bm25_score: float = 0.0
     similarity: float = 0.0  # 归一化综合相似度 [0, 1]，用于展示和阈值判断
+    rerank_score: float = 0.0  # Reranker 精排分数（0-10）
     source: str = ""
     document_id: str = ""
-    retrieval_method: str = "vector"  # "vector" | "bm25" | "hybrid"
+    retrieval_method: str = "vector"  # "vector" | "bm25" | "hybrid" | "hybrid+rerank"
     metadata: Dict = field(default_factory=dict)
 
 
@@ -410,6 +411,98 @@ class VectorRetriever:
 
         fused.sort(key=lambda r: r.score, reverse=True)
         return fused[:n_results]
+
+    # ---- 增强检索：Query 改写 + 混合检索 + Reranker 精排 ----
+
+    @staticmethod
+    async def enhanced_query(
+        vector_db_id: int,
+        query_text: str,
+        n_results: int = 5,
+        alpha: float = 0.7,
+        use_rewrite: bool = True,
+        use_rerank: bool = True,
+        use_hyde: bool = False,
+        folder_path: Optional[str] = None,
+        parent_id: Optional[int] = None,
+    ) -> List[RetrievalResult]:
+        """
+        增强检索管线：Query 改写 → (可选)HyDE → 多路混合检索 → RRF 融合 → Reranker 精排
+
+        阶段：
+          1.  Query Rewriting：口语化问题 → 多个检索友好的 query
+          1b. HyDE：生成假设文档，利用其 embedding 补充向量检索路
+          2.  混合检索：对每个 query 跑向量+BM25，合并去重
+          3.  Reranker：从粗排 top-20 中精选 top-5
+
+        Args:
+            vector_db_id: 知识库 ID
+            query_text: 用户原始查询
+            n_results: 最终返回数量
+            alpha: 向量权重
+            use_rewrite: 是否启用 Query 改写
+            use_rerank: 是否启用 Reranker 精排
+            use_hyde: 是否启用 HyDE（假设文档嵌入）
+        """
+        # 第 1 阶段：Query 改写
+        if use_rewrite:
+            from app.services.rag.query_rewriter import rewrite_query
+            queries = await rewrite_query(query_text, n_rewrites=3)
+        else:
+            queries = [query_text]
+
+        # 第 1b 阶段：HyDE — 生成假设文档用于向量检索
+        hyde_text = None
+        if use_hyde:
+            from app.services.rag.query_rewriter import hyde_rewrite
+            hyde_text = await hyde_rewrite(query_text)
+
+        # 第 2 阶段：多路混合检索
+        coarse_n = n_results * 4 if use_rerank else n_results
+
+        retrieval_tasks = [
+            VectorRetriever.hybrid_query(
+                vector_db_id, q, coarse_n, alpha, folder_path, parent_id,
+            )
+            for q in queries
+        ]
+
+        # HyDE 路：用假设文档做纯向量检索（BM25 对假设文档文本无意义）
+        if hyde_text:
+            retrieval_tasks.append(
+                VectorRetriever.query(
+                    vector_db_id, hyde_text, coarse_n, folder_path, parent_id,
+                )
+            )
+
+        multi_results = await asyncio.gather(*retrieval_tasks)
+
+        seen_chunks = set()
+        all_results: List[RetrievalResult] = []
+        for results in multi_results:
+            for r in results:
+                if r.chunk_id not in seen_chunks:
+                    all_results.append(r)
+                    seen_chunks.add(r.chunk_id)
+
+        all_results.sort(key=lambda r: r.score, reverse=True)
+        coarse_results = all_results[:coarse_n]
+
+        logger.info(
+            f"增强检索: {len(queries)} 个 query"
+            f"{'+ HyDE ' if hyde_text else ''}"
+            f"× 混合检索 → "
+            f"{len(all_results)} 候选（去重后）→ 粗排 top-{len(coarse_results)}"
+        )
+
+        # 第 3 阶段：Reranker 精排
+        if use_rerank and len(coarse_results) > n_results:
+            from app.services.rag.reranker import rerank
+            final_results = await rerank(query_text, coarse_results, top_k=n_results)
+        else:
+            final_results = coarse_results[:n_results]
+
+        return _dedup_by_document(final_results)
 
 
 # ------------------------------------------------------------------

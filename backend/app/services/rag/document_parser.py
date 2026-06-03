@@ -1,13 +1,123 @@
 """
 文档解析模块
 支持 PDF、Word（.docx/.doc）、纯文本、Excel、PPT、Markdown、图片（OCR）
+包含网页爬取文本的 Boilerplate Removal（正文提取 / 噪声清洗）
 """
 import os
+import re
 import tempfile
-from typing import Optional
+from typing import Optional, List
 from app.utils.logger_config import get_logger
 
 logger = get_logger(__name__)
+
+
+# ------------------------------------------------------------------
+# 文本清洗（Boilerplate Removal）
+# ------------------------------------------------------------------
+
+_METADATA_PATTERN = re.compile(
+    r'^(标题|来源URL|发布日期|抓取时间|来源|发布时间)\s*[:：].*$',
+    re.MULTILINE,
+)
+
+_FOOTER_KEYWORDS = frozenset({
+    "icp备", "all rights reserved", "版权所有", "备案号", "鲁公网安备",
+    "邮编", "copyright", "鲁icp",
+})
+
+_NAV_KEYWORDS = frozenset({
+    "首页", "学校概况", "学校简介", "大学章程", "历史沿革", "学校文化",
+    "现任领导", "历任领导", "组织机构", "人才培养", "本科生教育", "研究生教育",
+    "国际生教育", "远程教育", "学科建设", "招生就业", "本科生招生", "研究生招生",
+    "成人招生", "就业网", "科学研究", "科研工作", "人文社科", "技术转移",
+    "人才招聘", "合作交流", "校友之家", "基金会", "校友办", "新闻网",
+    "教学单位", "机构设置", "导航", "正文", "信息公开", "接诉即办",
+    "党政办公室", "教务部", "学团工作部", "安全管理部", "后勤管理部",
+    "图书馆", "国际交流部", "工会", "科研部", "财务部", "资产部",
+})
+
+_ATTACHMENT_PATTERN = re.compile(r'附件【[^】]*】已下载\s*\d*\s*次?')
+
+
+def clean_web_text(text: str) -> str:
+    """
+    清洗网页爬取文本，去除非正文内容。
+    处理 5 种噪声：元数据头、导航菜单、重复导航、页脚版权、附件标注。
+    """
+    if not text:
+        return ""
+
+    # 1. 去元数据头行（标题:/来源URL:/发布日期:/抓取时间:）
+    text = _METADATA_PATTERN.sub('', text)
+
+    # 2. 去附件下载标注
+    text = _ATTACHMENT_PATTERN.sub('', text)
+
+    # 3. 逐行过滤：去导航菜单行和页脚行
+    lines = text.split('\n')
+    cleaned_lines: List[str] = []
+    nav_streak = 0
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if cleaned_lines and cleaned_lines[-1] != '':
+                cleaned_lines.append('')
+            nav_streak = 0
+            continue
+
+        lower = stripped.lower()
+
+        # 页脚版权行
+        if any(kw in lower for kw in _FOOTER_KEYWORDS):
+            continue
+
+        # 导航菜单行：短行（<=10字符）且是导航关键词
+        if len(stripped) <= 10 and stripped in _NAV_KEYWORDS:
+            nav_streak += 1
+            continue
+
+        # 如果之前连续跳过了多个导航行，说明在菜单区域
+        if nav_streak >= 3 and len(stripped) <= 10:
+            nav_streak += 1
+            continue
+
+        nav_streak = 0
+
+        # 单个字符的噪声行（如 "X", "-"）
+        if len(stripped) <= 1:
+            continue
+
+        cleaned_lines.append(stripped)
+
+    # 4. 去重复段落（相同内容只保留第一次出现）
+    seen = set()
+    deduped: List[str] = []
+    for line in cleaned_lines:
+        if line == '' or line not in seen:
+            deduped.append(line)
+            if line:
+                seen.add(line)
+
+    result = '\n'.join(deduped).strip()
+
+    # 5. 合并连续空行
+    result = re.sub(r'\n{3,}', '\n\n', result)
+
+    if text and result:
+        ratio = len(result) / len(text)
+        logger.info(f"文本清洗: 原始 {len(text)} 字符 → 清洗后 {len(result)} 字符 (保留 {ratio:.0%})")
+
+    return result
+
+
+def is_worth_indexing(text: str, min_length: int = 100) -> bool:
+    """判断清洗后的文本是否值得入库"""
+    if not text or len(text.strip()) < min_length:
+        return False
+    meaningful_chars = sum(1 for c in text if c.isalnum() or c in '，。！？、；：""''（）')
+    return meaningful_chars >= min_length * 0.5
 
 
 def extract_text(file_path: str) -> Optional[str]:

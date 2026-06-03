@@ -47,6 +47,9 @@ OFFICIAL_VECTOR_DB_NAMES = {
 LAYERED_RAG_FALLBACK_THRESHOLD = float(os.getenv("RAG_FALLBACK_THRESHOLD", "0.40"))
 LAYERED_RAG_MAX_VECTOR_DBS = int(os.getenv("RAG_MAX_VECTOR_DBS", "5"))
 LAYERED_RAG_MAX_CONTEXTS = int(os.getenv("RAG_MAX_CONTEXTS", "5"))
+RAG_USE_REWRITE = os.getenv("RAG_USE_REWRITE", "true").lower() in ("true", "1", "yes")
+RAG_USE_RERANK = os.getenv("RAG_USE_RERANK", "true").lower() in ("true", "1", "yes")
+RAG_USE_HYDE = os.getenv("RAG_USE_HYDE", "false").lower() in ("true", "1", "yes")
 CHAT_ATTACHMENT_VECTOR_DB_PREFIX = "会话附件库"
 CHAT_ATTACHMENT_MAX_FILE_SIZE = 20 * 1024 * 1024
 CHAT_ATTACHMENT_EXTENSIONS = {
@@ -335,11 +338,18 @@ class AsyncVectorService:
                     raise RuntimeError(f"OCR识别失败，无法提取图片文字: {file_path}")
 
             # 使用统一文档解析器（支持 PDF/Word/Excel/PPT/Markdown/文本/图片）
-            from app.services.rag.document_parser import extract_text
+            from app.services.rag.document_parser import extract_text, clean_web_text, is_worth_indexing
             text_content = extract_text(actual_file_path)
 
             if not text_content or not text_content.strip():
                 raise RuntimeError(f"文件内容为空，无法解析文件: {os.path.basename(file_path)}")
+
+            # 文本清洗：去除网页噪声（导航菜单、元数据头、页脚版权等）
+            text_content = clean_web_text(text_content)
+
+            # 质量门槛：清洗后内容不足则拒绝入库
+            if not is_worth_indexing(text_content):
+                raise RuntimeError(f"文件清洗后内容不足，不值得入库: {os.path.basename(file_path)}")
 
             # 获取嵌入模型（使用配置）
             from app.config import settings
@@ -1807,7 +1817,10 @@ class AsyncVectorService:
         vector_db: VectorDb,
         layer: str,
         message: str,
-        n_results: int = 3
+        n_results: int = 3,
+        use_rewrite: bool = RAG_USE_REWRITE,
+        use_rerank: bool = RAG_USE_RERANK,
+        use_hyde: bool = RAG_USE_HYDE,
     ) -> Dict[str, Any]:
         from app.services.rag.retrieval import VectorRetriever
 
@@ -1815,7 +1828,15 @@ class AsyncVectorService:
             return AsyncVectorService._empty_rag_result()
 
         try:
-            rag_results = await VectorRetriever.hybrid_query(vector_db.id, message, n_results=n_results)
+            if use_rewrite or use_rerank or use_hyde:
+                rag_results = await VectorRetriever.enhanced_query(
+                    vector_db.id, message, n_results=n_results,
+                    use_rewrite=use_rewrite, use_rerank=use_rerank, use_hyde=use_hyde,
+                )
+            else:
+                rag_results = await VectorRetriever.hybrid_query(
+                    vector_db.id, message, n_results=n_results,
+                )
             return AsyncVectorService._serialize_retrieval_results(vector_db, layer, rag_results)
         except Exception as exc:
             logger.warning(

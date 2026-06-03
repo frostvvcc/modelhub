@@ -119,13 +119,17 @@ const activeCite = ref<{ source: BotChatSource; rect: DOMRect } | null>(null);
 const handleCiteClick = (e: MouseEvent) => {
   const target = (e.target as HTMLElement).closest('.cite-inline') as HTMLElement | null;
   if (!target) return;
-  const index = parseInt(target.dataset.citeIndex || '0', 10) - 1;
+  const citeIndex = parseInt(target.dataset.citeIndex || '0', 10) - 1;
   const msgEl = target.closest('.ds-msg') as HTMLElement | null;
   if (!msgEl) return;
-  const msgIndex = Array.from(msgEl.parentElement!.children).indexOf(msgEl);
+  const msgIndex = msgEl.dataset.msgIndex
+    ? parseInt(msgEl.dataset.msgIndex, 10)
+    : Array.from(msgEl.parentElement!.children).indexOf(msgEl);
+  if (msgIndex < 0 || msgIndex >= messages.value.length) return;
   const msg = messages.value[msgIndex];
-  if (!msg?.sources?.[index]) return;
-  activeCite.value = { source: msg.sources[index], rect: target.getBoundingClientRect() };
+  if (!msg?.sources?.length) return;
+  const source = msg.sources[citeIndex] || msg.sources[0];
+  activeCite.value = { source, rect: target.getBoundingClientRect() };
 };
 
 const closeCitePopover = () => { activeCite.value = null; };
@@ -313,6 +317,7 @@ onMounted(loadBot);
           :key="index"
           class="ds-msg"
           :class="{ 'ds-msg--user': message.role === 'user', 'ds-msg--ai': message.role === 'assistant' }"
+          :data-msg-index="index"
         >
           <!-- 用户消息 -->
           <template v-if="message.role === 'user'">
@@ -487,28 +492,26 @@ onMounted(loadBot);
       </div>
     </div>
     <!-- 引用来源弹窗 -->
-    <Teleport to="body">
-      <div v-if="activeCite" class="ds-cite-overlay" @click.self="closeCitePopover">
-        <div class="ds-cite-popover" :style="citePopoverStyle">
-          <div class="ds-cite-popover-header">
-            <span class="ds-cite-popover-file">{{ activeCite.source.source }}</span>
-            <span class="ds-meta-tag ds-meta-tag--sm" :class="getLevelClass((activeCite.source as any).confidence_label)">{{ (activeCite.source as any).confidence_label || '中' }}</span>
-          </div>
-          <div class="ds-cite-popover-meta">
-            <span v-if="activeCite.source.vector_db_name" class="ds-cite-popover-meta-tag">{{ activeCite.source.vector_db_name }}</span>
-            <span class="ds-cite-popover-meta-tag">{{ getRetrievalLabel(activeCite.source.retrieval_method) }}</span>
-          </div>
-          <div class="ds-cite-popover-content">{{ activeCite.source.content }}</div>
-          <div class="ds-cite-popover-actions">
-            <button v-if="(activeCite.source as any).document_id" class="ds-cite-btn ds-cite-btn--primary" @click="handleDownloadSource(activeCite.source)">
-              <el-icon :size="13"><Download /></el-icon>
-              下载文档
-            </button>
-            <button class="ds-cite-btn" @click="closeCitePopover">关闭</button>
-          </div>
+    <div v-if="activeCite" class="ds-cite-overlay" @click.self="closeCitePopover">
+      <div class="ds-cite-popover" :style="citePopoverStyle">
+        <div class="ds-cite-popover-header">
+          <span class="ds-cite-popover-file">{{ activeCite.source.source }}</span>
+          <span class="ds-meta-tag ds-meta-tag--sm" :class="getLevelClass((activeCite.source as any).confidence_label)">{{ (activeCite.source as any).confidence_label || '中' }}</span>
+        </div>
+        <div class="ds-cite-popover-meta">
+          <span v-if="activeCite.source.vector_db_name" class="ds-cite-popover-meta-tag">{{ activeCite.source.vector_db_name }}</span>
+          <span class="ds-cite-popover-meta-tag">{{ getRetrievalLabel(activeCite.source.retrieval_method) }}</span>
+        </div>
+        <div class="ds-cite-popover-content">{{ activeCite.source.content }}</div>
+        <div class="ds-cite-popover-actions">
+          <button v-if="(activeCite.source as any).document_id" class="ds-cite-btn ds-cite-btn--primary" @click="handleDownloadSource(activeCite.source)">
+            <el-icon :size="13"><Download /></el-icon>
+            下载文档
+          </button>
+          <button class="ds-cite-btn" @click="closeCitePopover">关闭</button>
         </div>
       </div>
-    </Teleport>
+    </div>
   </div>
 </template>
 

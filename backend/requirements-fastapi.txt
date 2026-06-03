@@ -27,10 +27,8 @@ email-validator==2.2.0
 
 # 保持现有依赖
 chromadb>=0.5.17  # 与 pyproject.toml 保持一致
-langchain==0.3.25
-llama-index==0.12.42
+llama-index==0.12.42  # 用于 Embedding 模型基类和向量索引缓存
 openai==1.86.0
-sentence-transformers==2.2.2
 redis==4.6.0
 
 # 文件处理

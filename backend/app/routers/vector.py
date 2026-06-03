@@ -565,6 +565,9 @@ class DebugQueryRequest(_BaseModel):
     n_results: int = 10
     alpha: float = 0.7
     use_hybrid: bool = True
+    use_rewrite: bool = False
+    use_rerank: bool = False
+    use_hyde: bool = False
 
 
 class DebugResult(_BaseModel):
@@ -574,6 +577,7 @@ class DebugResult(_BaseModel):
     source: str
     vector_score: float
     bm25_score: float
+    rerank_score: float = 0.0
     final_score: float
     retrieval_method: str
     highlighted_terms: List[str]
@@ -587,6 +591,7 @@ class DebugQueryResponse(_BaseModel):
     bm25_search_time_ms: float
     alpha: float
     n_results: int
+    pipeline: str
 
 
 @router.post(
@@ -608,7 +613,22 @@ async def debug_query(
 
     t0 = time.time()
 
-    if request.use_hybrid:
+    use_enhanced = request.use_rewrite or request.use_rerank or request.use_hyde
+    if use_enhanced:
+        t_vec_start = time.time()
+        results = await VectorRetriever.enhanced_query(
+            vector_db_id=vector_id,
+            query_text=request.query,
+            n_results=request.n_results,
+            alpha=request.alpha,
+            use_rewrite=request.use_rewrite,
+            use_rerank=request.use_rerank,
+            use_hyde=request.use_hyde,
+        )
+        vector_time = (time.time() - t_vec_start) * 1000
+        bm25_time = 0.0
+        pipeline = "enhanced"
+    elif request.use_hybrid:
         t_vec_start = time.time()
         results = await VectorRetriever.hybrid_query(
             vector_db_id=vector_id,
@@ -618,6 +638,7 @@ async def debug_query(
         )
         vector_time = (time.time() - t_vec_start) * 1000
         bm25_time = 0.0
+        pipeline = "hybrid"
     else:
         t_vec_start = time.time()
         results = await VectorRetriever.query(
@@ -627,6 +648,7 @@ async def debug_query(
         )
         vector_time = (time.time() - t_vec_start) * 1000
         bm25_time = 0.0
+        pipeline = "vector"
 
     total_time = (time.time() - t0) * 1000
     query_terms = VectorRetriever._tokenize(request.query)
@@ -640,6 +662,7 @@ async def debug_query(
             source=r.source,
             vector_score=round(r.vector_score, 4),
             bm25_score=round(r.bm25_score, 4),
+            rerank_score=round(r.rerank_score, 4),
             final_score=round(r.score, 4),
             retrieval_method=r.retrieval_method,
             highlighted_terms=[t for t in query_terms if t in r.content],
@@ -653,4 +676,5 @@ async def debug_query(
         bm25_search_time_ms=round(bm25_time, 2),
         alpha=request.alpha,
         n_results=request.n_results,
+        pipeline=pipeline,
     )

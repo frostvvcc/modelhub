@@ -464,13 +464,17 @@ const activeCite = ref<{ source: SourceCitation; rect: DOMRect } | null>(null);
 const handleCiteClick = (e: MouseEvent) => {
   const target = (e.target as HTMLElement).closest('.cite-inline') as HTMLElement | null;
   if (!target) return;
-  const index = parseInt(target.dataset.citeIndex || '0', 10) - 1;
+  const citeIndex = parseInt(target.dataset.citeIndex || '0', 10) - 1;
   const msgEl = target.closest('.msg') as HTMLElement | null;
   if (!msgEl) return;
-  const msgIndex = Array.from(msgEl.parentElement!.children).indexOf(msgEl);
+  const msgIndex = msgEl.dataset.msgIndex
+    ? parseInt(msgEl.dataset.msgIndex, 10)
+    : Array.from(msgEl.parentElement!.children).indexOf(msgEl);
+  if (msgIndex < 0 || msgIndex >= messages.value.length) return;
   const msg = messages.value[msgIndex];
-  if (!msg?.sources?.[index]) return;
-  activeCite.value = { source: msg.sources[index], rect: target.getBoundingClientRect() };
+  if (!msg?.sources?.length) return;
+  const source = msg.sources[citeIndex] || msg.sources[0];
+  activeCite.value = { source, rect: target.getBoundingClientRect() };
 };
 
 const closeCitePopover = () => { activeCite.value = null; };
@@ -627,6 +631,7 @@ const scrollToBottom = () => {
           :key="`${message.create_at}-${index}`"
           class="msg"
           :class="[message.role]"
+          :data-msg-index="index"
         >
           <!-- 用户消息 -->
           <template v-if="message.role === 'user'">
@@ -919,28 +924,26 @@ const scrollToBottom = () => {
     </ElDrawer>
 
     <!-- 引用来源弹窗 -->
-    <Teleport to="body">
-      <div v-if="activeCite" class="cite-overlay" @click.self="closeCitePopover">
-        <div class="cite-popover" :style="citePopoverStyle">
-          <div class="cite-popover-header">
-            <span class="cite-popover-file">{{ activeCite.source.source }}</span>
-            <span class="cite-popover-tag" :class="getConfidenceClass(activeCite.source.confidence_label)">{{ activeCite.source.confidence_label || '中' }}</span>
-          </div>
-          <div class="cite-popover-meta">
-            <span v-if="activeCite.source.vector_db_name" class="cite-popover-meta-tag">{{ activeCite.source.vector_db_name }}</span>
-            <span class="cite-popover-meta-tag">{{ getRetrievalMethodLabel(activeCite.source.retrieval_method) }}</span>
-          </div>
-          <div class="cite-popover-content">{{ activeCite.source.content }}</div>
-          <div class="cite-popover-actions">
-            <button v-if="activeCite.source.document_id" class="cite-popover-btn cite-popover-btn--primary" @click="handleDownloadSource(activeCite.source)">
-              <el-icon :size="13"><Download /></el-icon>
-              下载文档
-            </button>
-            <button class="cite-popover-btn" @click="closeCitePopover">关闭</button>
-          </div>
+    <div v-if="activeCite" class="cite-overlay" @click.self="closeCitePopover">
+      <div class="cite-popover" :style="citePopoverStyle">
+        <div class="cite-popover-header">
+          <span class="cite-popover-file">{{ activeCite.source.source }}</span>
+          <span class="cite-popover-tag" :class="getConfidenceClass(activeCite.source.confidence_label)">{{ activeCite.source.confidence_label || '中' }}</span>
+        </div>
+        <div class="cite-popover-meta">
+          <span v-if="activeCite.source.vector_db_name" class="cite-popover-meta-tag">{{ activeCite.source.vector_db_name }}</span>
+          <span class="cite-popover-meta-tag">{{ getRetrievalMethodLabel(activeCite.source.retrieval_method) }}</span>
+        </div>
+        <div class="cite-popover-content">{{ activeCite.source.content }}</div>
+        <div class="cite-popover-actions">
+          <button v-if="activeCite.source.document_id" class="cite-popover-btn cite-popover-btn--primary" @click="handleDownloadSource(activeCite.source)">
+            <el-icon :size="13"><Download /></el-icon>
+            下载文档
+          </button>
+          <button class="cite-popover-btn" @click="closeCitePopover">关闭</button>
         </div>
       </div>
-    </Teleport>
+    </div>
   </div>
 </template>
 

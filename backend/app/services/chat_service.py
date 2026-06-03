@@ -31,7 +31,10 @@ class AsyncChatService:
     DEFAULT_CONTEXT_TEMPLATE = (
         "【知识库上下文】\n"
         "{context_blocks}\n\n"
-        "请严格依据以上上下文回答。引用事实时在句末标注对应来源编号，例如 [来源1]。"
+        "【引用规则 — 必须遵守】\n"
+        "1. 回答中每个来自上下文的事实都必须标注来源编号，如 [来源1]，不可省略。\n"
+        "2. 来源编号必须与上面的 [来源N] 一一对应，不可编造不存在的编号。\n"
+        "3. 如果一句话的信息来自多个来源，全部标注，如 [来源1][来源3]。"
     )
     DEFAULT_REFUSAL_STRATEGY = (
         "如果知识库资料不足以回答，请明确说明“当前知识库依据不足”，"
@@ -114,12 +117,10 @@ class AsyncChatService:
             label_counter += 1
             label = AsyncChatService._make_citation_label(citation_template, label_counter)
 
-            header = (
-                f"{label} 文件：{source.get('source') or '未知'}；"
-                f"知识库：{source.get('vector_db_name') or source.get('vector_db_id') or '未知'}；"
-                f"检索方式：{source.get('retrieval_method') or 'vector'}；"
-                f"依据充分程度：{confidence_label}"
-            )
+            source_name = source.get('source') or '未知'
+            if len(source_name) > 40:
+                source_name = source_name[:37] + '...'
+            header = f"{label}（{source_name}）"
             available = budget - used_chars - len(header) - 2
             if available <= 80:
                 break
@@ -145,6 +146,32 @@ class AsyncChatService:
         if grounded_ratio > 0:
             return "低"
         return "不足"
+
+    @staticmethod
+    async def _reformulate_for_retrieval(
+        current_message: str,
+        history_messages: List[Dict[str, str]],
+    ) -> str:
+        """
+        Multi-turn Query Reformulation：结合对话历史将追问补全为独立查询。
+
+        当用户追问"截止日期呢？"时，检索层不知道在问什么的截止日期。
+        本方法利用对话历史将追问改写为独立的检索 query。
+
+        Args:
+            current_message: 当前用户消息
+            history_messages: 逆序消息列表（最新在前），[0] 应为当前消息
+        Returns:
+            补全后的独立查询
+        """
+        if not history_messages or len(history_messages) <= 1:
+            return current_message
+        prior = history_messages[1:]
+        if not prior:
+            return current_message
+        prior_chrono = list(reversed(prior))[-6:]
+        from app.services.rag.query_rewriter import condense_follow_up
+        return await condense_follow_up(current_message, prior_chrono)
 
     @staticmethod
     def _renumber_citations(
@@ -454,12 +481,15 @@ class AsyncChatService:
                 "fallback_used": False,
             }
 
+            # Multi-turn Query Reformulation：用对话历史将追问补全为独立查询
+            retrieval_query = await AsyncChatService._reformulate_for_retrieval(message, history)
+
             all_extra_ids = (vector_db_ids or []) + attachment_vector_db_ids
             if model_config:
                 rag_result = await AsyncVectorService.query_vector_by_model(
                     session,
                     model_config_id,
-                    message,
+                    retrieval_query,
                     user_id=user_id,
                     extra_vector_db_ids=all_extra_ids if all_extra_ids else None,
                 )
@@ -629,6 +659,19 @@ class AsyncChatService:
                 chat_messages_list.append(ChatMessage(role=msg['role'], content=msg['content']))
 
             model_config = await AsyncModelMapper.get_model_config_by_id(session, model_config_id)
+
+            # Multi-turn Query Reformulation：用对话历史将追问补全为独立查询
+            user_idx = next(
+                (i for i, msg in enumerate(history) if msg.get("role") == "user"),
+                None,
+            )
+            if user_idx is not None and len(history) > user_idx + 1:
+                retrieval_query = await AsyncChatService._reformulate_for_retrieval(
+                    last_user_message, history[user_idx:]
+                )
+            else:
+                retrieval_query = last_user_message
+
             rag_result = {
                 "contexts": [],
                 "sources": [],
@@ -645,7 +688,7 @@ class AsyncChatService:
                 rag_result = await AsyncVectorService.query_vector_by_model(
                     session,
                     model_config_id,
-                    last_user_message,
+                    retrieval_query,
                     user_id=user_id,
                 )
 
@@ -877,6 +920,9 @@ class AsyncChatService:
         # 获取模型配置
         model_config = await AsyncModelMapper.get_model_config_by_id(db, model_config_id)
 
+        # Multi-turn Query Reformulation：用对话历史将追问补全为独立查询
+        retrieval_query = await AsyncChatService._reformulate_for_retrieval(message, history_messages)
+
         # RAG 检索：Bot 的知识库优先，无则回退到 ModelConfig 默认行为
         rag_result = {
             "contexts": [], "sources": [], "used_knowledge_base": False,
@@ -886,13 +932,13 @@ class AsyncChatService:
         }
         if vector_db_ids:
             rag_result = await AsyncVectorService.query_vector_by_model(
-                db, model_config_id, message,
+                db, model_config_id, retrieval_query,
                 user_id=user.id,
                 extra_vector_db_ids=vector_db_ids,
             )
         elif model_config:
             rag_result = await AsyncVectorService.query_vector_by_model(
-                db, model_config_id, message, user_id=user.id,
+                db, model_config_id, retrieval_query, user_id=user.id,
             )
 
         # Layer 2: ModelConfig RAG 编排（引用格式、上下文模板、拒答策略）

@@ -1,0 +1,187 @@
+{
+  "version": "2.0",
+  "vector_db_id": 11,
+  "total_items": 15,
+  "items": [
+    {
+      "id": 1,
+      "query": "咱基础课部的老师都在济南校区上课吗？",
+      "relevant_document_ids": [
+        "568"
+      ],
+      "relevant_chunk_ids": [
+        "568_chunk_0"
+      ],
+      "source_content_preview": "标题: 基础课部 - 师资队伍\n学院: 基础课部\n校区: 济南校区\n类别: 师资队伍\n来源URL: http://jckb.sdust.edu.cn/szdw.htm; http://jckb.sdust.edu.cn/szdw/szgk.htm; http://jckb.sdust.edu.cn/szdw/jsfc.htm\n抓取时间: 2026-05-15 23:00:14\n\n--- 师资队伍 ",
+      "source_name": "基础课部_师资队伍.txt"
+    },
+    {
+      "id": 2,
+      "query": "咱学校泰安校区那个教公共课的部门，最近有啥新活动或者重要通知没？",
+      "relevant_document_ids": [
+        "577"
+      ],
+      "relevant_chunk_ids": [
+        "577_chunk_0"
+      ],
+      "source_content_preview": "标题: 新闻中心\n学院: 公共课教学部\n校区: 泰安校区\n类别: 新闻动态\n来源URL: https://ggkjxb.sdust.edu.cn/xwzx.htm\n抓取时间: 2026-05-15 22:55:53\n\n学校主页\n泰安校区\n学部信箱\n首页\n学部概况\n学部简介\n现任领导\n机构设置\n师资队伍\n新闻中心\n通知公告\n学部新闻\n教育教学\n教学动态\n管理制度\n学科建设\n实验教学\n教学团队\n研究生",
+      "source_name": "公共课教学部_新闻动态_新闻中心.txt"
+    },
+    {
+      "id": 3,
+      "query": "咱学校最近是不是有省里领导来视察啊？",
+      "relevant_document_ids": [
+        "560"
+      ],
+      "relevant_chunk_ids": [
+        "560_chunk_0"
+      ],
+      "source_content_preview": "标题: 山东省委常委、统战部部长邓云锋来校调研\n来源URL: https://www.sdust.edu.cn/info/1034/25446.htm\n发布日期: 未识别\n抓取时间: 2026-05-13 11:09:43\n\nX\n智慧校园\n信息公开\n接诉即办\nEnglish\n导航\n首页\n学校概况\n学校简介\n大学章程\n历史沿革\n学校文化\n现任领导\n历任领导\n组织机构\n泰安校区\n济南校区\n教学单位\n机",
+      "source_name": "sdust_e5c46f975a_山东省委常委、统战部部长邓云锋来校调研.txt"
+    },
+    {
+      "id": 4,
+      "query": "咱学校最近是不是在省里拿了个思政方面的奖？",
+      "relevant_document_ids": [
+        "549"
+      ],
+      "relevant_chunk_ids": [
+        "549_chunk_0"
+      ],
+      "source_content_preview": "标题: 学校在2025年省高校思政优秀成果评选中获佳绩\n来源URL: https://www.sdust.edu.cn/info/1034/25459.htm\n发布日期: 未识别\n抓取时间: 2026-05-13 11:09:45\n\nX\n智慧校园\n信息公开\n接诉即办\nEnglish\n导航\n首页\n学校概况\n学校简介\n大学章程\n历史沿革\n学校文化\n现任领导\n历任领导\n组织机构\n泰安校区\n济南校区\n教学",
+      "source_name": "sdust_3f77c48887_学校在2025年省高校思政优秀成果评选中获佳绩.txt"
+    },
+    {
+      "id": 5,
+      "query": "我答辩过了，但系统里材料好像还缺几样，这会影响拿证吗？",
+      "relevant_document_ids": [
+        "547"
+      ],
+      "relevant_chunk_ids": [
+        "547_chunk_7"
+      ],
+      "source_content_preview": "答辩通过学生毕业设计资料完整性核查\n教务部完成对答辩通过学生的毕设系统材料完整性核查，做好相关电子和纸质材料归档工作。\n6月19日\n12\n第二次答辩\n第二次答辩\n各学院（系）组织进入第二次答辩环节的本科毕业生进行答辩。\n7月6日至7月7日\n13\n第三轮毕业设计（论文）抽检\n第三轮毕业设计（论文）抽\n7月7日至7月11日\n14\n答辩通过学生提交毕业设计最终版材料\n通过答辩的毕业生将答辩后修改完善的毕",
+      "source_name": "sdust_239dafc378_济南校区关于做好 2026 届本科毕业生毕业设计（论文） 抽检、答辩及相关工作的通知.txt"
+    },
+    {
+      "id": 6,
+      "query": "老师，我加那个QQ群的时候，验证信息是不是得写自己班和名字啊？",
+      "relevant_document_ids": [
+        "571"
+      ],
+      "relevant_chunk_ids": [
+        "571_chunk_1"
+      ],
+      "source_content_preview": "（附件一）\n发送电子邮件至\nshuxuejianmo2026@126.com；另外请报名同学加入QQ群：1103377303（验证信息：班级+姓名）。\n注：报名表电子版也可在\nQQ群文件下载。\n3.赛事咨询：请广大参赛同学在规定时\n间内\n报名，如有其他问题请咨询基础课部数学教研室刘绍庆老师，电话：\n13156186768；马婷老师，电话：18854126586。\n基础课部\n2026年4月2\n9\n日",
+      "source_name": "基础课部_通知公告_2026年全国大学生数学建模竞赛报名通知.txt"
+    },
+    {
+      "id": 7,
+      "query": "我论文查重过了，但AI检测没过，这会影响我答辩吗？",
+      "relevant_document_ids": [
+        "552"
+      ],
+      "relevant_chunk_ids": [
+        "552_chunk_1"
+      ],
+      "source_content_preview": "11 日；第 3 次检测时间段为 6 月 2 日至 6 月 15 日。\n所有本科生毕业设计（论文）均需参加查重检测，查重检测结果以毕设系统中生成的文本复制检测报告单为准，去除本人文献复制比\nR\n＜\n30%\n，\n视为合格；\nR\n≥\n30%，视为不合格。\n二、\n试行人工智能生成内容（\nAIGC\n）检测\n为进一步加强学术道德和学术诚信，杜绝人工智能代写、伪造等学术不端行为，保障本科毕业设计质量，学校对\n",
+      "source_name": "sdust_63e3f5f6a5_山东科技大学济南校区关于做好2025届本科毕业生毕业设计（论文）答辩及相关工作的通知.txt"
+    },
+    {
+      "id": 8,
+      "query": "最近学校好像搞了好多活动，比如合唱比赛、交响音乐会还有各种讲座，这些是不是都算第二课堂学分啊？",
+      "relevant_document_ids": [
+        "563"
+      ],
+      "relevant_chunk_ids": [
+        "563_chunk_1"
+      ],
+      "source_content_preview": "-11\n山东省委常委、统战部部长邓云锋来校调研\n2026-04-30\n学校举办2026年五四颁奖典礼\n2026-04-28\n山东科技大学第七届教职工代表大会暨工会会员代表大会第一次会议召开\n2026-04-27\n山东科技大学举办“研心向党担使命，七十五载续华章”研究生合唱比赛\n2026-05-11\n王君松带队赴山东黄金集团推进产学研合作\n2026-05-09\n校党委理论学习中心组（扩大）赴国家深海",
+      "source_name": "sdust_ee6e15d293_查看更多 科大要闻.txt"
+    },
+    {
+      "id": 9,
+      "query": "今年这个数学建模比赛啥时候开始报名啊？",
+      "relevant_document_ids": [
+        "571"
+      ],
+      "relevant_chunk_ids": [
+        "571_chunk_0"
+      ],
+      "source_content_preview": "标题: 2026年全国大学生数学建模竞赛报名通知\n学院: 基础课部\n校区: 济南校区\n类别: 通知公告\n来源URL: http://jckb.sdust.edu.cn/info/1076/3731.htm\n抓取时间: 2026-05-15 23:00:14\n\n2026年全国大学生数学建模竞赛报名通知\n作者： 时间：2026-04-29 点击数：\n各班级：\n全国大学生数学建模竞赛是中国工业与应用数学",
+      "source_name": "基础课部_通知公告_2026年全国大学生数学建模竞赛报名通知.txt"
+    },
+    {
+      "id": 10,
+      "query": "泰安校区那边的研究生课程是在哪儿上课啊？",
+      "relevant_document_ids": [
+        "579"
+      ],
+      "relevant_chunk_ids": [
+        "579_chunk_0"
+      ],
+      "source_content_preview": "标题: 公共课教学部 - 研究生教育\n学院: 公共课教学部\n校区: 泰安校区\n类别: 研究生教育\n来源URL: https://ggkjxb.sdust.edu.cn/jyjx/xkjs.htm; https://ggkjxb.sdust.edu.cn/jyjx/yjsjy.htm\n抓取时间: 2026-05-15 22:55:53\n\n--- 学科建设 ---\n学校主页\n泰安校区\n学部信箱\n首页\n",
+      "source_name": "公共课教学部_研究生教育.txt"
+    },
+    {
+      "id": 11,
+      "query": "咱学校在聊城那边有去高中做宣讲吗？",
+      "relevant_document_ids": [
+        "564"
+      ],
+      "relevant_chunk_ids": [
+        "564_chunk_2"
+      ],
+      "source_content_preview": "高考招生咨询会\n2026-04-13\n学校赴聊城二中、茌平二中、聊城水城中学等6所高中开展招生宣传\n2026-04-13\n印象科大\n更多>>\n印象科大\n(2024-04-05)\n山东科技大学2025年招生宣传片《炬火》\n(2025-06-27)\n泰安校区宣传片《追光前行》\n(2025-05-09)\n山东科技大学2024年招生宣传片《逐光新生》\n(2024-07-06)\n专业介绍\n更多\n>>\n能源与",
+      "source_name": "sdust_f47c8e2f51_信息公开 更多.txt"
+    },
+    {
+      "id": 12,
+      "query": "泰安校区的公共课老师联系方式在哪找啊？",
+      "relevant_document_ids": [
+        "575"
+      ],
+      "relevant_chunk_ids": [
+        "575_chunk_0"
+      ],
+      "source_content_preview": "标题: 公共课教学部 - 师资队伍\n学院: 公共课教学部\n校区: 泰安校区\n类别: 师资队伍\n来源URL: https://ggkjxb.sdust.edu.cn/xbgk/szdw.htm\n抓取时间: 2026-05-15 22:55:53\n\n--- 师资队伍 ---\n学校主页\n泰安校区\n学部信箱\n首页\n学部概况\n学部简介\n现任领导\n机构设置\n师资队伍\n新闻中心\n通知公告\n学部新闻\n教育教学\n教",
+      "source_name": "公共课教学部_师资队伍.txt"
+    },
+    {
+      "id": 13,
+      "query": "学校在青岛黄岛那边的地址具体是哪条路啊？",
+      "relevant_document_ids": [
+        "556"
+      ],
+      "relevant_chunk_ids": [
+        "556_chunk_0"
+      ],
+      "source_content_preview": "标题: 以青春赴山海以实践绘新篇\n来源URL: https://www.sdust.edu.cn/info/1039/25354.htm\n发布日期: 未识别\n抓取时间: 2026-05-13 11:09:40\n\nX\n智慧校园\n信息公开\n接诉即办\nEnglish\n导航\n首页\n学校概况\n学校简介\n大学章程\n历史沿革\n学校文化\n现任领导\n历任领导\n组织机构\n泰安校区\n济南校区\n教学单位\n机构设置\n人才培",
+      "source_name": "sdust_b6c1b6f87a_以青春赴山海以实践绘新篇.txt"
+    },
+    {
+      "id": 14,
+      "query": "老师，咱们基础课部最近是不是在搞新老师培训或者教学交流活动啊？",
+      "relevant_document_ids": [
+        "569"
+      ],
+      "relevant_chunk_ids": [
+        "569_chunk_1"
+      ],
+      "source_content_preview": "绩\n2021-09-18\n基础课部组织开展教师公开课活动\n2021-09-17\n基础课部召开“精彩课堂”工作布置会\n2021-09-17\n基础课部召开青年教师导航计划专题会议\n2021-09-11\n基础课部2021-2022学年第一学期青年教师助课工作安排\n共23条 1/2\n首页\n上页\n下页\n尾页\n页\nCopyright© 2020 山东科技大学基础课部. 学院地址：山东省济南市天桥区胜利庄路17",
+      "source_name": "基础课部_本科生教育.txt"
+    },
+    {
+      "id": 15,
+      "query": "咱泰安校区的公共课教学部，毕业了能安排工作不？有没有啥就业帮扶啊？",
+      "relevant_document_ids": [
+        "576"
+      ],
+      "relevant_chunk_ids": [
+        "576_chunk_0"
+      ],
+      "source_content_preview": "标题: 公共课教学部 - 招生就业\n学院: 公共课教学部\n校区: 泰安校区\n类别: 招生就业\n来源URL: https://ggkjxb.sdust.edu.cn/zsjy.htm; https://ggkjxb.sdust.edu.cn/zsjy/zsxx.htm; https://ggkjxb.sdust.edu.cn/zsjy/jyxx.htm\n抓取时间: 2026-05-15 22:55:",
+      "source_name": "公共课教学部_招生就业.txt"
+    }
+  ]
+}

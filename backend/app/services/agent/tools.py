@@ -4,10 +4,13 @@ Agent 工具定义
 支持知识库检索、数据库查询、计算器、日期时间、话题分析等 5 种工具。
 每个工具定义 OpenAI Function Calling 兼容的 JSON Schema。
 """
+import ast
 import json
-import re
 import math
+import operator
+import re
 from abc import ABC, abstractmethod
+from enum import Enum
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,11 +20,19 @@ from app.utils.logger_config import get_logger
 logger = get_logger(__name__)
 
 
+class ToolSafetyLevel(Enum):
+    """工具安全等级 — 决定执行前需要什么级别的检查"""
+    SAFE = "safe"
+    SENSITIVE = "sensitive"
+    DANGEROUS = "dangerous"
+
+
 class BaseTool(ABC):
     """工具基类"""
     name: str = ""
     description: str = ""
     parameters: Dict[str, Any] = {}
+    safety_level: ToolSafetyLevel = ToolSafetyLevel.SAFE
 
     def to_openai_tool(self) -> Dict[str, Any]:
         return {
@@ -75,13 +86,12 @@ class KnowledgeSearchTool(BaseTool):
                 return {"found": False, "message": "知识库中未找到相关信息", "sources": []}
 
             formatted = []
-            for i, s in enumerate(sources[:5]):
+            for i, s in enumerate(sources[:3]):
                 formatted.append({
                     "index": i + 1,
-                    "content": (s.get("content") or "")[:500],
+                    "content": (s.get("content") or "")[:300],
                     "source": s.get("source", "未知"),
                     "similarity": round(s.get("similarity", 0), 4),
-                    "retrieval_method": s.get("retrieval_method", "vector"),
                 })
             return {
                 "found": True,
@@ -169,22 +179,54 @@ class CalculatorTool(BaseTool):
         "required": ["expression"]
     }
 
-    SAFE_FUNCTIONS = {
+    _SAFE_OPERATORS = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.FloorDiv: operator.floordiv,
+        ast.Mod: operator.mod,
+        ast.Pow: operator.pow,
+        ast.USub: operator.neg,
+        ast.UAdd: operator.pos,
+    }
+
+    _SAFE_FUNCTIONS = {
         "abs": abs, "round": round, "min": min, "max": max,
         "sqrt": math.sqrt, "pow": math.pow, "log": math.log, "log2": math.log2, "log10": math.log10,
         "sin": math.sin, "cos": math.cos, "tan": math.tan,
         "asin": math.asin, "acos": math.acos, "atan": math.atan,
         "ceil": math.ceil, "floor": math.floor,
-        "pi": math.pi, "e": math.e,
     }
+
+    _SAFE_CONSTANTS = {"pi": math.pi, "e": math.e}
+
+    def _safe_eval(self, node: ast.AST) -> Any:
+        """递归求值 AST 节点，仅允许数字、运算符和白名单函数"""
+        if isinstance(node, ast.Expression):
+            return self._safe_eval(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, ast.Name) and node.id in self._SAFE_CONSTANTS:
+            return self._SAFE_CONSTANTS[node.id]
+        if isinstance(node, ast.BinOp) and type(node.op) in self._SAFE_OPERATORS:
+            left = self._safe_eval(node.left)
+            right = self._safe_eval(node.right)
+            return self._SAFE_OPERATORS[type(node.op)](left, right)
+        if isinstance(node, ast.UnaryOp) and type(node.op) in self._SAFE_OPERATORS:
+            return self._SAFE_OPERATORS[type(node.op)](self._safe_eval(node.operand))
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in self._SAFE_FUNCTIONS:
+                args = [self._safe_eval(a) for a in node.args]
+                return self._SAFE_FUNCTIONS[node.func.id](*args)
+            raise ValueError(f"不允许的函数: {ast.dump(node.func)}")
+        raise ValueError(f"不支持的表达式节点: {type(node).__name__}")
 
     async def execute(self, expression: str, **kwargs) -> Dict[str, Any]:
         try:
-            cleaned = re.sub(r'[^0-9+\-*/().,%^ a-zA-Z_]', '', expression)
-            if not cleaned.strip():
-                return {"error": "无效表达式"}
-            cleaned = cleaned.replace('^', '**')
-            result = eval(cleaned, {"__builtins__": {}}, self.SAFE_FUNCTIONS)
+            cleaned = expression.replace('^', '**')
+            tree = ast.parse(cleaned, mode='eval')
+            result = self._safe_eval(tree)
             return {"expression": expression, "result": result}
         except Exception as e:
             return {"expression": expression, "error": f"计算失败: {str(e)}"}
@@ -307,3 +349,26 @@ def get_default_tools(
         DateTimeTool(),
         TopicAnalysisTool(),
     ]
+
+
+def get_tools_for_query(
+    message: str,
+    session: AsyncSession,
+    model_config_id: int,
+    user_id: int,
+    vector_db_ids: Optional[List[int]] = None,
+) -> List[BaseTool]:
+    """
+    动态工具注册：根据用户消息语义按需加载工具，
+    减少每次 LLM 调用携带的工具定义 token 开销。
+    """
+    tools: List[BaseTool] = [
+        KnowledgeSearchTool(session, model_config_id, user_id, vector_db_ids),
+    ]
+    if any(kw in message for kw in ("学院", "专业", "班级", "组织", "院系", "学校")):
+        tools.append(DatabaseQueryTool(session, user_id))
+    if any(kw in message for kw in ("计算", "算", "等于", "求解", "加", "减", "乘", "除", "%")):
+        tools.append(CalculatorTool())
+    if any(kw in message for kw in ("几点", "几号", "日期", "时间", "星期", "今天", "明天", "昨天")):
+        tools.append(DateTimeTool())
+    return tools

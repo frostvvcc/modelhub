@@ -48,13 +48,6 @@ class AsyncChatGLM:
     async def chat(self, messages: Sequence[ChatMessage], **kwargs: Any) -> ChatResponse:
         """异步聊天功能"""
         try:
-            # 添加系统提示
-            system_message = ChatMessage(
-                role=MessageRole.SYSTEM,
-                content=self.system_prompt
-            )
-            
-            # 处理消息
             if isinstance(messages, str):
                 user_messages = [ChatMessage(
                     content=messages,
@@ -62,17 +55,13 @@ class AsyncChatGLM:
                 )]
             else:
                 user_messages = list(messages)
-            
-            # 合并消息
-            all_messages = [system_message] + user_messages
-            
-            # 转换为 API 格式
+
             message_dicts = [
                 {
                     "role": msg.role.value,
                     "content": msg.content
                 }
-                for msg in all_messages
+                for msg in user_messages
             ]
             
             # 异步调用 API
@@ -82,6 +71,7 @@ class AsyncChatGLM:
                 messages=message_dicts,
                 top_p=self.top_p,
                 temperature=self.temperature,
+                max_tokens=kwargs.pop("max_tokens", 4096),
                 **kwargs
             )
             
