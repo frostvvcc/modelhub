@@ -47,6 +47,7 @@ OFFICIAL_VECTOR_DB_NAMES = {
 LAYERED_RAG_FALLBACK_THRESHOLD = float(os.getenv("RAG_FALLBACK_THRESHOLD", "0.40"))
 LAYERED_RAG_MAX_VECTOR_DBS = int(os.getenv("RAG_MAX_VECTOR_DBS", "5"))
 LAYERED_RAG_MAX_CONTEXTS = int(os.getenv("RAG_MAX_CONTEXTS", "5"))
+RAG_USE_ENHANCED = os.getenv("RAG_USE_ENHANCED", "false").lower() in ("true", "1", "yes")
 RAG_USE_REWRITE = os.getenv("RAG_USE_REWRITE", "true").lower() in ("true", "1", "yes")
 RAG_USE_RERANK = os.getenv("RAG_USE_RERANK", "true").lower() in ("true", "1", "yes")
 RAG_USE_HYDE = os.getenv("RAG_USE_HYDE", "false").lower() in ("true", "1", "yes")
@@ -262,7 +263,26 @@ class AsyncVectorService:
                 document = await AsyncDB.create(session, document)
                 await AsyncDB.commit(session)
                 
-                # 处理文件并添加到向量数据库（异步执行）
+                # 处理文件并添加到向量数据库
+                # 优先走 Celery 异步任务队列（如果可用），否则降级为同步处理
+                use_celery = os.getenv("USE_CELERY", "false").lower() in ("true", "1", "yes")
+                if use_celery:
+                    try:
+                        from app.tasks.document_tasks import process_document_task
+                        task = process_document_task.delay(
+                            vector_db_id, str(full_path), document.id,
+                            folder_path, parent_id,
+                            chunk_strategy, chunk_size, chunk_overlap,
+                        )
+                        logger.info(f"文档入库任务已提交 Celery: task_id={task.id}, document_id={document.id}")
+                        document.status = "processing"
+                        document.error_message = f"celery_task_id:{task.id}"
+                        document = await AsyncDB.update(session, document)
+                        await AsyncDB.commit(session)
+                        return document.id
+                    except Exception as celery_err:
+                        logger.warning(f"Celery 提交失败，降级为同步处理: {celery_err}")
+
                 await asyncio.to_thread(
                     AsyncVectorService._process_and_add_file,
                     vector_db_id,
@@ -320,11 +340,12 @@ class AsyncVectorService:
         """
         ocr_text_path = None
         try:
-            # 获取集合
-            client = get_chromadb_client()
-            if not client:
-                raise RuntimeError("ChromaDB 服务不可用，请检查 ChromaDB 是否已启动")
-            collection = client.get_collection(f"vector_db_{vector_db_id}")
+            # 获取向量存储（通过可插拔抽象层，支持 ChromaDB / Milvus 切换）
+            from app.utils.vector_store import get_vector_store
+            store = get_vector_store()
+            collection_name = f"vector_db_{vector_db_id}"
+            # 保持向后兼容：如果是 ChromaDB，直接拿 collection 对象
+            collection = store.get_collection(collection_name)
 
             # 检查是否为图片文件，如果是则进行OCR处理
             actual_file_path = file_path
@@ -338,18 +359,11 @@ class AsyncVectorService:
                     raise RuntimeError(f"OCR识别失败，无法提取图片文字: {file_path}")
 
             # 使用统一文档解析器（支持 PDF/Word/Excel/PPT/Markdown/文本/图片）
-            from app.services.rag.document_parser import extract_text, clean_web_text, is_worth_indexing
+            from app.services.rag.document_parser import extract_text
             text_content = extract_text(actual_file_path)
 
             if not text_content or not text_content.strip():
                 raise RuntimeError(f"文件内容为空，无法解析文件: {os.path.basename(file_path)}")
-
-            # 文本清洗：去除网页噪声（导航菜单、元数据头、页脚版权等）
-            text_content = clean_web_text(text_content)
-
-            # 质量门槛：清洗后内容不足则拒绝入库
-            if not is_worth_indexing(text_content):
-                raise RuntimeError(f"文件清洗后内容不足，不值得入库: {os.path.basename(file_path)}")
 
             # 获取嵌入模型（使用配置）
             from app.config import settings
@@ -360,7 +374,7 @@ class AsyncVectorService:
             )
 
             # 分割文本为块（使用 rag/chunking 模块）
-            from app.services.rag.chunking import split_text_into_chunks, ChunkStrategy
+            from app.services.rag.chunking import split_text_into_chunks, ChunkStrategy, split_parent_child
             try:
                 strategy = ChunkStrategy(chunk_strategy)
             except ValueError:
@@ -368,49 +382,92 @@ class AsyncVectorService:
                 strategy = ChunkStrategy.FIXED
             safe_chunk_size = max(100, min(int(chunk_size or 800), 4000))
             safe_overlap = max(0, min(int(chunk_overlap or 150), safe_chunk_size - 1))
-            chunks = split_text_into_chunks(
-                text_content,
-                strategy=strategy,
-                chunk_size=safe_chunk_size,
-                overlap=safe_overlap,
-            )
 
-            # 为每个文本块生成嵌入并添加到 ChromaDB
-            for i, chunk in enumerate(chunks):
-                # 生成嵌入向量
-                embedding = embedding_model.get_text_embedding(chunk)
+            # 公共 metadata 字段
+            base_meta = {
+                'source': os.path.basename(actual_file_path),
+                'document_id': document_id,
+                'chunk_strategy': strategy.value,
+                'chunk_size': safe_chunk_size,
+                'chunk_overlap': safe_overlap,
+            }
+            if folder_hierarchy:
+                base_meta['folder_hierarchy'] = folder_hierarchy
+            if parent_id:
+                base_meta['parent_id'] = str(parent_id)
+            if is_image_file(file_path):
+                base_meta['source_type'] = 'image_ocr'
+                base_meta['original_image'] = os.path.basename(file_path)
 
-                # 准备元数据
-                metadata = {
-                    'source': os.path.basename(actual_file_path),
-                    'chunk_id': i,
-                    'total_chunks': len(chunks),
-                    'document_id': document_id,
-                    'chunk_strategy': strategy.value,
-                    'chunk_size': safe_chunk_size,
-                    'chunk_overlap': safe_overlap,
-                }
+            chunks = []
+            pc_chunks = []
 
-                # ⭐ 添加层级路径信息
-                if folder_hierarchy:
-                    metadata['folder_hierarchy'] = folder_hierarchy
-                    logger.info(f"📁 文件层级路径: {folder_hierarchy}")
-
-                if parent_id:
-                    metadata['parent_id'] = str(parent_id)
-
-                # 如果是 OCR 识别的文本，添加额外元数据
-                if is_image_file(file_path):
-                    metadata['source_type'] = 'image_ocr'
-                    metadata['original_image'] = os.path.basename(file_path)
-
-                # 添加到 ChromaDB
-                collection.add(
-                    embeddings=[embedding],
-                    documents=[chunk],
-                    metadatas=[metadata],
-                    ids=[f"{document_id}_chunk_{i}"]
+            if strategy == ChunkStrategy.PARENT_CHILD:
+                # 父子分块：child 做 embedding 检索，parent 存 metadata 供 LLM 消费
+                child_size = max(100, safe_chunk_size // 4)
+                pc_chunks = split_parent_child(
+                    text_content,
+                    parent_size=safe_chunk_size,
+                    child_size=child_size,
                 )
+                for i, pc in enumerate(pc_chunks):
+                    embedding = embedding_model.get_text_embedding(pc.child_content)
+                    metadata = {
+                        **base_meta,
+                        'chunk_id': i,
+                        'total_chunks': len(pc_chunks),
+                        'parent_content': pc.parent_content,
+                        'parent_index': pc.parent_index,
+                        'child_index': pc.child_index,
+                        'is_child_chunk': True,
+                    }
+                    collection.add(
+                        embeddings=[embedding],
+                        documents=[pc.child_content],
+                        metadatas=[metadata],
+                        ids=[f"{document_id}_chunk_{i}"]
+                    )
+            else:
+                # 常规分块策略
+                chunks = split_text_into_chunks(
+                    text_content,
+                    strategy=strategy,
+                    chunk_size=safe_chunk_size,
+                    overlap=safe_overlap,
+                )
+                for i, chunk in enumerate(chunks):
+                    embedding = embedding_model.get_text_embedding(chunk)
+                    metadata = {
+                        **base_meta,
+                        'chunk_id': i,
+                        'total_chunks': len(chunks),
+                    }
+                    collection.add(
+                        embeddings=[embedding],
+                        documents=[chunk],
+                        metadatas=[metadata],
+                        ids=[f"{document_id}_chunk_{i}"]
+                    )
+
+            # GraphRAG：从入库的 chunk 中抽取三元组写入 Neo4j
+            try:
+                from app.services.rag.graph_rag import NEO4J_ENABLED, extract_triples, store_triples
+                if NEO4J_ENABLED:
+                    import asyncio as _aio
+                    loop = _aio.new_event_loop()
+                    all_triples = []
+                    graph_texts = ([pc.parent_content for pc in pc_chunks] if pc_chunks else chunks)[:50]
+                    for idx, chunk_text in enumerate(graph_texts):
+                        if chunk_text:
+                            triples = loop.run_until_complete(extract_triples(
+                                chunk_text, chunk_id=f"{document_id}_chunk_{idx}", document_id=str(document_id),
+                            ))
+                            all_triples.extend(triples)
+                    loop.close()
+                    if all_triples:
+                        store_triples(all_triples, vector_db_id)
+            except Exception as graph_err:
+                logger.warning(f"GraphRAG 三元组抽取/存储失败（不影响向量入库）: {graph_err}")
 
             # 使 BM25 索引缓存失效（新文档入库后需重建）
             from app.services.rag.retrieval import invalidate_bm25_cache
@@ -1817,10 +1874,7 @@ class AsyncVectorService:
         vector_db: VectorDb,
         layer: str,
         message: str,
-        n_results: int = 3,
-        use_rewrite: bool = RAG_USE_REWRITE,
-        use_rerank: bool = RAG_USE_RERANK,
-        use_hyde: bool = RAG_USE_HYDE,
+        n_results: int = 3
     ) -> Dict[str, Any]:
         from app.services.rag.retrieval import VectorRetriever
 
@@ -1828,10 +1882,12 @@ class AsyncVectorService:
             return AsyncVectorService._empty_rag_result()
 
         try:
-            if use_rewrite or use_rerank or use_hyde:
+            if RAG_USE_ENHANCED:
                 rag_results = await VectorRetriever.enhanced_query(
                     vector_db.id, message, n_results=n_results,
-                    use_rewrite=use_rewrite, use_rerank=use_rerank, use_hyde=use_hyde,
+                    use_rewrite=RAG_USE_REWRITE,
+                    use_rerank=RAG_USE_RERANK,
+                    use_hyde=RAG_USE_HYDE,
                 )
             else:
                 rag_results = await VectorRetriever.hybrid_query(

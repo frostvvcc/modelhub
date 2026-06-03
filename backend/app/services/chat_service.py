@@ -508,6 +508,18 @@ class AsyncChatService:
                     rag_result["contexts"] = [source["content"] for source in enriched_sources]
 
             # 构建提示词（根据是否使用知识库）
+            # GraphRAG：注入知识图谱子图上下文
+            try:
+                from app.services.rag.graph_rag import NEO4J_ENABLED, graph_augmented_context
+                if NEO4J_ENABLED and rag_result.get("vector_db_ids"):
+                    graph_ctx = await graph_augmented_context(
+                        retrieval_query, rag_result["vector_db_ids"][0]
+                    )
+                    if graph_ctx:
+                        prompt_messages.append(ChatMessage(role="system", content=graph_ctx))
+            except Exception as graph_err:
+                logger.warning(f"GraphRAG 上下文注入失败: {graph_err}")
+
             if rag_result["used_knowledge_base"]:
                 chat_messages_list = prompt_messages + chat_messages_list
                 logger.info(

@@ -1,13 +1,28 @@
 """
 异步 LLM 客户端连接池
-使用异步客户端，支持真正的异步调用
+使用异步客户端，支持真正的异步调用。
+Semaphore 控制全局 LLM 并发上限，防止打爆 API rate limit。
 """
+import os
 from typing import Optional, Dict, Any
 import asyncio
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+LLM_MAX_CONCURRENCY = int(os.getenv("LLM_MAX_CONCURRENCY", "10"))
+_llm_semaphore = asyncio.Semaphore(LLM_MAX_CONCURRENCY)
+
+
+async def acquire_llm_slot():
+    """获取 LLM 调用许可（全局最多 LLM_MAX_CONCURRENCY 个并发）"""
+    await _llm_semaphore.acquire()
+
+
+def release_llm_slot():
+    """释放 LLM 调用许可"""
+    _llm_semaphore.release()
 
 
 class AsyncLLMPool:

@@ -678,3 +678,21 @@ async def debug_query(
         n_results=request.n_results,
         pipeline=pipeline,
     )
+
+
+@router.get("/tasks/{task_id}")
+async def get_task_status(task_id: str):
+    """查询 Celery 异步文档入库任务状态"""
+    from app.celery_app import celery_app
+    result = celery_app.AsyncResult(task_id)
+    response = {"task_id": task_id, "state": result.state}
+    if result.state == "PROGRESS":
+        response["progress"] = result.info.get("progress", 0)
+        response["step"] = result.info.get("step", "")
+        response["current"] = result.info.get("current")
+        response["total_chunks"] = result.info.get("total_chunks")
+    elif result.state == "SUCCESS":
+        response["result"] = result.result
+    elif result.state == "FAILURE":
+        response["error"] = str(result.result)
+    return SuccessResponse(data=response)

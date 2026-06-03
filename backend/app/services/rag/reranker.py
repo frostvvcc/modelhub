@@ -59,9 +59,11 @@ async def rerank(
     client = _get_rerank_client()
 
     # 构建批量评分 prompt — 一次 LLM 调用完成所有候选的评分
+    # 根据候选数量动态调整截断长度，保证 LLM 能看到足够内容
+    max_chars_per_doc = max(200, 4000 // len(candidates))
     docs_text = ""
     for i, c in enumerate(candidates):
-        content_preview = c.content[:200].replace('\n', ' ')
+        content_preview = c.content[:max_chars_per_doc].replace('\n', ' ')
         docs_text += f"[文档{i+1}] {content_preview}\n"
 
     prompt = (

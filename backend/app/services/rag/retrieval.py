@@ -85,27 +85,35 @@ class RetrievalResult:
     vector_score: float = 0.0
     bm25_score: float = 0.0
     similarity: float = 0.0  # 归一化综合相似度 [0, 1]，用于展示和阈值判断
-    rerank_score: float = 0.0  # Reranker 精排分数（0-10）
     source: str = ""
     document_id: str = ""
+    rerank_score: float = 0.0
     retrieval_method: str = "vector"  # "vector" | "bm25" | "hybrid" | "hybrid+rerank"
     metadata: Dict = field(default_factory=dict)
 
 
 def _dedup_by_document(results: List[RetrievalResult]) -> List[RetrievalResult]:
     """
-    按 document_id 去重：同一文档的多个 chunk 只保留得分最高的那条。
-    保持原有排序（按 score 降序）。
+    去重：Parent-Child 策略按 (document_id, parent_index) 去重（保留同文档不同 parent），
+    普通策略按 document_id 去重。保持原有排序（按 score 降序）。
     """
     best: Dict[str, RetrievalResult] = {}
     for r in results:
-        doc_key = r.document_id or r.chunk_id
+        parent_idx = r.metadata.get('parent_index')
+        if parent_idx is not None:
+            doc_key = f"{r.document_id}_p{parent_idx}"
+        else:
+            doc_key = r.document_id or r.chunk_id
         if doc_key not in best or r.score > best[doc_key].score:
             best[doc_key] = r
     seen = set()
     deduped = []
     for r in results:
-        doc_key = r.document_id or r.chunk_id
+        parent_idx = r.metadata.get('parent_index')
+        if parent_idx is not None:
+            doc_key = f"{r.document_id}_p{parent_idx}"
+        else:
+            doc_key = r.document_id or r.chunk_id
         if doc_key not in seen and best.get(doc_key) is r:
             deduped.append(r)
             seen.add(doc_key)
@@ -188,9 +196,11 @@ class VectorRetriever:
                     chunk_id = results['ids'][0][i] if results.get('ids') else str(i)
                     meta = (results['metadatas'][0][i] if results.get('metadatas') else {}) or {}
                     similarity = _distance_to_similarity(distance, dist_fn)
+                    # Parent-Child: child 匹配但返回 parent 内容给 LLM
+                    content = meta.get('parent_content') or doc
                     output.append(RetrievalResult(
                         chunk_id=chunk_id,
-                        content=doc,
+                        content=content,
                         score=similarity,
                         vector_score=similarity,
                         similarity=similarity,
@@ -282,16 +292,19 @@ class VectorRetriever:
             if scores[idx] <= 0:
                 continue
             normalized = scores[idx] / max_score if max_score > 0 else 0.0
+            meta = metas[idx]
+            # Parent-Child: child 匹配但返回 parent 内容给 LLM
+            content = meta.get('parent_content') or contents[idx]
             results.append(RetrievalResult(
                 chunk_id=chunk_ids[idx],
-                content=contents[idx],
+                content=content,
                 score=normalized,
                 bm25_score=normalized,
                 similarity=normalized,
-                source=metas[idx].get('source', ''),
-                document_id=str(metas[idx].get('document_id', '')),
+                source=meta.get('source', ''),
+                document_id=str(meta.get('document_id', '')),
                 retrieval_method='bm25',
-                metadata=metas[idx],
+                metadata=meta,
             ))
         return results
 
@@ -412,7 +425,7 @@ class VectorRetriever:
         fused.sort(key=lambda r: r.score, reverse=True)
         return fused[:n_results]
 
-    # ---- 增强检索：Query 改写 + 混合检索 + Reranker 精排 ----
+    # ---- 增强检索：Query 改写 + HyDE + 混合检索 + Reranker 精排 ----
 
     @staticmethod
     async def enhanced_query(
@@ -428,36 +441,23 @@ class VectorRetriever:
     ) -> List[RetrievalResult]:
         """
         增强检索管线：Query 改写 → (可选)HyDE → 多路混合检索 → RRF 融合 → Reranker 精排
-
-        阶段：
-          1.  Query Rewriting：口语化问题 → 多个检索友好的 query
-          1b. HyDE：生成假设文档，利用其 embedding 补充向量检索路
-          2.  混合检索：对每个 query 跑向量+BM25，合并去重
-          3.  Reranker：从粗排 top-20 中精选 top-5
-
-        Args:
-            vector_db_id: 知识库 ID
-            query_text: 用户原始查询
-            n_results: 最终返回数量
-            alpha: 向量权重
-            use_rewrite: 是否启用 Query 改写
-            use_rerank: 是否启用 Reranker 精排
-            use_hyde: 是否启用 HyDE（假设文档嵌入）
         """
-        # 第 1 阶段：Query 改写
+        queries = [query_text]
         if use_rewrite:
-            from app.services.rag.query_rewriter import rewrite_query
-            queries = await rewrite_query(query_text, n_rewrites=3)
-        else:
-            queries = [query_text]
+            try:
+                from app.services.rag.query_rewriter import rewrite_query
+                queries = await rewrite_query(query_text, n_rewrites=3)
+            except Exception as e:
+                logger.warning(f"Query 改写失败，使用原始 query: {e}")
 
-        # 第 1b 阶段：HyDE — 生成假设文档用于向量检索
         hyde_text = None
         if use_hyde:
-            from app.services.rag.query_rewriter import hyde_rewrite
-            hyde_text = await hyde_rewrite(query_text)
+            try:
+                from app.services.rag.query_rewriter import hyde_rewrite
+                hyde_text = await hyde_rewrite(query_text)
+            except Exception as e:
+                logger.warning(f"HyDE 生成失败: {e}")
 
-        # 第 2 阶段：多路混合检索
         coarse_n = n_results * 4 if use_rerank else n_results
 
         retrieval_tasks = [
@@ -466,8 +466,6 @@ class VectorRetriever:
             )
             for q in queries
         ]
-
-        # HyDE 路：用假设文档做纯向量检索（BM25 对假设文档文本无意义）
         if hyde_text:
             retrieval_tasks.append(
                 VectorRetriever.query(
@@ -488,17 +486,13 @@ class VectorRetriever:
         all_results.sort(key=lambda r: r.score, reverse=True)
         coarse_results = all_results[:coarse_n]
 
-        logger.info(
-            f"增强检索: {len(queries)} 个 query"
-            f"{'+ HyDE ' if hyde_text else ''}"
-            f"× 混合检索 → "
-            f"{len(all_results)} 候选（去重后）→ 粗排 top-{len(coarse_results)}"
-        )
-
-        # 第 3 阶段：Reranker 精排
         if use_rerank and len(coarse_results) > n_results:
-            from app.services.rag.reranker import rerank
-            final_results = await rerank(query_text, coarse_results, top_k=n_results)
+            try:
+                from app.services.rag.reranker import rerank
+                final_results = await rerank(query_text, coarse_results, top_k=n_results)
+            except Exception as e:
+                logger.warning(f"Reranker 失败，降级为粗排: {e}")
+                final_results = coarse_results[:n_results]
         else:
             final_results = coarse_results[:n_results]
 
