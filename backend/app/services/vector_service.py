@@ -1630,7 +1630,9 @@ class AsyncVectorService:
 
         if similarity_threshold > 0:
             filtered = [s for s in all_sources if s["similarity"] >= similarity_threshold]
-            sources = filtered if filtered else all_sources[:3]
+            if len(filtered) < 3:
+                filtered = all_sources[:max(3, len(filtered))]
+            sources = filtered
         else:
             sources = all_sources
 
@@ -1753,7 +1755,7 @@ class AsyncVectorService:
         vector_db: VectorDb,
         layer: str,
         message: str,
-        n_results: int = 3
+        n_results: int = 5
     ) -> Dict[str, Any]:
         from app.services.rag.retrieval import VectorRetriever
 

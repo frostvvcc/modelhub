@@ -101,7 +101,7 @@ async def llm_rerank(
     from app.config import settings
     model = model or settings.rag_llm_model
 
-    if len(candidates) <= top_k:
+    if len(candidates) <= 1:
         return candidates
 
     client = _get_llm_client()
@@ -167,7 +167,7 @@ async def rerank(
     top_k: int = 5,
 ) -> list:
     """统一入口：根据 RAG_RERANK_MODE 选择重排策略"""
-    if len(candidates) <= top_k:
+    if len(candidates) <= 1:
         return candidates
 
     if RAG_RERANK_MODE == "cross_encoder":

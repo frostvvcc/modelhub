@@ -78,10 +78,11 @@ async def _verify_claims(
         resp = await client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1000,
+            max_tokens=2000,
             temperature=0.0,
         )
         raw = resp.choices[0].message.content.strip()
+        logger.debug(f"NLI 原始返回: {raw[:500]}")
         start, end = raw.find("["), raw.rfind("]") + 1
         if start >= 0 and end > start:
             results = json.loads(raw[start:end])
@@ -96,7 +97,7 @@ async def _verify_claims(
                 for i, r in enumerate(results)
             ]
     except Exception as e:
-        logger.error(f"Claim 验证失败: {e}")
+        logger.error(f"Claim 验证失败: {e}", exc_info=True)
 
     return [{"text": c, "supported": False, "verdict": "unknown", "source_idx": None, "reason": ""} for c in claims]
 

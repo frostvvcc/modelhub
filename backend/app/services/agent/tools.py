@@ -133,7 +133,7 @@ class DatabaseQueryTool(BaseTool):
         from app.mappers.organization_mapper import AsyncOrganizationMapper
         try:
             if query_type == "organization_tree":
-                orgs = await AsyncOrganizationMapper.get_all_organizations(self._session)
+                orgs = await AsyncOrganizationMapper.get_by_school(self._session, school_id=1)
                 tree = []
                 for org in orgs[:20]:
                     tree.append({
@@ -155,7 +155,7 @@ class DatabaseQueryTool(BaseTool):
 
             elif query_type == "user_count":
                 from app.mappers.user_mapper import AsyncUserMapper
-                users = await AsyncUserMapper.get_all_users(self._session)
+                users = await AsyncUserMapper.get_enterprise_users(self._session)
                 return {"type": "user_count", "count": len(users) if users else 0}
 
             return {"error": f"不支持的查询类型: {query_type}"}

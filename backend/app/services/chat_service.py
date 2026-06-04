@@ -598,8 +598,9 @@ class AsyncChatService:
             grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
 
             # Claim-Level Grounding 验证（检测 LLM 回复中的幻觉）
+            # 来源 >= 3 条时执行完整 NLI 验证；来源不足时 NLI 上下文缺失会产生假阴性
             grounding_detail = None
-            if rag_result["used_knowledge_base"] and source_citations:
+            if rag_result["used_knowledge_base"] and source_citations and len(source_citations) >= 3:
                 try:
                     from app.services.rag.grounding import verify_grounding
                     grounding_detail = await verify_grounding(content, source_citations)

@@ -664,8 +664,19 @@ async def debug_query(
 
     vector_time = (time.time() - t_vec_start) * 1000
 
+    # 从 RAGMonitor 获取最近一次查询的 BM25 耗时
+    bm25_time = 0.0
+    try:
+        from app.services.rag.monitor import get_rag_monitor
+        monitor = get_rag_monitor()
+        if monitor._window:
+            latest = monitor._window[-1]
+            bm25_time = latest.bm25_search_ms
+    except Exception:
+        pass
+
     # Step 3: Rerank（可选）
-    if request.use_rerank and len(results) > request.n_results:
+    if request.use_rerank and len(results) > 1:
         from app.services.rag.reranker import rerank
         results = await rerank(request.query, results, top_k=request.n_results)
         pipeline = f"{pipeline}+rerank"
@@ -694,7 +705,7 @@ async def debug_query(
         results=debug_results,
         total_time_ms=round(total_time, 2),
         vector_search_time_ms=round(vector_time, 2),
-        bm25_search_time_ms=0.0,
+        bm25_search_time_ms=round(bm25_time, 2),
         alpha=request.alpha,
         n_results=request.n_results,
         pipeline=pipeline,
