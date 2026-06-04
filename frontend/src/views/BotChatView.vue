@@ -142,14 +142,7 @@ const extractCitedText = (citeSpan: HTMLElement): string => {
   const parts = text.split(/来源\d+/);
   const before = (myIdx >= 0 && myIdx < parts.length) ? parts[myIdx].trim() : '';
   const after = (myIdx + 1 < parts.length) ? parts[myIdx + 1].trim() : '';
-  const combined = [before, after].filter(Boolean).join(' ');
-  if (combined.length >= 10) return combined;
-  const block = parent.closest('.markdown-body') || parent.parentElement;
-  if (block && block !== parent) {
-    const blockText = (block.textContent || '').replace(/来源\d+/g, ' ').trim();
-    if (blockText.length > combined.length) return blockText;
-  }
-  return combined;
+  return [before, after].filter(Boolean).join(' ') || text.replace(/来源\d+/g, '').trim();
 };
 
 const escapeHtml = (text: string) =>
@@ -161,22 +154,47 @@ const highlightedContent = computed(() => {
   const safe = escapeHtml(raw);
   const cited = activeCite.value.citedText || '';
   if (!cited || cited.length < 2) return safe;
-  const keywords = cited.replace(/[，。、；：！？""''（）\[\]【】\n\r]/g, ' ').split(/\s+/).filter(w => w.length >= 2);
-  if (keywords.length) {
-    const unique = [...new Set(keywords)].slice(0, 20);
-    const escaped = unique.map(w => escapeHtml(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-    const pattern = new RegExp(`(${escaped.join('|')})`, 'gi');
-    const result = safe.replace(pattern, '<mark class="cite-hl">$1</mark>');
-    if (result !== safe) return result;
+
+  const cleanCited = cited.replace(/[\s，。、；：！？""''（）\[\]【】\n\r]/g, '');
+  const ngrams = new Set<string>();
+  for (let len = 3; len <= 4; len++) {
+    for (let i = 0; i <= cleanCited.length - len; i++) {
+      ngrams.add(cleanCited.slice(i, i + len));
+    }
   }
-  const srcWords = raw.replace(/[，。、；：！？""''（）\[\]【】\n\r]/g, ' ').split(/\s+/).filter(w => w.length >= 2);
-  const reverseMatches = [...new Set(srcWords)].filter(w => cited.includes(w)).slice(0, 20);
-  if (reverseMatches.length) {
-    const revEscaped = reverseMatches.map(w => escapeHtml(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-    const revPattern = new RegExp(`(${revEscaped.join('|')})`, 'gi');
-    return safe.replace(revPattern, '<mark class="cite-hl">$1</mark>');
+  if (!ngrams.size) return safe;
+
+  const sentences: string[] = [];
+  const sentRegex = /[^。！？\n]+[。！？\n]?/g;
+  let m: RegExpExecArray | null;
+  while ((m = sentRegex.exec(raw)) !== null) {
+    if (m[0].trim()) sentences.push(m[0]);
   }
-  return safe;
+  if (!sentences.length) sentences.push(raw);
+
+  const scores = sentences.map(sent => {
+    const clean = sent.replace(/[\s，。、；：！？""''（）\[\]【】]/g, '');
+    let score = 0;
+    for (const ng of ngrams) { if (clean.includes(ng)) score++; }
+    return score;
+  });
+
+  let bestStart = -1, bestEnd = -1, bestScore = 0;
+  for (let ws = 1; ws <= Math.min(3, sentences.length); ws++) {
+    for (let i = 0; i <= sentences.length - ws; i++) {
+      let total = 0;
+      for (let j = i; j < i + ws; j++) total += scores[j];
+      if (total > bestScore) { bestScore = total; bestStart = i; bestEnd = i + ws; }
+    }
+  }
+  if (bestScore === 0) return safe;
+
+  let result = '';
+  for (let i = 0; i < sentences.length; i++) {
+    const esc = escapeHtml(sentences[i]);
+    result += (i >= bestStart && i < bestEnd) ? `<mark class="cite-hl">${esc}</mark>` : esc;
+  }
+  return result;
 });
 
 const handleCiteClick = (e: MouseEvent) => {
@@ -1331,7 +1349,7 @@ onMounted(loadBot);
   word-break: break-word;
   max-height: 140px;
 }
-.ds-cite-popover-content :deep(.cite-hl) { background: #fef08a; color: #854d0e; padding: 1px 2px; border-radius: 2px; font-weight: 500; }
+.ds-cite-popover-content :deep(.cite-hl) { background: #fef08a; color: #854d0e; padding: 2px 4px; border-radius: 3px; line-height: 1.8; }
 .ds-cite-popover-actions {
   display: flex;
   justify-content: flex-end;
