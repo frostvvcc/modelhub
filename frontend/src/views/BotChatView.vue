@@ -164,37 +164,38 @@ const highlightedContent = computed(() => {
   }
   if (!ngrams.size) return safe;
 
-  const sentences: string[] = [];
-  const sentRegex = /[^。！？\n]+[。！？\n]?/g;
-  let m: RegExpExecArray | null;
-  while ((m = sentRegex.exec(raw)) !== null) {
-    if (m[0].trim()) sentences.push(m[0]);
+  const breaks: number[] = [0];
+  for (let i = 0; i < raw.length; i++) {
+    if ('。！？\n'.includes(raw[i]) && i + 1 < raw.length) breaks.push(i + 1);
   }
-  if (!sentences.length) sentences.push(raw);
+  breaks.push(raw.length);
 
-  const scores = sentences.map(sent => {
-    const clean = sent.replace(/[\s，。、；：！？""''（）\[\]【】]/g, '');
+  const regions: { start: number; end: number; score: number }[] = [];
+  for (let i = 0; i < breaks.length - 1; i++) {
+    const s = breaks[i], e = breaks[i + 1];
+    if (!raw.slice(s, e).trim()) continue;
+    const clean = raw.slice(s, e).replace(/[\s，。、；：！？""''（）\[\]【】]/g, '');
     let score = 0;
     for (const ng of ngrams) { if (clean.includes(ng)) score++; }
-    return score;
-  });
+    regions.push({ start: s, end: e, score });
+  }
+  if (!regions.length) return safe;
 
-  let bestStart = -1, bestEnd = -1, bestScore = 0;
-  for (let ws = 1; ws <= Math.min(3, sentences.length); ws++) {
-    for (let i = 0; i <= sentences.length - ws; i++) {
+  let bestIdx = -1, bestLen = 0, bestScore = 0;
+  for (let ws = 1; ws <= Math.min(3, regions.length); ws++) {
+    for (let i = 0; i <= regions.length - ws; i++) {
       let total = 0;
-      for (let j = i; j < i + ws; j++) total += scores[j];
-      if (total > bestScore) { bestScore = total; bestStart = i; bestEnd = i + ws; }
+      for (let j = i; j < i + ws; j++) total += regions[j].score;
+      if (total > bestScore) { bestScore = total; bestIdx = i; bestLen = ws; }
     }
   }
   if (bestScore === 0) return safe;
 
-  let result = '';
-  for (let i = 0; i < sentences.length; i++) {
-    const esc = escapeHtml(sentences[i]);
-    result += (i >= bestStart && i < bestEnd) ? `<mark class="cite-hl">${esc}</mark>` : esc;
-  }
-  return result;
+  const hlStart = regions[bestIdx].start;
+  const hlEnd = regions[bestIdx + bestLen - 1].end;
+  return escapeHtml(raw.slice(0, hlStart))
+    + '<mark class="cite-hl">' + escapeHtml(raw.slice(hlStart, hlEnd)) + '</mark>'
+    + escapeHtml(raw.slice(hlEnd));
 });
 
 const handleCiteClick = (e: MouseEvent) => {
