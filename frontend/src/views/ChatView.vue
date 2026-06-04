@@ -499,17 +499,21 @@ const handleCiteClick = (e: MouseEvent) => {
 
 const closeCitePopover = () => { activeCite.value = null; };
 
+const escapeHtml = (text: string) =>
+  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
 const highlightedContent = computed(() => {
   if (!activeCite.value) return '';
-  const src = activeCite.value.source.content || '';
+  const raw = activeCite.value.source.content || '';
+  const safe = escapeHtml(raw);
   const cited = activeCite.value.citedText || '';
-  if (!cited || cited.length < 4) return src;
+  if (!cited || cited.length < 4) return safe;
   const keywords = cited.replace(/[，。、；：！？""''（）\[\]【】]/g, ' ').split(/\s+/).filter(w => w.length >= 2);
-  if (!keywords.length) return src;
+  if (!keywords.length) return safe;
   const unique = [...new Set(keywords)].slice(0, 15);
-  const escaped = unique.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const escaped = unique.map(w => escapeHtml(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   const pattern = new RegExp(`(${escaped.join('|')})`, 'gi');
-  return src.replace(pattern, '<mark class="cite-hl">$1</mark>');
+  return safe.replace(pattern, '<mark class="cite-hl">$1</mark>');
 });
 
 const citePopoverStyle = computed(() => {
