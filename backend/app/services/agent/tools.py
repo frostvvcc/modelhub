@@ -86,10 +86,10 @@ class KnowledgeSearchTool(BaseTool):
                 return {"found": False, "message": "知识库中未找到相关信息", "sources": []}
 
             formatted = []
-            for i, s in enumerate(sources[:3]):
+            for i, s in enumerate(sources[:5]):
                 formatted.append({
                     "index": i + 1,
-                    "content": (s.get("content") or "")[:1500],
+                    "content": (s.get("content") or "")[:2000],
                     "source": s.get("source", "未知"),
                     "similarity": round(s.get("similarity", 0), 4),
                 })

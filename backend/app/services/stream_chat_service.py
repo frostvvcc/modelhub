@@ -225,9 +225,14 @@ class StreamChatService:
                     "fallback_used": False,
                 }
 
+                # Multi-turn Query Reformulation：追问补全为独立查询
+                retrieval_query = await AsyncChatService._reformulate_for_retrieval(
+                    message, history_dicts,
+                )
+
                 if model_config:
                     rag_result = await AsyncVectorService.query_vector_by_model(
-                        session, model_config_id, message,
+                        session, model_config_id, retrieval_query,
                         user_id=user_id,
                         extra_vector_db_ids=all_extra_ids if all_extra_ids else None,
                     )
@@ -285,6 +290,18 @@ class StreamChatService:
             grounded_ratio = max(0.0, min(1.0, (rag_result or {}).get("avg_similarity", 0.0))) if used_kb else 0.0
             grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
 
+            # Claim-Level Grounding：NLI 验证 LLM 回答是否被来源支撑
+            grounding_detail = None
+            if used_kb and source_citations and len(source_citations) >= 3:
+                try:
+                    from app.services.rag.grounding import verify_grounding
+                    grounding_detail = await verify_grounding(content, source_citations)
+                    if grounding_detail.get("grounded_ratio") is not None:
+                        grounded_ratio = grounding_detail["grounded_ratio"]
+                        grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
+                except Exception as grounding_err:
+                    logger.warning(f"Grounding 验证失败，使用相似度近似值: {grounding_err}")
+
             # 保存到数据库
             assistant_metadata = {}
             if source_citations:
@@ -292,6 +309,13 @@ class StreamChatService:
             if grounded_ratio:
                 assistant_metadata["grounded_ratio"] = round(grounded_ratio, 4)
                 assistant_metadata["grounded_level"] = grounded_level
+            if grounding_detail:
+                assistant_metadata["grounding_detail"] = {
+                    "total_claims": grounding_detail.get("total_claims", 0),
+                    "supported_count": grounding_detail.get("supported_count", 0),
+                    "unsupported_claims": grounding_detail.get("unsupported_claims", []),
+                    "contradicted_claims": grounding_detail.get("contradicted_claims", []),
+                }
             if used_kb:
                 assistant_metadata["rag_info"] = {
                     "used_knowledge_base": True,
@@ -370,6 +394,12 @@ class StreamChatService:
             compressed = await memory.compress(history_dicts, model)
             yield _sse_event("memory", memory.get_token_stats(compressed))
 
+            # Bot 安全过滤：检测 Prompt Injection
+            if detect_prompt_injection(message):
+                logger.warning(f"🛡️ [安全] Bot 检测到疑似 Prompt Injection: {message[:80]}")
+                use_agent = False
+                yield _sse_event("warning", {"type": "prompt_injection_detected", "message": "检测到异常指令，已切换为安全模式"})
+
             if use_agent:
                 # Agent 模式
                 tools = get_default_tools(db, model_config_id, user.id, vector_db_ids if vector_db_ids else None)
@@ -403,14 +433,20 @@ class StreamChatService:
             else:
                 # 简单流式
                 rag_result = {"sources": [], "used_knowledge_base": False, "avg_similarity": 0.0}
+
+                # Multi-turn Query Reformulation
+                retrieval_query = await AsyncChatService._reformulate_for_retrieval(
+                    message, history_dicts,
+                )
+
                 if vector_db_ids:
                     rag_result = await AsyncVectorService.query_vector_by_model(
-                        db, model_config_id, message, user_id=user.id,
+                        db, model_config_id, retrieval_query, user_id=user.id,
                         extra_vector_db_ids=vector_db_ids,
                     )
                 elif model_config:
                     rag_result = await AsyncVectorService.query_vector_by_model(
-                        db, model_config_id, message, user_id=user.id,
+                        db, model_config_id, retrieval_query, user_id=user.id,
                     )
 
                 prompt_messages = []
@@ -469,12 +505,29 @@ class StreamChatService:
             grounded_ratio = max(0.0, min(1.0, (rag_result or {}).get("avg_similarity", 0.0))) if used_kb else 0.0
             grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
 
+            # Claim-Level Grounding
+            grounding_detail = None
+            if used_kb and source_citations and len(source_citations) >= 3:
+                try:
+                    from app.services.rag.grounding import verify_grounding
+                    grounding_detail = await verify_grounding(content, source_citations)
+                    if grounding_detail.get("grounded_ratio") is not None:
+                        grounded_ratio = grounding_detail["grounded_ratio"]
+                        grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
+                except Exception as grounding_err:
+                    logger.warning(f"Bot Grounding 验证失败: {grounding_err}")
+
             bot_metadata = {}
             if source_citations:
                 bot_metadata["sources"] = source_citations
             if grounded_ratio:
                 bot_metadata["grounded_ratio"] = round(grounded_ratio, 4)
                 bot_metadata["grounded_level"] = grounded_level
+            if grounding_detail:
+                bot_metadata["grounding_detail"] = {
+                    "total_claims": grounding_detail.get("total_claims", 0),
+                    "supported_count": grounding_detail.get("supported_count", 0),
+                }
             if trace_data:
                 bot_metadata["trace"] = trace_data
 

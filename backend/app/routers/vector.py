@@ -175,7 +175,7 @@ async def upload_file(
     vector_db_id: int = Form(...),
     describe: str = Form(""),
     parent_id: Optional[int] = Form(None),
-    chunk_strategy: str = Form("fixed"),
+    chunk_strategy: str = Form("markdown"),
     chunk_size: int = Form(800),
     chunk_overlap: int = Form(150),
     current_user: User = Depends(get_current_user),

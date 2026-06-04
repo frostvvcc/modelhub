@@ -197,9 +197,11 @@ def query_subgraph(
             try:
                 result = session.run(
                     """
-                    MATCH (s:Entity {kb_id: $kb_id})-[r:RELATION]->(o:Entity {kb_id: $kb_id})
+                    MATCH path = (s:Entity {kb_id: $kb_id})-[r:RELATION*1..""" + str(max_hops) + """]->(o:Entity {kb_id: $kb_id})
                     WHERE s.name CONTAINS $entity OR o.name CONTAINS $entity
-                    RETURN s.name AS subject, r.type AS relation, o.name AS object
+                    UNWIND relationships(path) AS rel
+                    WITH startNode(rel) AS src, rel, endNode(rel) AS tgt
+                    RETURN src.name AS subject, rel.type AS relation, tgt.name AS object
                     LIMIT $limit
                     """,
                     entity=entity,

@@ -35,13 +35,11 @@ async def get_embedding_model_async() -> ChatEmbeddings:
 
 
 async def get_query_embedding_async(query_text: str) -> List[float]:
-    """异步获取查询文本的嵌入向量"""
+    """异步获取查询文本的嵌入向量（input_type=query）"""
     try:
         model = await get_embedding_model_async()
-        # 在后台线程执行同步方法
         embedding = await asyncio.to_thread(
-            model.get_query_embedding,
-            query_text
+            model.get_general_text_embedding, query_text, "query",
         )
         return embedding
     except Exception as e:
@@ -50,13 +48,11 @@ async def get_query_embedding_async(query_text: str) -> List[float]:
 
 
 async def get_text_embeddings_async(texts: List[str]) -> List[List[float]]:
-    """异步获取多个文本的嵌入向量"""
+    """异步获取多个文档文本的嵌入向量（input_type=document）"""
     try:
         model = await get_embedding_model_async()
-        # 在后台线程执行同步方法
         embeddings = await asyncio.to_thread(
-            model.get_text_embeddings,
-            texts
+            model.get_text_embeddings, texts,
         )
         return embeddings
     except Exception as e:

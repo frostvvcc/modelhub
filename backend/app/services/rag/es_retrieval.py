@@ -10,29 +10,38 @@ from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-ES_ENABLED = os.getenv("ES_ENABLED", "false").lower() in ("true", "1", "yes")
+import time as _time
+
+ES_ENABLED = os.getenv("ES_ENABLED", "true").lower() in ("true", "1", "yes")
 ES_URL = os.getenv("ES_URL", "http://localhost:9200")
 
 _es_client = None
+_es_last_failure: float = 0.0
+_ES_COOLDOWN = 60
 
 
 async def get_es_client():
-    global _es_client
+    global _es_client, _es_last_failure
     if not ES_ENABLED:
         return None
-    if _es_client is None:
-        try:
-            from elasticsearch import AsyncElasticsearch
-            _es_client = AsyncElasticsearch(ES_URL)
-            info = await _es_client.info()
-            logger.info(f"Elasticsearch 连接成功: {ES_URL}, version={info['version']['number']}")
-        except ImportError:
-            logger.warning("elasticsearch-py 未安装，ES 检索不可用")
-            return None
-        except Exception as e:
-            logger.warning(f"Elasticsearch 连接失败: {e}")
-            _es_client = None
-            return None
+    if _es_client is not None:
+        return _es_client
+    if _time.monotonic() - _es_last_failure < _ES_COOLDOWN:
+        return None
+    try:
+        from elasticsearch import AsyncElasticsearch
+        client = AsyncElasticsearch(ES_URL, request_timeout=5)
+        info = await client.info()
+        _es_client = client
+        logger.info(f"Elasticsearch 连接成功: {ES_URL}, version={info['version']['number']}")
+    except ImportError:
+        logger.warning("elasticsearch-py 未安装，ES 检索不可用")
+        _es_last_failure = _time.monotonic()
+        return None
+    except Exception as e:
+        logger.warning(f"Elasticsearch 连接失败（{_ES_COOLDOWN}s 内不再重试）: {e}")
+        _es_last_failure = _time.monotonic()
+        return None
     return _es_client
 
 
@@ -53,23 +62,53 @@ async def ensure_index(vector_db_id: int) -> bool:
                     "number_of_shards": 1,
                     "number_of_replicas": 0,
                     "analysis": {
+                        "filter": {
+                            "edu_synonyms": {
+                                "type": "synonym",
+                                "synonyms": [
+                                    "毕设,毕业设计,毕设论文,毕业论文",
+                                    "查重,论文查重,文本查重,查重检测,文本复制检测",
+                                    "AIGC,AI生成内容,人工智能生成内容",
+                                    "教务处,教务部",
+                                    "选课,课程注册,选修",
+                                    "绩点,GPA,学分绩点,平均绩点",
+                                    "辅修,辅修专业,双学位",
+                                    "保研,推免,推荐免试研究生",
+                                    "考研,研究生入学考试",
+                                    "四六级,CET,英语四六级,大学英语四六级",
+                                    "奖学金,助学金,国家奖学金",
+                                    "学籍,学籍信息,学籍变更",
+                                    "转专业,专业调整",
+                                    "补考,缓考,重修",
+                                ],
+                            },
+                        },
                         "analyzer": {
                             "ik_smart_analyzer": {
                                 "type": "custom",
                                 "tokenizer": "ik_smart",
-                                "filter": ["lowercase"],
-                            }
-                        }
-                    }
+                                "filter": ["lowercase", "edu_synonyms"],
+                            },
+                            "ik_max_analyzer": {
+                                "type": "custom",
+                                "tokenizer": "ik_max_word",
+                                "filter": ["lowercase", "edu_synonyms"],
+                            },
+                        },
+                    },
                 },
                 "mappings": {
                     "properties": {
-                        "content": {"type": "text", "analyzer": "ik_smart_analyzer"},
+                        "content": {
+                            "type": "text",
+                            "analyzer": "ik_max_analyzer",
+                            "search_analyzer": "ik_smart_analyzer",
+                        },
                         "chunk_id": {"type": "keyword"},
                         "source": {"type": "keyword"},
                         "document_id": {"type": "keyword"},
                     }
-                }
+                },
             })
             logger.info(f"ES 索引创建成功: {index}")
         return True

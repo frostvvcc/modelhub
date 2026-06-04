@@ -502,6 +502,8 @@ class VectorRetriever:
             try:
                 from app.services.rag.query_rewriter import rewrite_query
                 queries = await rewrite_query(query_text, n_rewrites=3)
+                if not queries:
+                    queries = [query_text]
             except Exception as e:
                 logger.warning(f"Query 改写失败，使用原始 query: {e}")
 
@@ -541,9 +543,8 @@ class VectorRetriever:
         if graph_task:
             retrieval_tasks.append(graph_task)
 
-        multi_results = await asyncio.gather(*retrieval_tasks, return_exceptions=True)
         timer.start("retrieval")
-        multi_results = await asyncio.gather(*retrieval_tasks)
+        multi_results = await asyncio.gather(*retrieval_tasks, return_exceptions=True)
         timer.stop()
 
         seen_chunks = set()
@@ -563,17 +564,19 @@ class VectorRetriever:
                         all_results.append(r)
                         seen_chunks.add(r.chunk_id)
 
-        # 图谱三元组转为高置信度伪检索结果（置信度加成 0.15）
-        GRAPH_CONFIDENCE_BOOST = 0.15
+        # 图谱三元组转为伪检索结果，按排名位置赋 RRF 兼容分数（不再硬编码高分）
+        from app.services.rag.graph_rag import format_triples_for_context
+        graph_n = len(graph_triples[:10])
         for i, triple in enumerate(graph_triples[:10]):
             content = f"{triple['subject']} {triple['relation']} {triple['object']}"
             chunk_id = f"graph_triple_{i}"
+            rrf_like_score = 1.0 / (60 + i)
             if chunk_id not in seen_chunks:
                 all_results.append(RetrievalResult(
                     chunk_id=chunk_id,
                     content=content,
-                    score=0.8 + GRAPH_CONFIDENCE_BOOST,
-                    similarity=0.8 + GRAPH_CONFIDENCE_BOOST,
+                    score=rrf_like_score,
+                    similarity=rrf_like_score,
                     source="knowledge_graph",
                     document_id="",
                     retrieval_method="graph_rag",

@@ -47,7 +47,7 @@ OFFICIAL_VECTOR_DB_NAMES = {
 LAYERED_RAG_FALLBACK_THRESHOLD = float(os.getenv("RAG_FALLBACK_THRESHOLD", "0.40"))
 LAYERED_RAG_MAX_VECTOR_DBS = int(os.getenv("RAG_MAX_VECTOR_DBS", "5"))
 LAYERED_RAG_MAX_CONTEXTS = int(os.getenv("RAG_MAX_CONTEXTS", "5"))
-RAG_USE_ENHANCED = os.getenv("RAG_USE_ENHANCED", "false").lower() in ("true", "1", "yes")
+RAG_USE_ENHANCED = os.getenv("RAG_USE_ENHANCED", "true").lower() in ("true", "1", "yes")
 RAG_USE_REWRITE = os.getenv("RAG_USE_REWRITE", "true").lower() in ("true", "1", "yes")
 RAG_USE_RERANK = os.getenv("RAG_USE_RERANK", "true").lower() in ("true", "1", "yes")
 RAG_USE_HYDE = os.getenv("RAG_USE_HYDE", "false").lower() in ("true", "1", "yes")
@@ -199,7 +199,7 @@ class AsyncVectorService:
         user_id: int,
         describe: str = "",
         parent_id: Optional[int] = None,
-        chunk_strategy: str = "fixed",
+        chunk_strategy: str = "markdown",
         chunk_size: int = 800,
         chunk_overlap: int = 150,
     ) -> Optional[int]:
@@ -324,7 +324,7 @@ class AsyncVectorService:
         document_id: int,
         folder_hierarchy: Optional[str] = None,
         parent_id: Optional[int] = None,
-        chunk_strategy: str = "fixed",
+        chunk_strategy: str = "markdown",
         chunk_size: int = 800,
         chunk_overlap: int = 150,
     ):
@@ -358,12 +358,15 @@ class AsyncVectorService:
                 else:
                     raise RuntimeError(f"OCR识别失败，无法提取图片文字: {file_path}")
 
-            # 使用统一文档解析器（支持 PDF/Word/Excel/PPT/Markdown/文本/图片）
-            from app.services.rag.document_parser import extract_text
+            from app.services.rag.document_parser import extract_text, clean_web_text, is_worth_indexing
             text_content = extract_text(actual_file_path)
 
             if not text_content or not text_content.strip():
                 raise RuntimeError(f"文件内容为空，无法解析文件: {os.path.basename(file_path)}")
+
+            text_content = clean_web_text(text_content)
+            if not is_worth_indexing(text_content):
+                raise RuntimeError(f"文件清洗后有效内容不足，跳过入库: {os.path.basename(file_path)}")
 
             # 获取嵌入模型（使用配置）
             from app.config import settings
@@ -386,7 +389,7 @@ class AsyncVectorService:
             # 公共 metadata 字段
             base_meta = {
                 'source': os.path.basename(actual_file_path),
-                'document_id': document_id,
+                'document_id': str(document_id),
                 'chunk_strategy': strategy.value,
                 'chunk_size': safe_chunk_size,
                 'chunk_overlap': safe_overlap,
@@ -559,7 +562,7 @@ class AsyncVectorService:
                         try:
                             await asyncio.to_thread(
                                 collection.delete,
-                                where={"document_id": document.id}
+                                where={"document_id": str(document.id)}
                             )
                         except Exception as e:
                             logger.warning(f"删除文档向量失败: document_id={document.id}, 错误: {e}")
@@ -584,6 +587,12 @@ class AsyncVectorService:
                 invalidate_bm25_cache(vector_db_id)
             except Exception as e:
                 logger.warning(f"BM25 缓存失效失败: vector_db_id={vector_db_id}, 错误: {e}")
+
+            try:
+                from app.services.rag.es_retrieval import delete_index as es_delete_index
+                await es_delete_index(vector_db_id)
+            except Exception as e:
+                logger.warning(f"ES 索引删除失败: vector_db_id={vector_db_id}, 错误: {e}")
 
             from app.models.teaching_space import TeachingSpaceResource
             from sqlalchemy import delete as sa_delete
@@ -645,7 +654,7 @@ class AsyncVectorService:
                     )
                     await asyncio.to_thread(
                         collection.delete,
-                        where={"document_id": document.id}
+                        where={"document_id": str(document.id)}
                     )
                     logger.info(f"从向量数据库删除: document_id={document.id}")
                 except Exception as e:
@@ -656,7 +665,20 @@ class AsyncVectorService:
                     invalidate_bm25_cache(document.vector_db_id)
                 except Exception as e:
                     logger.warning(f"BM25 缓存失效失败: vector_db_id={document.vector_db_id}, 错误: {e}")
-            
+
+                try:
+                    from app.services.rag.es_retrieval import delete_by_document as es_delete_doc
+                    await es_delete_doc(document.vector_db_id, str(document.id))
+                except Exception as e:
+                    logger.warning(f"ES 文档索引删除失败: document_id={document.id}, 错误: {e}")
+
+                try:
+                    from app.services.rag.graph_rag import NEO4J_ENABLED, delete_graph_by_document
+                    if NEO4J_ENABLED:
+                        await asyncio.to_thread(delete_graph_by_document, document.vector_db_id, str(document.id))
+                except Exception as e:
+                    logger.warning(f"Neo4j 图谱删除失败: document_id={document.id}, 错误: {e}")
+
             # 删除数据库记录
             await AsyncDB.delete(session, document)
             await AsyncDB.commit(session)
@@ -762,7 +784,7 @@ class AsyncVectorService:
                         item.id,
                         item.folder_path,
                         item.parent_id,
-                        "fixed",
+                        "markdown",
                         800,
                         150,
                     )
@@ -1090,7 +1112,7 @@ class AsyncVectorService:
         user_id: int,
         describe: str = "",
         parent_id: Optional[int] = None,
-        chunk_strategy: str = "fixed",
+        chunk_strategy: str = "markdown",
         chunk_size: int = 800,
         chunk_overlap: int = 150,
     ) -> List[int]:
@@ -1490,7 +1512,7 @@ class AsyncVectorService:
                         user_id=user_id,
                         describe=f"对话 {conversation_id} 上传压缩包附件",
                         parent_id=None,
-                        chunk_strategy="fixed",
+                        chunk_strategy="markdown",
                         chunk_size=800,
                         chunk_overlap=150,
                     )
@@ -1505,7 +1527,7 @@ class AsyncVectorService:
                         user_id=user_id,
                         describe=f"对话 {conversation_id} 上传附件",
                         parent_id=None,
-                        chunk_strategy="fixed",
+                        chunk_strategy="markdown",
                         chunk_size=800,
                         chunk_overlap=150,
                     )
@@ -1562,7 +1584,7 @@ class AsyncVectorService:
                 if collection:
                     try:
                         await asyncio.to_thread(
-                            collection.delete, where={"document_id": document.id}
+                            collection.delete, where={"document_id": str(document.id)}
                         )
                     except Exception as exc:
                         logger.warning("删除会话附件向量失败: document_id=%s (%s)", document.id, exc)
