@@ -460,7 +460,25 @@ const renderMarkdown = (content: string) => {
 };
 
 import type { SourceCitation } from '../types/chat';
-const activeCite = ref<{ source: SourceCitation; rect: DOMRect } | null>(null);
+const activeCite = ref<{ source: SourceCitation; rect: DOMRect; citedText: string } | null>(null);
+
+const extractCitedText = (citeSpan: HTMLElement): string => {
+  const parent = citeSpan.parentElement;
+  if (!parent) return '';
+  const text = parent.textContent || '';
+  const allCites = Array.from(parent.querySelectorAll('.cite-inline'));
+  const myIdx = allCites.indexOf(citeSpan);
+  const citeLabel = citeSpan.textContent || '';
+  const parts = text.split(/来源\d+/);
+  if (myIdx >= 0 && myIdx < parts.length) return parts[myIdx].trim();
+  const pos = text.indexOf(citeLabel);
+  if (pos > 0) {
+    const before = text.slice(0, pos);
+    const sentStart = Math.max(before.lastIndexOf('。'), before.lastIndexOf('\n'), before.lastIndexOf('；'), 0);
+    return before.slice(sentStart).replace(/^[。；\s]+/, '').trim();
+  }
+  return '';
+};
 
 const handleCiteClick = (e: MouseEvent) => {
   const target = (e.target as HTMLElement).closest('.cite-inline') as HTMLElement | null;
@@ -475,10 +493,24 @@ const handleCiteClick = (e: MouseEvent) => {
   const msg = messages.value[msgIndex];
   if (!msg?.sources?.length) return;
   const source = msg.sources[citeIndex] || msg.sources[0];
-  activeCite.value = { source, rect: target.getBoundingClientRect() };
+  const citedText = extractCitedText(target);
+  activeCite.value = { source, rect: target.getBoundingClientRect(), citedText };
 };
 
 const closeCitePopover = () => { activeCite.value = null; };
+
+const highlightedContent = computed(() => {
+  if (!activeCite.value) return '';
+  const src = activeCite.value.source.content || '';
+  const cited = activeCite.value.citedText || '';
+  if (!cited || cited.length < 4) return src;
+  const keywords = cited.replace(/[，。、；：！？""''（）\[\]【】]/g, ' ').split(/\s+/).filter(w => w.length >= 2);
+  if (!keywords.length) return src;
+  const unique = [...new Set(keywords)].slice(0, 15);
+  const escaped = unique.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const pattern = new RegExp(`(${escaped.join('|')})`, 'gi');
+  return src.replace(pattern, '<mark class="cite-hl">$1</mark>');
+});
 
 const citePopoverStyle = computed(() => {
   if (!activeCite.value) return {};
@@ -935,7 +967,7 @@ const scrollToBottom = () => {
           <span v-if="activeCite.source.vector_db_name" class="cite-popover-meta-tag">{{ activeCite.source.vector_db_name }}</span>
           <span class="cite-popover-meta-tag">{{ getRetrievalMethodLabel(activeCite.source.retrieval_method) }}</span>
         </div>
-        <div class="cite-popover-content">{{ activeCite.source.content }}</div>
+        <div class="cite-popover-content" v-html="highlightedContent"></div>
         <div class="cite-popover-actions">
           <button v-if="activeCite.source.document_id" class="cite-popover-btn cite-popover-btn--primary" @click="handleDownloadSource(activeCite.source)">
             <el-icon :size="13"><Download /></el-icon>
@@ -1248,6 +1280,7 @@ const scrollToBottom = () => {
 .cite-popover-meta { display: flex; gap: 4px; padding: 0 14px 8px; flex-wrap: wrap; }
 .cite-popover-meta-tag { font-size: 11px; padding: 2px 7px; border-radius: 4px; background: #f1f5f9; color: #64748b; }
 .cite-popover-content { flex: 1; min-height: 0; padding: 0 14px 10px; font-size: 12px; color: #64748b; line-height: 1.6; overflow-y: auto; white-space: pre-wrap; word-break: break-word; max-height: 140px; }
+.cite-popover-content :deep(.cite-hl) { background: #fef08a; color: #854d0e; padding: 1px 2px; border-radius: 2px; font-weight: 500; }
 .cite-popover-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 8px 14px 12px; border-top: 1px solid #f1f5f9; }
 .cite-popover-btn { display: inline-flex; align-items: center; gap: 4px; padding: 6px 14px; font-size: 12px; font-weight: 500; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; color: #475569; cursor: pointer; transition: all 0.12s; }
 .cite-popover-btn:hover { background: #f8fafc; border-color: #cbd5e1; }
