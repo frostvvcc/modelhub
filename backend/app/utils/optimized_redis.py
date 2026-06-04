@@ -35,7 +35,7 @@ def get_redis_pool() -> ConnectionPool:
         with _pool_lock:
             if _redis_pool is None:
                 _redis_pool = ConnectionPool(
-                    host=os.getenv("REDIS_HOST", "localhost"),
+                    host=os.getenv("REDIS_HOST", "127.0.0.1"),
                     port=int(os.getenv("REDIS_PORT", "6379")),
                     db=int(os.getenv("REDIS_DB", "0")),
                     password=os.getenv("REDIS_PASSWORD", None),

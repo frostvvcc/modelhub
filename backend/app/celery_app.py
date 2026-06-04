@@ -7,7 +7,7 @@ Worker 启动命令：celery -A app.celery_app worker --loglevel=info --concurre
 import os
 from celery import Celery
 
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
 REDIS_PORT = os.getenv("REDIS_PORT", "6379")
 REDIS_DB = os.getenv("CELERY_REDIS_DB", "1")
 BROKER_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"

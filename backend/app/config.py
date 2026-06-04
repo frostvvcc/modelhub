@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     
     # 数据库配置
     db_connection: str = os.getenv("DB_CONNECTION", "mysql")
-    db_host: str = os.getenv("DB_HOST", "localhost")
+    db_host: str = os.getenv("DB_HOST", "127.0.0.1")
     db_port: str = os.getenv("DB_PORT", "3306")
     db_database: str = os.getenv("DB_DATABASE", "modelhub")
     db_username: str = os.getenv("DB_USERNAME", "root")
@@ -96,7 +96,7 @@ class Settings(BaseSettings):
     embedding_api_key: str = os.getenv("EMBEDDING_API_KEY", "")
     
     # ChromaDB 配置
-    chroma_server_host: str = os.getenv("CHROMA_SERVER_HOST", "localhost")
+    chroma_server_host: str = os.getenv("CHROMA_SERVER_HOST", "127.0.0.1")
     chroma_server_port: int = int(os.getenv("CHROMA_SERVER_PORT", "8002"))
     chroma_api_path: str = os.getenv("CHROMA_API_PATH", "/api/v1")
 
