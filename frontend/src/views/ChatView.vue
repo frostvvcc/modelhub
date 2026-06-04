@@ -346,6 +346,8 @@ const sendMessage = async (query: string) => {
         conversationId.value = String(info.conversation_id);
         ConversationInfo.value.id = Number(info.conversation_id);
         if (info.conversation_name) ConversationInfo.value.name = info.conversation_name;
+        if (isBotMode.value) botConversationId.value = conversationId.value;
+        router.replace({ path: '/chat', query: { ...route.query, conversation_id: conversationId.value, model_config_id: modelConfigId.value, config_name: configName.value } });
       }
     },
     onTrace(trace) {
@@ -570,6 +572,7 @@ const loadDate = async () => {
     ConversationInfo.value = conversaton.conversation_info;
     const ori_messages = conversaton.history;
     messages.value = ori_messages.messages.sort((a: ChatMessage, b: ChatMessage) => new Date(a.create_at).getTime() - new Date(b.create_at).getTime());
+    if (isBotMode.value) botConversationId.value = conversationId.value;
   }
   scrollToBottom();
 };

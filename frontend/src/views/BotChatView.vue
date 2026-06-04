@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { Back, Promotion, Close, ChatRound, CopyDocument, Download } from "@element-plus/icons-vue";
 import { botChat, getBot, type BotResponse, type BotChatSource, type BotChatRagInfo } from "../api/bot";
+import { getMessages } from "../api/chat";
 import { DownloadFile } from "../api/vectorDb";
 import { streamBotChat, type StreamCallbacks } from "../utils/stream";
 
@@ -64,16 +65,31 @@ const bot = ref<BotResponse | null>(null);
 const messages = ref<LocalMessage[]>([]);
 const input = ref("");
 const sending = ref(false);
-const conversationId = ref<string | undefined>();
+const conversationId = ref<string | undefined>(route.query.conversation_id as string || undefined);
 const messageAreaRef = ref<HTMLElement | null>(null);
 
 const loadBot = async () => {
   try {
     bot.value = await getBot(botId);
-    if (bot.value.greeting) {
-      messages.value.push({ role: "assistant", content: bot.value.greeting });
+    if (conversationId.value) {
+      const formData = new FormData();
+      formData.append('conversation_id', conversationId.value);
+      const result = await getMessages(formData);
+      const history = result.history.messages
+        .sort((a: { create_at: string }, b: { create_at: string }) => new Date(a.create_at).getTime() - new Date(b.create_at).getTime());
+      messages.value = history.map((m: { role: string; content: string; metadata_json?: Record<string, unknown> }) => {
+        const msg: LocalMessage = { role: m.role as 'user' | 'assistant', content: m.content };
+        if (m.metadata_json?.sources) msg.sources = m.metadata_json.sources as BotChatSource[];
+        if (m.metadata_json?.grounded_ratio != null) msg.grounded_ratio = m.metadata_json.grounded_ratio as number;
+        if (m.metadata_json?.grounded_level) msg.grounded_level = m.metadata_json.grounded_level as string;
+        return msg;
+      });
     } else {
-      messages.value.push({ role: "assistant", content: "你好，请直接告诉我你想查询的问题。" });
+      if (bot.value.greeting) {
+        messages.value.push({ role: "assistant", content: bot.value.greeting });
+      } else {
+        messages.value.push({ role: "assistant", content: "你好，请直接告诉我你想查询的问题。" });
+      }
     }
   } catch (error: unknown) {
     ElMessage.error(error?.response?.data?.detail || "数字助理不存在或无权访问");
@@ -115,7 +131,42 @@ const handleCopyMessage = (content: string, index: number) => {
   setTimeout(() => { copiedIndex.value = null; }, 1500);
 };
 
-const activeCite = ref<{ source: BotChatSource; rect: DOMRect } | null>(null);
+const activeCite = ref<{ source: BotChatSource; rect: DOMRect; citedText: string } | null>(null);
+
+const extractCitedText = (citeSpan: HTMLElement): string => {
+  const parent = citeSpan.parentElement;
+  if (!parent) return '';
+  const text = parent.textContent || '';
+  const allCites = Array.from(parent.querySelectorAll('.cite-inline'));
+  const myIdx = allCites.indexOf(citeSpan);
+  const citeLabel = citeSpan.textContent || '';
+  const parts = text.split(/来源\d+/);
+  if (myIdx >= 0 && myIdx < parts.length) return parts[myIdx].trim();
+  const pos = text.indexOf(citeLabel);
+  if (pos > 0) {
+    const before = text.slice(0, pos);
+    const sentStart = Math.max(before.lastIndexOf('。'), before.lastIndexOf('\n'), before.lastIndexOf('；'), 0);
+    return before.slice(sentStart).replace(/^[。；\s]+/, '').trim();
+  }
+  return '';
+};
+
+const escapeHtml = (text: string) =>
+  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const highlightedContent = computed(() => {
+  if (!activeCite.value) return '';
+  const raw = activeCite.value.source.content || '';
+  const safe = escapeHtml(raw);
+  const cited = activeCite.value.citedText || '';
+  if (!cited || cited.length < 4) return safe;
+  const keywords = cited.replace(/[，。、；：！？""''（）\[\]【】]/g, ' ').split(/\s+/).filter(w => w.length >= 2);
+  if (!keywords.length) return safe;
+  const unique = [...new Set(keywords)].slice(0, 15);
+  const escaped = unique.map(w => escapeHtml(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const pattern = new RegExp(`(${escaped.join('|')})`, 'gi');
+  return safe.replace(pattern, '<mark class="cite-hl">$1</mark>');
+});
 
 const handleCiteClick = (e: MouseEvent) => {
   const target = (e.target as HTMLElement).closest('.cite-inline') as HTMLElement | null;
@@ -130,7 +181,8 @@ const handleCiteClick = (e: MouseEvent) => {
   const msg = messages.value[msgIndex];
   if (!msg?.sources?.length) return;
   const source = msg.sources[citeIndex] || msg.sources[0];
-  activeCite.value = { source, rect: target.getBoundingClientRect() };
+  const citedText = extractCitedText(target);
+  activeCite.value = { source, rect: target.getBoundingClientRect(), citedText };
 };
 
 const closeCitePopover = () => { activeCite.value = null; };
@@ -216,10 +268,16 @@ const sendMessage = async () => {
       messages.value[msgIndex].grounded_ratio = metadata.grounded_ratio;
       messages.value[msgIndex].grounded_level = metadata.grounded_level;
       messages.value[msgIndex].model_name = metadata.model_name;
-      if (metadata.conversation_id) conversationId.value = metadata.conversation_id;
+      if (metadata.conversation_id) {
+        conversationId.value = String(metadata.conversation_id);
+        router.replace({ path: route.path, query: { ...route.query, conversation_id: conversationId.value } });
+      }
     },
     onConversation(info) {
-      if (info.conversation_id) conversationId.value = String(info.conversation_id);
+      if (info.conversation_id) {
+        conversationId.value = String(info.conversation_id);
+        router.replace({ path: route.path, query: { ...route.query, conversation_id: conversationId.value } });
+      }
     },
     onTrace(trace) {
       messages.value[msgIndex].trace = trace;
@@ -503,7 +561,7 @@ onMounted(loadBot);
           <span v-if="activeCite.source.vector_db_name" class="ds-cite-popover-meta-tag">{{ activeCite.source.vector_db_name }}</span>
           <span class="ds-cite-popover-meta-tag">{{ getRetrievalLabel(activeCite.source.retrieval_method) }}</span>
         </div>
-        <div class="ds-cite-popover-content">{{ activeCite.source.content }}</div>
+        <div class="ds-cite-popover-content" v-html="highlightedContent"></div>
         <div class="ds-cite-popover-actions">
           <button v-if="(activeCite.source as Record<string, unknown>).document_id" class="ds-cite-btn ds-cite-btn--primary" @click="handleDownloadSource(activeCite.source)">
             <el-icon :size="13"><Download /></el-icon>
@@ -1262,6 +1320,7 @@ onMounted(loadBot);
   word-break: break-word;
   max-height: 140px;
 }
+.ds-cite-popover-content :deep(.cite-hl) { background: #fef08a; color: #854d0e; padding: 1px 2px; border-radius: 2px; font-weight: 500; }
 .ds-cite-popover-actions {
   display: flex;
   justify-content: flex-end;
