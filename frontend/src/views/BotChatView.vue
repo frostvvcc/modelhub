@@ -139,16 +139,17 @@ const extractCitedText = (citeSpan: HTMLElement): string => {
   const text = parent.textContent || '';
   const allCites = Array.from(parent.querySelectorAll('.cite-inline'));
   const myIdx = allCites.indexOf(citeSpan);
-  const citeLabel = citeSpan.textContent || '';
   const parts = text.split(/来源\d+/);
-  if (myIdx >= 0 && myIdx < parts.length) return parts[myIdx].trim();
-  const pos = text.indexOf(citeLabel);
-  if (pos > 0) {
-    const before = text.slice(0, pos);
-    const sentStart = Math.max(before.lastIndexOf('。'), before.lastIndexOf('\n'), before.lastIndexOf('；'), 0);
-    return before.slice(sentStart).replace(/^[。；\s]+/, '').trim();
+  const before = (myIdx >= 0 && myIdx < parts.length) ? parts[myIdx].trim() : '';
+  const after = (myIdx + 1 < parts.length) ? parts[myIdx + 1].trim() : '';
+  const combined = [before, after].filter(Boolean).join(' ');
+  if (combined.length >= 10) return combined;
+  const block = parent.closest('.markdown-body') || parent.parentElement;
+  if (block && block !== parent) {
+    const blockText = (block.textContent || '').replace(/来源\d+/g, ' ').trim();
+    if (blockText.length > combined.length) return blockText;
   }
-  return '';
+  return combined;
 };
 
 const escapeHtml = (text: string) =>
@@ -159,13 +160,23 @@ const highlightedContent = computed(() => {
   const raw = activeCite.value.source.content || '';
   const safe = escapeHtml(raw);
   const cited = activeCite.value.citedText || '';
-  if (!cited || cited.length < 4) return safe;
-  const keywords = cited.replace(/[，。、；：！？""''（）\[\]【】]/g, ' ').split(/\s+/).filter(w => w.length >= 2);
-  if (!keywords.length) return safe;
-  const unique = [...new Set(keywords)].slice(0, 15);
-  const escaped = unique.map(w => escapeHtml(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  const pattern = new RegExp(`(${escaped.join('|')})`, 'gi');
-  return safe.replace(pattern, '<mark class="cite-hl">$1</mark>');
+  if (!cited || cited.length < 2) return safe;
+  const keywords = cited.replace(/[，。、；：！？""''（）\[\]【】\n\r]/g, ' ').split(/\s+/).filter(w => w.length >= 2);
+  if (keywords.length) {
+    const unique = [...new Set(keywords)].slice(0, 20);
+    const escaped = unique.map(w => escapeHtml(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const pattern = new RegExp(`(${escaped.join('|')})`, 'gi');
+    const result = safe.replace(pattern, '<mark class="cite-hl">$1</mark>');
+    if (result !== safe) return result;
+  }
+  const srcWords = raw.replace(/[，。、；：！？""''（）\[\]【】\n\r]/g, ' ').split(/\s+/).filter(w => w.length >= 2);
+  const reverseMatches = [...new Set(srcWords)].filter(w => cited.includes(w)).slice(0, 20);
+  if (reverseMatches.length) {
+    const revEscaped = reverseMatches.map(w => escapeHtml(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const revPattern = new RegExp(`(${revEscaped.join('|')})`, 'gi');
+    return safe.replace(revPattern, '<mark class="cite-hl">$1</mark>');
+  }
+  return safe;
 });
 
 const handleCiteClick = (e: MouseEvent) => {
