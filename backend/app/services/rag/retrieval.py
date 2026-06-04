@@ -276,12 +276,6 @@ class VectorRetriever:
             f"向量={len(vector_results)}条, BM25={len(bm25_results)}条"
         )
 
-        if not bm25_results:
-            # BM25 不可用时降级为纯向量
-            for r in vector_results:
-                r.retrieval_method = 'vector'
-            return vector_results[:n_results]
-
         merged = VectorRetriever._rrf_merge(vector_results, bm25_results, alpha, n_results)
         return _mmr_diversify(merged, n_results)
 
@@ -445,13 +439,14 @@ class VectorRetriever:
         # chunk_id → result 索引
         vector_map = {r.chunk_id: (rank, r) for rank, r in enumerate(vector_results)}
         bm25_map = {r.chunk_id: (rank, r) for rank, r in enumerate(bm25_results)}
+        penalty = max(len(vector_results), len(bm25_results), n_results)
 
         all_ids = set(vector_map.keys()) | set(bm25_map.keys())
         fused: List[RetrievalResult] = []
 
         for cid in all_ids:
-            v_rank, v_res = vector_map.get(cid, (len(vector_results), None))
-            b_rank, b_res = bm25_map.get(cid, (len(bm25_results), None))
+            v_rank, v_res = vector_map.get(cid, (penalty, None))
+            b_rank, b_res = bm25_map.get(cid, (penalty, None))
 
             rrf_score = alpha / (k + v_rank) + (1 - alpha) / (k + b_rank)
 
