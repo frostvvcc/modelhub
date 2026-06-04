@@ -71,6 +71,8 @@ class KnowledgeSearchTool(BaseTool):
         self._user_id = user_id
         self._vector_db_ids = vector_db_ids
 
+    MAX_TOTAL_CONTENT_CHARS = 3000
+
     async def execute(self, query: str, **kwargs) -> Dict[str, Any]:
         from app.services.vector_service import AsyncVectorService
         try:
@@ -85,13 +87,22 @@ class KnowledgeSearchTool(BaseTool):
             if not sources:
                 return {"found": False, "message": "知识库中未找到相关信息", "sources": []}
 
+            top_sources = sources[:5]
+            per_source_budget = self.MAX_TOTAL_CONTENT_CHARS // max(len(top_sources), 1)
+
             formatted = []
-            for i, s in enumerate(sources[:5]):
+            for i, s in enumerate(top_sources):
+                content = (s.get("content") or "").strip()
+                if len(content) > per_source_budget:
+                    content = content[:per_source_budget] + "…"
                 formatted.append({
                     "index": i + 1,
-                    "content": (s.get("content") or "")[:2000],
+                    "content": content,
                     "source": s.get("source", "未知"),
                     "similarity": round(s.get("similarity", 0), 4),
+                    "vector_score": round(s.get("vector_score", 0), 4),
+                    "bm25_score": round(s.get("bm25_score", 0), 4),
+                    "retrieval_method": s.get("retrieval_method", "vector"),
                 })
             return {
                 "found": True,

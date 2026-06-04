@@ -59,6 +59,33 @@ class AgentEngine:
     def _get_openai_tools(self) -> List[Dict[str, Any]]:
         return [tool.to_openai_tool() for tool in self.tool_list]
 
+    @staticmethod
+    def _safe_truncate_tool_result(result: Any, max_chars: int) -> str:
+        """结构感知截断：对含 sources 的结果逐条缩减 content，保证 JSON 结构完整。"""
+        json_str = json.dumps(result, ensure_ascii=False, default=str)
+        if len(json_str) <= max_chars:
+            return json_str
+
+        if isinstance(result, dict) and isinstance(result.get("sources"), list):
+            result = dict(result)
+            result["sources"] = [dict(s) for s in result["sources"]]
+            for limit in [600, 300, 150, 60]:
+                for s in result["sources"]:
+                    c = s.get("content", "")
+                    if len(c) > limit:
+                        s["content"] = c[:limit] + "..."
+                json_str = json.dumps(result, ensure_ascii=False, default=str)
+                if len(json_str) <= max_chars:
+                    return json_str
+            while len(result["sources"]) > 1:
+                result["sources"].pop()
+                result["count"] = len(result["sources"])
+                json_str = json.dumps(result, ensure_ascii=False, default=str)
+                if len(json_str) <= max_chars:
+                    return json_str
+
+        return json_str[:max_chars]
+
     async def run(
         self,
         messages: List[Dict[str, str]],
@@ -262,7 +289,7 @@ class AgentEngine:
                     working_messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
-                        "content": json.dumps(result, ensure_ascii=False, default=str)[:max_result_chars],
+                        "content": self._safe_truncate_tool_result(result, max_result_chars),
                     })
 
                 if self.state_machine.can_transition(AgentState.REFLECTING):

@@ -70,6 +70,42 @@ def _sse_event(event_type: str, data: Any) -> str:
     return f"event: {event_type}\ndata: {json_data}\n\n"
 
 
+def _build_source_citations(
+    raw_sources: List[Dict[str, Any]],
+    citation_template: Optional[str],
+) -> List[Dict[str, Any]]:
+    """从 RAG 原始结果构建来源引用列表，确保每条都有 citation_label 和 confidence_label。
+
+    Agent 模式下 RAG 结果不经过 _build_prompt_orchestration，sources 缺少这两个字段，
+    导致 _renumber_citations 按 citation_label 匹配时丢失全部来源。
+    """
+    citations = []
+    for idx, s in enumerate(raw_sources):
+        label = s.get("citation_label") or AsyncChatService._make_citation_label(citation_template, idx + 1)
+        sim = float(s.get("similarity") or s.get("vector_score") or 0.0)
+        conf_score = round(max(0.0, min(1.0, s.get("confidence_score") or sim)), 4)
+        conf_label = s.get("confidence_label") or (
+            "高" if conf_score >= 0.75 else "中" if conf_score >= 0.55 else "低" if conf_score > 0 else "不足"
+        )
+        citations.append({
+            "content": s.get("content", ""),
+            "source": s.get("source", ""),
+            "chunk_id": s.get("id", ""),
+            "similarity": round(s.get("similarity", 0.0), 4),
+            "vector_score": round(s.get("vector_score", 0.0), 4),
+            "bm25_score": round(s.get("bm25_score", 0.0), 4),
+            "final_score": round(s.get("final_score", 0.0), 4),
+            "retrieval_method": s.get("retrieval_method", "vector"),
+            "document_id": s.get("document_id", ""),
+            "vector_db_id": s.get("vector_db_id"),
+            "vector_db_name": s.get("vector_db_name", ""),
+            "citation_label": label,
+            "confidence_score": conf_score,
+            "confidence_label": conf_label,
+        })
+    return citations
+
+
 class StreamChatService:
     """流式对话服务"""
 
@@ -263,27 +299,8 @@ class StreamChatService:
             content = accumulated_content
 
             raw_sources = (rag_result or {}).get("sources", [])
-            source_citations = [
-                {
-                    "content": s.get("content", ""),
-                    "source": s.get("source", ""),
-                    "chunk_id": s.get("id", ""),
-                    "similarity": round(s.get("similarity", 0.0), 4),
-                    "vector_score": round(s.get("vector_score", 0.0), 4),
-                    "bm25_score": round(s.get("bm25_score", 0.0), 4),
-                    "final_score": round(s.get("final_score", 0.0), 4),
-                    "retrieval_method": s.get("retrieval_method", "vector"),
-                    "document_id": s.get("document_id", ""),
-                    "vector_db_id": s.get("vector_db_id"),
-                    "vector_db_name": s.get("vector_db_name", ""),
-                    "citation_label": s.get("citation_label", ""),
-                    "confidence_score": round(s.get("confidence_score", 0.0), 4),
-                    "confidence_label": s.get("confidence_label", ""),
-                }
-                for s in raw_sources
-            ]
-
             ct = getattr(model_config, "citation_template", None) if model_config else None
+            source_citations = _build_source_citations(raw_sources, ct)
             content, source_citations = AsyncChatService._renumber_citations(content, source_citations, ct)
 
             used_kb = (rag_result or {}).get("used_knowledge_base", False)
@@ -478,27 +495,8 @@ class StreamChatService:
             # 后处理
             content = accumulated_content
             raw_sources = (rag_result or {}).get("sources", [])
-            source_citations = [
-                {
-                    "content": s.get("content", ""),
-                    "source": s.get("source", ""),
-                    "chunk_id": s.get("id", ""),
-                    "similarity": round(s.get("similarity", 0.0), 4),
-                    "vector_score": round(s.get("vector_score", 0.0), 4),
-                    "bm25_score": round(s.get("bm25_score", 0.0), 4),
-                    "final_score": round(s.get("final_score", 0.0), 4),
-                    "retrieval_method": s.get("retrieval_method", "vector"),
-                    "document_id": s.get("document_id", ""),
-                    "vector_db_id": s.get("vector_db_id"),
-                    "vector_db_name": s.get("vector_db_name", ""),
-                    "citation_label": s.get("citation_label", ""),
-                    "confidence_score": round(s.get("confidence_score", 0.0), 4),
-                    "confidence_label": s.get("confidence_label", ""),
-                }
-                for s in raw_sources
-            ]
-
             ct = getattr(model_config, "citation_template", None) if model_config else None
+            source_citations = _build_source_citations(raw_sources, ct)
             content, source_citations = AsyncChatService._renumber_citations(content, source_citations, ct)
 
             used_kb = (rag_result or {}).get("used_knowledge_base", False)

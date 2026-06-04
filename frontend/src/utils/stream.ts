@@ -131,6 +131,9 @@ async function processSSEStream(
   const decoder = new TextDecoder()
   let buffer = ''
 
+  let eventType = ''
+  let eventData = ''
+
   try {
     while (true) {
       const { done, value } = await reader.read()
@@ -139,9 +142,6 @@ async function processSSEStream(
       buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
-
-      let eventType = ''
-      let eventData = ''
 
       for (const line of lines) {
         if (line.startsWith('event: ')) {
