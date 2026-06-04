@@ -300,6 +300,7 @@ class AgentEngine:
                     })
 
                     succeeded, failed, blocked, no_result = [], [], [], []
+                    ks_sources = []
                     for _, tn, _, res, _ in tool_results:
                         if isinstance(res, dict):
                             if res.get("blocked"):
@@ -310,19 +311,42 @@ class AgentEngine:
                                 no_result.append(tn)
                             else:
                                 succeeded.append(tn)
+                                if tn == "knowledge_search" and res.get("sources"):
+                                    ks_sources = res["sources"]
                         else:
                             succeeded.append(tn)
 
                     reflection_parts = []
+                    if ks_sources:
+                        context_lines = ["【知识库检索结果 — 你必须基于以下内容回答】"]
+                        for s in ks_sources:
+                            idx = s.get("index", "?")
+                            src = s.get("source", "未知")
+                            ctx = s.get("content", "")
+                            context_lines.append(f"\n[来源{idx}]（{src}）\n{ctx}")
+                        context_lines.append(
+                            "\n【引用规则 — 必须遵守】\n"
+                            "1. 回答中每个来自上述来源的事实都必须标注来源编号，如 [来源1]，不可省略。\n"
+                            "2. 来源编号必须与上面的 [来源N] 一一对应，不可编造不存在的编号。\n"
+                            "3. 如果一句话的信息来自多个来源，全部标注，如 [来源1][来源3]。\n"
+                            "4. 如果知识库资料不足以回答，请明确说明「当前知识库依据不足」，不要编造。"
+                        )
+                        working_messages.append({
+                            "role": "system",
+                            "content": "\n".join(context_lines),
+                        })
                     if succeeded:
-                        reflection_parts.append(f"成功获取结果的工具：{', '.join(succeeded)}。请判断信息是否充分回答用户问题。")
+                        reflection_parts.append(f"成功获取结果的工具：{', '.join(succeeded)}。")
                     if no_result:
-                        reflection_parts.append(f"未找到相关信息的工具：{', '.join(no_result)}。考虑改写查询关键词或换一种检索角度重试。")
+                        reflection_parts.append(f"未找到相关信息的工具：{', '.join(no_result)}。考虑改写查询关键词重试。")
                     if failed:
-                        reflection_parts.append(f"执行失败的工具：{', '.join(failed)}。考虑换用其他工具获取信息，或跳过该步骤直接基于已有信息回答。")
+                        reflection_parts.append(f"执行失败的工具：{', '.join(failed)}。")
                     if blocked:
                         reflection_parts.append(f"被安全策略拦截的工具：{', '.join(blocked)}。不要再尝试调用这些工具。")
-                    reflection_parts.append("如果信息充分，直接生成最终回答；如果不充分，调用需要的工具补充信息。")
+                    if ks_sources:
+                        reflection_parts.append("知识库已返回结果，请直接基于上面的来源内容生成最终回答，必须标注 [来源N]。")
+                    else:
+                        reflection_parts.append("如果信息充分，直接生成最终回答；如果不充分，调用需要的工具补充信息。")
                     reflection_prompt = "\n".join(reflection_parts)
                     working_messages.append({
                         "role": "system",

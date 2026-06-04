@@ -271,6 +271,11 @@ class VectorRetriever:
         )
         vector_results, bm25_results = await asyncio.gather(vector_task, bm25_task)
 
+        logger.info(
+            f"🔍 [混合检索] vector_db_id={vector_db_id}: "
+            f"向量={len(vector_results)}条, BM25={len(bm25_results)}条"
+        )
+
         if not bm25_results:
             # BM25 不可用时降级为纯向量
             for r in vector_results:
@@ -319,6 +324,7 @@ class VectorRetriever:
 
         index_data = await VectorRetriever._get_bm25_index(vector_db_id)
         if not index_data:
+            logger.warning(f"BM25 内存索引为空: vector_db_id={vector_db_id}，BM25 检索不可用（ChromaDB 集合可能为空或不可达）")
             return []
 
         bm25: BM25Okapi = index_data['bm25']
