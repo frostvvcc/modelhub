@@ -15,7 +15,6 @@ import PermissionTestView from '../views/PermissionTestView.vue'
 import BotListView from '../views/BotListView.vue'
 import BotDetailView from '../views/BotDetailView.vue'
 import BotBuilderView from '../views/BotBuilderView.vue'
-import BotChatView from '../views/BotChatView.vue'
 
 import { useUserStore } from '../stores/user'
 import { ElMessage } from 'element-plus'
@@ -100,12 +99,6 @@ const router = createRouter({
       path: '/bots/:id/edit',
       name: 'botEdit',
       component: BotBuilderView,
-      meta: { requiresAuth: true }
-    },
-    {
-      path: '/bots/:id/chat',
-      name: 'botChat',
-      component: BotChatView,
       meta: { requiresAuth: true }
     },
     {
