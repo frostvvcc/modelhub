@@ -172,7 +172,7 @@ export const useUserStore = defineStore('user', () => {
       
       return true
       
-    } catch (error: any) {
+    } catch (error: unknown) {
       ElNotification.error({
         title: '登录失败',
         message: error.response?.data?.message || '邮箱或密码不正确'
@@ -273,7 +273,7 @@ export const useUserStore = defineStore('user', () => {
     
   async function register(name: string, password: string, opts?: { role?: string; schoolId?: number; organizationId?: number; studentId?: string; employeeId?: string; email?: string }) {
     try {
-      const payload: any = { name, password }
+      const payload: Record<string, unknown> = { name, password }
       if (opts?.role) payload.role = opts.role
       if (opts?.schoolId) payload.school_id = opts.schoolId
       if (opts?.organizationId) payload.organization_id = opts.organizationId
@@ -300,7 +300,7 @@ export const useUserStore = defineStore('user', () => {
         })
         return false
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       ElNotification.error({
         title: '注册失败',
         message: error.response?.data?.message || '注册过程中出现问题'

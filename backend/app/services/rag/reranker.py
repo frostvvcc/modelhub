@@ -99,7 +99,7 @@ async def llm_rerank(
     精度好但延迟高（~1s），作为 Cross-Encoder 不可用时的 fallback。
     """
     from app.config import settings
-    model = model or getattr(settings, 'rag_llm_model', None) or "qwen-plus"
+    model = model or settings.rag_llm_model
 
     if len(candidates) <= top_k:
         return candidates

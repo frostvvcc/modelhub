@@ -94,10 +94,6 @@ class AgentEngine:
                 client = llm_client._get_client()
                 all_msgs = working_messages
 
-                # 关键：最后一轮或没有待处理的 tool_calls 时，用流式输出直接返回
-                # 中间决策轮次用非流式，减少 token 浪费
-                use_stream = False
-
                 response = await client.chat.completions.create(
                     model=llm_client.model,
                     messages=all_msgs,
@@ -126,6 +122,20 @@ class AgentEngine:
                         break
 
                 llm_span.finish(output={"finish_reason": choice.finish_reason})
+
+                if choice.finish_reason == "length":
+                    logger.warning(
+                        f"LLM 输出被截断 (finish_reason=length)，第 {iteration} 轮，"
+                        f"跳过后续工具调用，直接基于已有信息生成最终回答"
+                    )
+                    if self.state_machine.can_transition(AgentState.RESPONDING):
+                        self.state_machine.transition(AgentState.RESPONDING, "输出截断，提前结束")
+                    yield AgentEvent(type="warning", data={
+                        "message": "模型输出被截断，将直接生成回答",
+                        "finish_reason": "length",
+                        "iteration": iteration,
+                    })
+                    break
 
                 if self.token_budget.should_stop(reserve=1000):
                     logger.info(f"Token 预算剩余不足 (剩余 {self.token_budget.remaining})，跳过后续工具调用，直接回答")
@@ -182,10 +192,11 @@ class AgentEngine:
                     })
 
                 # 并行执行所有工具调用（asyncio.gather），执行前按安全等级拦截
-                async def _exec_tool(tc, tool_name, tool_args):
+                async def _exec_tool(tc, tool_name, tool_args, parent_span=llm_span):
                     tool_span = self.trace.create_span(
                         f"tool:{tool_name}", span_type="tool_call",
                         input_data={"tool": tool_name, "args": tool_args},
+                        parent=parent_span,
                     )
                     tool = self.tools.get(tool_name)
                     if not tool:
@@ -244,10 +255,14 @@ class AgentEngine:
                         "call_id": tc.id, "latency_ms": tool_span.latency_ms,
                     })
 
+                    max_result_chars = min(
+                        max(800, self.token_budget.remaining * 2),
+                        4000,
+                    )
                     working_messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
-                        "content": json.dumps(result, ensure_ascii=False, default=str)[:1200],
+                        "content": json.dumps(result, ensure_ascii=False, default=str)[:max_result_chars],
                     })
 
                 if self.state_machine.can_transition(AgentState.REFLECTING):
@@ -257,18 +272,31 @@ class AgentEngine:
                         "label": "分析工具结果中...",
                     })
 
-                    tool_summary = "; ".join(
-                        f"{tn}→{'成功' if 'error' not in str(res) else '失败'}"
-                        for _, tn, _, res, _ in tool_results
-                    )
-                    reflection_prompt = (
-                        f"你刚调用了以下工具：{tool_summary}。\n"
-                        "请审查结果：\n"
-                        "1. 工具返回的信息是否足以回答用户问题？\n"
-                        "2. 是否有工具调用失败需要重试或换工具？\n"
-                        "3. 是否需要补充调用其他工具获取更多信息？\n"
-                        "如果信息充分，直接生成最终回答。如果不充分，调用需要的工具。"
-                    )
+                    succeeded, failed, blocked, no_result = [], [], [], []
+                    for _, tn, _, res, _ in tool_results:
+                        if isinstance(res, dict):
+                            if res.get("blocked"):
+                                blocked.append(f"{tn}(权限不足: {res.get('reason', '')})")
+                            elif res.get("error"):
+                                failed.append(f"{tn}(错误: {res['error'][:80]})")
+                            elif res.get("found") is False or res.get("count", 1) == 0:
+                                no_result.append(tn)
+                            else:
+                                succeeded.append(tn)
+                        else:
+                            succeeded.append(tn)
+
+                    reflection_parts = []
+                    if succeeded:
+                        reflection_parts.append(f"成功获取结果的工具：{', '.join(succeeded)}。请判断信息是否充分回答用户问题。")
+                    if no_result:
+                        reflection_parts.append(f"未找到相关信息的工具：{', '.join(no_result)}。考虑改写查询关键词或换一种检索角度重试。")
+                    if failed:
+                        reflection_parts.append(f"执行失败的工具：{', '.join(failed)}。考虑换用其他工具获取信息，或跳过该步骤直接基于已有信息回答。")
+                    if blocked:
+                        reflection_parts.append(f"被安全策略拦截的工具：{', '.join(blocked)}。不要再尝试调用这些工具。")
+                    reflection_parts.append("如果信息充分，直接生成最终回答；如果不充分，调用需要的工具补充信息。")
+                    reflection_prompt = "\n".join(reflection_parts)
                     working_messages.append({
                         "role": "system",
                         "content": reflection_prompt,

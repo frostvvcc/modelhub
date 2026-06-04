@@ -8,6 +8,7 @@ import { DownloadFile } from "../api/vectorDb";
 import { streamBotChat, type StreamCallbacks } from "../utils/stream";
 
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
 
@@ -20,7 +21,7 @@ renderer.code = ({ text, lang }) => {
 marked.setOptions({ renderer, breaks: true, gfm: true });
 
 const renderMarkdown = (content: string) => {
-  let html = marked.parse(content) as string;
+  let html = DOMPurify.sanitize(marked.parse(content) as string, { ADD_ATTR: ['data-cite-index'] });
   html = html.replace(/\[来源(\d+)\]/g, '<span class="cite-inline" data-cite-index="$1">来源$1</span>');
   return html;
 };
@@ -32,8 +33,8 @@ type QuoteInfo = {
 
 type ToolCallRecord = {
   tool: string;
-  args: any;
-  result?: any;
+  args: Record<string, unknown>;
+  result?: Record<string, unknown>;
   callId: string;
   latencyMs?: number;
   status: 'calling' | 'done' | 'error';
@@ -53,7 +54,7 @@ type LocalMessage = {
   agentState?: string;
   agentStateLabel?: string;
   toolCalls?: ToolCallRecord[];
-  trace?: any;
+  trace?: Record<string, unknown>;
 };
 
 const route = useRoute();
@@ -74,7 +75,7 @@ const loadBot = async () => {
     } else {
       messages.value.push({ role: "assistant", content: "你好，请直接告诉我你想查询的问题。" });
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error?.response?.data?.detail || "数字助理不存在或无权访问");
     router.push("/bots");
   }
@@ -143,7 +144,7 @@ const citePopoverStyle = computed(() => {
 });
 
 const handleDownloadSource = async (src: BotChatSource) => {
-  const docId = (src as any).document_id;
+  const docId = (src as Record<string, unknown>).document_id;
   if (!docId) return;
   try {
     const response = await DownloadFile(Number(docId));
@@ -209,7 +210,7 @@ const sendMessage = async () => {
       if (tc) { tc.result = result; tc.latencyMs = latencyMs; tc.status = result?.error ? 'error' : 'done'; }
     },
     onSources(sources) {
-      messages.value[msgIndex].sources = sources as any;
+      messages.value[msgIndex].sources = sources as SourceCitation[];
     },
     onMetadata(metadata) {
       messages.value[msgIndex].grounded_ratio = metadata.grounded_ratio;
@@ -238,7 +239,7 @@ const sendMessage = async () => {
 
   try {
     await streamBotChat(botId, content, conversationId.value, true, callbacks);
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (!messages.value[msgIndex].content) {
       messages.value[msgIndex].content = error?.message || "发送失败，请检查助理模型配置和知识库权限。";
     }
@@ -406,7 +407,7 @@ onMounted(loadBot);
                           <span class="ds-ref-label">{{ src.citation_label || `[${si + 1}]` }}</span>
                           <span class="ds-ref-file">{{ src.source }}</span>
                           <span class="ds-meta-tag ds-meta-tag--sm" :class="getLevelClass(src.confidence_label)">{{ src.confidence_label || '中' }}</span>
-                          <button v-if="(src as any).document_id" class="ds-ref-download" @click.stop="handleDownloadSource(src)" title="下载文档">
+                          <button v-if="(src as Record<string, unknown>).document_id" class="ds-ref-download" @click.stop="handleDownloadSource(src)" title="下载文档">
                             <el-icon :size="12"><Download /></el-icon>
                           </button>
                           <span class="ds-ref-expand">{{ isSourceItemExpanded(index, si) ? '收起' : '展开' }}</span>
@@ -496,7 +497,7 @@ onMounted(loadBot);
       <div class="ds-cite-popover" :style="citePopoverStyle">
         <div class="ds-cite-popover-header">
           <span class="ds-cite-popover-file">{{ activeCite.source.source }}</span>
-          <span class="ds-meta-tag ds-meta-tag--sm" :class="getLevelClass((activeCite.source as any).confidence_label)">{{ (activeCite.source as any).confidence_label || '中' }}</span>
+          <span class="ds-meta-tag ds-meta-tag--sm" :class="getLevelClass((activeCite.source as Record<string, unknown>).confidence_label)">{{ (activeCite.source as Record<string, unknown>).confidence_label || '中' }}</span>
         </div>
         <div class="ds-cite-popover-meta">
           <span v-if="activeCite.source.vector_db_name" class="ds-cite-popover-meta-tag">{{ activeCite.source.vector_db_name }}</span>
@@ -504,7 +505,7 @@ onMounted(loadBot);
         </div>
         <div class="ds-cite-popover-content">{{ activeCite.source.content }}</div>
         <div class="ds-cite-popover-actions">
-          <button v-if="(activeCite.source as any).document_id" class="ds-cite-btn ds-cite-btn--primary" @click="handleDownloadSource(activeCite.source)">
+          <button v-if="(activeCite.source as Record<string, unknown>).document_id" class="ds-cite-btn ds-cite-btn--primary" @click="handleDownloadSource(activeCite.source)">
             <el-icon :size="13"><Download /></el-icon>
             下载文档
           </button>

@@ -161,7 +161,7 @@ onMounted(async () => {
     
     console.log('数据加载完成')
     
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElNotification({
       title: '错误',
       message: error.message || '获取数据失败',

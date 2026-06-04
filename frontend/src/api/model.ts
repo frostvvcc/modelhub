@@ -28,11 +28,11 @@ export const getModelConfig = async (id: number, options?: { silent?: boolean })
         return null
     }
     try {
-        const config: any = {}
+        const config: Record<string, unknown> = {}
         if (options?.silent) config._silent403 = true
         const response = await api.get(`/model/modelconfig/get/${id}`, config)
         return response.data.data
-    } catch (error: any) {
+    } catch (error: unknown) {
         if (error.response?.status === 404 || error.response?.status === 500 || error.response?.status === 403) {
             return null
         }
@@ -54,13 +54,13 @@ export const getUserModelConfig = async (user_id: number) => {
     return response.data.data
 }
 
-export const createConfig = async (data: any) => { 
+export const createConfig = async (data: Record<string, unknown>) => { 
     data.share_id = randomString(10)
     data.scope = data.is_private ? 'private' : (data.scope || 'public')
     return await api.post('/model/modelconfig/create', data)
 }
 
-export const updateConfig = async (data: any) => { 
+export const updateConfig = async (data: Record<string, unknown>) => { 
     data.scope = data.is_private ? 'private' : (data.scope || 'public')
     const response = await api.post('/model/modelconfig/update', data)
     return response.data.data

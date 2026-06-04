@@ -1,5 +1,5 @@
 import api from "../utils/api";
-export const createVectorDb = async (data: any) => {
+export const createVectorDb = async (data: Record<string, unknown>) => {
     const formData = new FormData()
     formData.append('name', data.name)
     formData.append('embedding_id', data.embedding_id.toString())
@@ -15,7 +15,7 @@ export const createVectorDb = async (data: any) => {
 }
 
 export const fetchOwnVectors = async (organizationId?: number) => {
-    const params: any = {}
+    const params: Record<string, string | number> = {}
     if (organizationId) params.organization_id = organizationId
     const response = await api.get('/vector/list', { params })
     return response.data.data
@@ -31,7 +31,7 @@ export const getVectorDb = async (id: number) => {
     return response.data.data
 }
 
-export const updateVectorDb = async (id: number, data: any) => { 
+export const updateVectorDb = async (id: number, data: Record<string, unknown>) => { 
     return await api.post(`/vector/update/${id}`, data);
 }
 

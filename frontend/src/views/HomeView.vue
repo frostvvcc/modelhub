@@ -20,7 +20,7 @@ const loading = ref(false)
 
 const bots = ref<BotResponse[]>([])
 const conversations = ref<Conversation[]>([])
-const vectorDbs = ref<any[]>([])
+const vectorDbs = ref<Record<string, unknown>[]>([])
 const orgDisplay = computed(() => {
   const org = userStore.currentOrganization
   if (!org) return ''
@@ -56,7 +56,7 @@ const displayBots = computed(() => bots.value.slice(0, 3))
 
 const displayVectorDbs = computed(() => {
   return [...vectorDbs.value]
-    .sort((a: any, b: any) => new Date(b.update_at || b.create_at).getTime() - new Date(a.update_at || a.create_at).getTime())
+    .sort((a: Record<string, unknown>, b: Record<string, unknown>) => new Date(b.update_at || b.create_at).getTime() - new Date(a.update_at || a.create_at).getTime())
     .slice(0, 3)
 })
 
@@ -73,7 +73,7 @@ interface ActivityItem {
 const activityFeed = computed<ActivityItem[]>(() => {
   const items: ActivityItem[] = []
 
-  vectorDbs.value.forEach((db: any) => {
+  vectorDbs.value.forEach((db: Record<string, unknown>) => {
     const t = db.updated_at || db.created_at || db.update_at || db.create_at
     if (t) {
       items.push({
@@ -122,13 +122,13 @@ function formatRelativeTime(timeStr: string): string {
   return getFormatTimeString(timeStr)
 }
 
-function getDbVisibilityLabel(db: any): string {
+function getDbVisibilityLabel(db: Record<string, unknown>): string {
   if (!db.organization_id) return '私有'
   if (db.org_name) return db.org_name
   return '组织'
 }
 
-function getDbVisibilityType(db: any): string {
+function getDbVisibilityType(db: Record<string, unknown>): string {
   if (!db.organization_id) return 'info'
   return 'success'
 }

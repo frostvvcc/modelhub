@@ -29,8 +29,8 @@ export interface SpaceMajor {
 }
 
 export interface SpaceResources {
-  vector_dbs: any[];
-  bots: any[];
+  vector_dbs: Record<string, unknown>[];
+  bots: Record<string, unknown>[];
 }
 
 export const createTeachingSpace = async (name: string, description?: string): Promise<TeachingSpace> => {
@@ -74,7 +74,7 @@ export const bindMajor = async (spaceId: number, majorId: number, enrollmentYear
 };
 
 export const unbindMajor = async (spaceId: number, majorId: number, enrollmentYear?: number | null) => {
-  const params: Record<string, any> = {};
+  const params: Record<string, string | number> = {};
   if (enrollmentYear != null) params.enrollment_year = enrollmentYear;
   const response = await api.delete(`/teaching-space/${spaceId}/unbindMajor/${majorId}`, { params });
   return response.data.data;
@@ -85,7 +85,7 @@ export const getSpaceMajors = async (spaceId: number): Promise<SpaceMajor[]> => 
   return response.data.data;
 };
 
-export const getSpaceStudents = async (spaceId: number): Promise<any[]> => {
+export const getSpaceStudents = async (spaceId: number): Promise<Record<string, unknown>[]> => {
   const response = await api.get(`/teaching-space/${spaceId}/students`);
   return response.data.data;
 };
@@ -124,7 +124,7 @@ export const getSpaceResources = async (spaceId: number): Promise<SpaceResources
 };
 
 export const listAllTeachingSpaces = async (organizationId?: number): Promise<TeachingSpace[]> => {
-  const params: Record<string, any> = {};
+  const params: Record<string, string | number> = {};
   if (organizationId) params.organization_id = organizationId;
   const response = await api.get('/teaching-space/admin/all', { params });
   return response.data.data;

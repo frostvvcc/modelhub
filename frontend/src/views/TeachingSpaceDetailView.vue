@@ -32,7 +32,7 @@ const spaceId = ref(Number(route.params.id));
 const space = ref<TeachingSpace | null>(null);
 const majors = ref<SpaceMajor[]>([]);
 const resources = ref<SpaceResources>({ vector_dbs: [], bots: [] });
-const students = ref<any[]>([]);
+const students = ref<Record<string, unknown>[]>([]);
 const loading = ref(false);
 const studentSearch = ref('');
 
@@ -54,7 +54,7 @@ const studentYearFilter = ref<number | ''>('');
 
 // Publish resource
 const publishDialogVisible = ref(false);
-const ownVectors = ref<any[]>([]);
+const ownVectors = ref<Record<string, unknown>[]>([]);
 const ownBots = ref<BotResponse[]>([]);
 const selectedVectorDbs = ref<number[]>([]);
 const selectedBots = ref<number[]>([]);
@@ -105,7 +105,7 @@ const filteredStudents = computed(() => {
 const loadSpace = async () => {
   try {
     space.value = await getTeachingSpace(spaceId.value);
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error('加载空间信息失败');
     router.push(backPath.value);
   }
@@ -130,7 +130,7 @@ const loadResources = async () => {
 const loadStudents = async () => {
   try {
     students.value = await getSpaceStudents(spaceId.value);
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('加载学生列表失败:', error);
     students.value = [];
   }
@@ -165,7 +165,7 @@ const submitEdit = async () => {
     ElMessage.success('更新成功');
     editDialogVisible.value = false;
     await loadSpace();
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error?.response?.data?.message || '更新失败');
   }
 };
@@ -216,7 +216,7 @@ const submitBindMajor = async () => {
     ElMessage.success('绑定成功');
     bindMajorDialogVisible.value = false;
     await Promise.all([loadMajors(), loadStudents()]);
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error?.response?.data?.message || '绑定失败');
   } finally {
     bindLoading.value = false;
@@ -235,7 +235,7 @@ const handleUnbindMajor = async (major: SpaceMajor) => {
     await unbindMajor(spaceId.value, major.major_id, major.enrollment_year);
     ElMessage.success('已解绑');
     await Promise.all([loadMajors(), loadStudents()]);
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (error !== 'cancel') {
       ElMessage.error(error?.response?.data?.message || '解绑失败');
     }
@@ -262,8 +262,8 @@ const openPublishDialog = async () => {
   }
 };
 
-const isVdbPublished = (id: number) => resources.value.vector_dbs.some((r: any) => r.id === id);
-const isBotPublished = (id: number) => resources.value.bots.some((r: any) => r.id === id);
+const isVdbPublished = (id: number) => resources.value.vector_dbs.some((r: Record<string, unknown>) => r.id === id);
+const isBotPublished = (id: number) => resources.value.bots.some((r: Record<string, unknown>) => r.id === id);
 
 const totalSelected = computed(() => selectedVectorDbs.value.length + selectedBots.value.length);
 
@@ -283,14 +283,14 @@ const submitPublish = async () => {
     ElMessage.success('发布成功');
     publishDialogVisible.value = false;
     await loadResources();
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error?.response?.data?.message || '发布失败');
   } finally {
     publishLoading.value = false;
   }
 };
 
-const handleUnpublish = async (type: 'vector_db' | 'bot', resource: any) => {
+const handleUnpublish = async (type: 'vector_db' | 'bot', resource: Record<string, unknown>) => {
   try {
     await ElMessageBox.confirm(
       `确定取消发布「${resource.name}」吗？`,
@@ -300,7 +300,7 @@ const handleUnpublish = async (type: 'vector_db' | 'bot', resource: any) => {
     await unpublishResource(spaceId.value, type, resource.id);
     ElMessage.success('已取消发布');
     await loadResources();
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (error !== 'cancel') {
       ElMessage.error(error?.response?.data?.message || '操作失败');
     }
@@ -325,14 +325,14 @@ const submitAddStudent = async () => {
     ElMessage.success('添加成功');
     addStudentDialogVisible.value = false;
     await loadStudents();
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error?.response?.data?.message || '添加失败');
   } finally {
     addStudentLoading.value = false;
   }
 };
 
-const handleRemoveStudent = async (stu: any) => {
+const handleRemoveStudent = async (stu: Record<string, unknown>) => {
   try {
     await ElMessageBox.confirm(
       `确定将学生「${stu.name || stu.student_id}」从空间中移除吗？`,
@@ -342,7 +342,7 @@ const handleRemoveStudent = async (stu: any) => {
     await removeSpaceStudent(spaceId.value, stu.id);
     ElMessage.success('已移除');
     await loadStudents();
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (error !== 'cancel') {
       ElMessage.error(error?.response?.data?.message || '移除失败');
     }

@@ -97,7 +97,7 @@ async function saveProfile() {
     }
     profileEditing.value = false
     ElNotification.success({ title: '成功', message: '个人资料已更新' })
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElNotification.error({ title: '错误', message: error.response?.data?.message || '更新失败' })
   } finally {
     profileSaving.value = false
@@ -168,7 +168,7 @@ async function savePassword() {
     await changePassword(passwordForm.oldPassword, passwordForm.newPassword)
     ElNotification.success({ title: '成功', message: '密码修改成功' })
     cancelPasswordEdit()
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElNotification.error({ title: '错误', message: error.response?.data?.message || '密码修改失败' })
   } finally {
     passwordSaving.value = false
@@ -202,7 +202,7 @@ onMounted(async () => {
       userInfo.value.avatar = userStore.user?.avatar ?? userInfo.value.avatar
     }
     organizations.value = res.organizations || []
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElNotification.error({
       title: '错误',
       message: error.message || '获取数据失败',

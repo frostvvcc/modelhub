@@ -39,7 +39,7 @@ const loadSpaces = async () => {
   loading.value = true;
   try {
     spaces.value = await listTeachingSpaces();
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error?.response?.data?.message || '加载教学空间失败');
   } finally {
     loading.value = false;
@@ -62,7 +62,7 @@ const submitForm = async () => {
     ElMessage.success('创建成功');
     dialogVisible.value = false;
     await loadSpaces();
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error?.response?.data?.message || '创建失败');
   } finally {
     loading.value = false;
@@ -83,7 +83,7 @@ const handleDelete = async (space: TeachingSpace) => {
     await deleteTeachingSpace(space.id);
     ElMessage.success('已删除');
     await loadSpaces();
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (error !== 'cancel') {
       ElMessage.error(error?.response?.data?.message || '删除失败');
     }

@@ -24,8 +24,8 @@ export interface QuoteInfo {
 /** Agent 工具调用记录 */
 export interface ToolCallRecord {
   tool: string;
-  args: any;
-  result?: any;
+  args: Record<string, unknown>;
+  result?: Record<string, unknown>;
   callId: string;
   latencyMs?: number;
   status: 'calling' | 'done' | 'error';

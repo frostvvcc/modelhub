@@ -16,6 +16,7 @@ import { getBot, botChat, type BotResponse } from '../api/bot';
 import { streamChat, streamBotChat, type StreamCallbacks } from '../utils/stream';
 
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
 
@@ -48,7 +49,7 @@ const isBotMode = computed(() => botId.value > 0 && !!currentBot.value);
 const botConversationId = ref<string | undefined>();
 
 const messages = ref<ChatMessage[]>([]);
-const allConfigs = ref<any[]>([]);
+const allConfigs = ref<Record<string, unknown>[]>([]);
 const isConversationLocked = computed(() => !!conversationId.value);
 
 // 设置面板
@@ -60,7 +61,7 @@ const abortController = ref<AbortController | null>(null);
 const isGenerating = ref(false);
 
 const loadAllConfigs = async () => {
-  const configs: any[] = [];
+  const configs: Record<string, unknown>[] = [];
   try { configs.push(...await fetchOwnConfigs()); } catch {}
   try { configs.push(...await getModelConfigs()); } catch {}
   allConfigs.value = configs.filter((config, index, all) =>
@@ -155,7 +156,7 @@ const toggleTrace = (index: number) => {
 
 const noModelConfigMessage = '当前没有可用的模型配置，请先到"模型配置"页面创建配置，或运行后端初始化脚本生成默认配置。';
 
-const getRequestErrorMessage = (error: any) => {
+const getRequestErrorMessage = (error: unknown) => {
   if (typeof error === 'string') return error;
   const data = error?.response?.data;
   if (typeof data?.message === 'string' && data.message.trim()) return data.message;
@@ -223,7 +224,7 @@ const getStateIcon = (state?: string) => {
 };
 
 const findAvailableModelConfig = async () => {
-  const configs: any[] = [];
+  const configs: Record<string, unknown>[] = [];
   try { configs.push(...await fetchOwnConfigs()); } catch {}
   try { configs.push(...await getModelConfigs()); } catch {}
   const uniqueConfigs = configs.filter((config, index, all) =>
@@ -398,7 +399,7 @@ const sendMessage = async (query: string) => {
       }
       await streamChat(formData, callbacks, abortController.value.signal);
     }
-  } catch (e: any) {
+  } catch (e: unknown) {
     if (e.name === 'AbortError') return;
     messages.value[msgIndex].content = getRequestErrorMessage(e);
     messages.value[msgIndex].isStreaming = false;
@@ -453,7 +454,7 @@ const renderMarkdown = (content: string) => {
   // 触发响应式更新
   void renderKey.value;
   if (!content) return '';
-  let html = marked.parse(content) as string;
+  let html = DOMPurify.sanitize(marked.parse(content) as string, { ADD_ATTR: ['data-cite-index'] });
   html = html.replace(/\[来源(\d+)\]/g, '<span class="cite-inline" data-cite-index="$1">来源$1</span>');
   return html;
 };
@@ -537,7 +538,7 @@ const loadDate = async () => {
   scrollToBottom();
 };
 
-const handleChatHistoryChange = (val: any) => {
+const handleChatHistoryChange = (val: number) => {
   const v = typeof val === 'object' ? val?.target?.value : val;
   setChatHistory(conversationId.value, v).then(() => {
     ConversationInfo.value.chat_history = Number(v);
@@ -667,8 +668,8 @@ const scrollToBottom = () => {
               </div>
               <div class="msg-ai-body">
                 <div class="msg-ai-bubble">
-                  <div v-if="(message as any).forbidden_topic_hit" class="msg-forbidden-tip">
-                    命中禁止话题：{{ (message as any).forbidden_topic_hit }}
+                  <div v-if="(message as Record<string, unknown>).forbidden_topic_hit" class="msg-forbidden-tip">
+                    命中禁止话题：{{ (message as Record<string, unknown>).forbidden_topic_hit }}
                   </div>
 
                   <!-- Agent 思考过程 -->

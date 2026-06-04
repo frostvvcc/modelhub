@@ -89,15 +89,15 @@ const loadGradeDistribution = async (org: Organization) => {
 const totalGradeStudents = computed(() => gradeDistribution.value.reduce((sum, g) => sum + g.student_count, 0));
 
 // ===== 知识库（仅非学校级展示）=====
-const orgVectorDbs = ref<any[]>([]);
+const orgVectorDbs = ref<Record<string, unknown>[]>([]);
 const loadingKbs = ref(false);
 
-const getOrgDbVisibilityLabel = (db: any) => {
+const getOrgDbVisibilityLabel = (db: Record<string, unknown>) => {
   if (!db.organization_id) return '私有';
   if (db.org_name) return db.org_name;
   return '组织';
 };
-const getOrgDbVisibilityType = (db: any): 'success' | 'primary' | 'info' => {
+const getOrgDbVisibilityType = (db: Record<string, unknown>): 'success' | 'primary' | 'info' => {
   if (!db.organization_id) return 'info';
   return 'primary';
 };
@@ -107,7 +107,7 @@ const loadKbs = async (org: Organization) => {
   loadingKbs.value = true;
   try {
     const allDbs = await fetchOwnVectors(org.id);
-    orgVectorDbs.value = allDbs.filter((db: any) =>
+    orgVectorDbs.value = allDbs.filter((db: Record<string, unknown>) =>
       db.organization_id === org.id
     );
   } catch { orgVectorDbs.value = []; }
@@ -156,7 +156,7 @@ const loadOrganizationTree = async () => {
     const tree = await getOrganizationTree(userStore.currentSchool.id);
     organizationTree.value = tree;
     if (tree) { breadcrumb.value = [tree]; }
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error.response?.data?.message || '加载组织树失败');
   } finally { loading.value = false; }
 };
@@ -176,7 +176,7 @@ const submitForm = async () => {
     ElMessage.success('创建成功');
     dialogVisible.value = false;
     await loadOrganizationTree();
-  } catch (error: any) { ElMessage.error(error.response?.data?.message || '创建失败'); }
+  } catch (error: unknown) { ElMessage.error(error.response?.data?.message || '创建失败'); }
   finally { loading.value = false; }
 };
 
@@ -194,7 +194,7 @@ const updateForm = async () => {
     ElMessage.success('更新成功');
     dialogVisible.value = false;
     await loadOrganizationTree();
-  } catch (error: any) { ElMessage.error(error.response?.data?.message || '更新失败'); }
+  } catch (error: unknown) { ElMessage.error(error.response?.data?.message || '更新失败'); }
   finally { loading.value = false; }
 };
 
@@ -205,7 +205,7 @@ const handleDelete = async (org: Organization) => {
     await deleteOrganization(org.id);
     ElMessage.success('删除成功');
     await loadOrganizationTree();
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (error !== 'cancel') ElMessage.error(error.response?.data?.message || '删除失败');
   } finally { loading.value = false; }
 };
@@ -214,14 +214,14 @@ const handleViewMembers = async (org: Organization) => {
   currentOrg.value = org;
   loading.value = true;
   try { currentOrgMembers.value = await getMembers(org.id); memberDialogVisible.value = true; }
-  catch (error: any) { ElMessage.error(error.response?.data?.message || '加载成员失败'); }
+  catch (error: unknown) { ElMessage.error(error.response?.data?.message || '加载成员失败'); }
   finally { loading.value = false; }
 };
 
 const handleRemoveMember = async (member: OrganizationMember) => {
   if (!currentOrg.value) return;
   try { await removeMember(currentOrg.value.id, member.user_id); ElMessage.success('移除成功'); currentOrgMembers.value = await getMembers(currentOrg.value.id); }
-  catch (error: any) { ElMessage.error(error.response?.data?.message || '移除失败'); }
+  catch (error: unknown) { ElMessage.error(error.response?.data?.message || '移除失败'); }
 };
 
 onMounted(() => { if (userStore.currentSchool) loadOrganizationTree(); });

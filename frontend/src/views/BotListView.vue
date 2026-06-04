@@ -71,7 +71,7 @@ const loadBots = async () => {
     await loadCollegeList();
     if (isAdmin.value) await loadAdminSpaces();
   }
-  catch (error: any) { ElMessage.error(error?.response?.data?.detail || "数字助理列表加载失败"); }
+  catch (error: unknown) { ElMessage.error(error?.response?.data?.detail || "数字助理列表加载失败"); }
   finally { loading.value = false; }
 };
 
@@ -81,7 +81,7 @@ const handleDelete = async (bot: BotResponse) => {
     await deleteBot(bot.id);
     ElMessage.success("已删除数字助理");
     await loadBots();
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (error !== "cancel") ElMessage.error(error?.response?.data?.detail || "删除失败");
   }
 };

@@ -12,8 +12,9 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Span:
-    """单步操作记录"""
+    """单步操作记录，支持父子层级关系"""
     span_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    parent_span_id: Optional[str] = None
     name: str = ""
     span_type: str = "generic"
     input_data: Dict[str, Any] = field(default_factory=dict)
@@ -44,7 +45,7 @@ class Span:
             self.status = "completed"
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "span_id": self.span_id,
             "name": self.name,
             "type": self.span_type,
@@ -57,6 +58,9 @@ class Span:
             "status": self.status,
             "error": self.error,
         }
+        if self.parent_span_id:
+            d["parent_span_id"] = self.parent_span_id
+        return d
 
 
 class TraceContext:
@@ -69,11 +73,18 @@ class TraceContext:
         self.end_time: float = 0.0
         self.metadata: Dict[str, Any] = {}
 
-    def create_span(self, name: str, span_type: str = "generic", input_data: Optional[Dict[str, Any]] = None) -> Span:
+    def create_span(
+        self,
+        name: str,
+        span_type: str = "generic",
+        input_data: Optional[Dict[str, Any]] = None,
+        parent: Optional[Span] = None,
+    ) -> Span:
         span = Span(
             name=name,
             span_type=span_type,
             input_data=input_data or {},
+            parent_span_id=parent.span_id if parent else None,
         )
         span.start()
         self.spans.append(span)
@@ -108,6 +119,21 @@ class TraceContext:
     def llm_call_count(self) -> int:
         return sum(1 for s in self.spans if s.span_type == "llm_call")
 
+    def _build_span_tree(self) -> List[Dict[str, Any]]:
+        """将扁平 span 列表组织为父子嵌套树"""
+        span_dicts = {s.span_id: s.to_dict() for s in self.spans}
+        for d in span_dicts.values():
+            d["children"] = []
+
+        roots = []
+        for s in self.spans:
+            d = span_dicts[s.span_id]
+            if s.parent_span_id and s.parent_span_id in span_dicts:
+                span_dicts[s.parent_span_id]["children"].append(d)
+            else:
+                roots.append(d)
+        return roots
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "trace_id": self.trace_id,
@@ -118,4 +144,5 @@ class TraceContext:
             "llm_calls": self.llm_call_count,
             "tool_calls": self.tool_call_count,
             "spans": [s.to_dict() for s in self.spans],
+            "span_tree": self._build_span_tree(),
         }

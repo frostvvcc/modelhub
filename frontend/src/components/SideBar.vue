@@ -99,7 +99,7 @@ const isStudent = computed(() => userRole.value === 'student')
 const isAdmin = computed(() => userRole.value === 'admin')
 
 const menuItems = computed(() => {
-  const items: Array<{ id: string; name: string; icon: any; path: string; requirePermission?: string; hideForStudent?: boolean; adminOnly?: boolean; hideForAdmin?: boolean }> = [
+  const items: Array<{ id: string; name: string; icon: unknown; path: string; requirePermission?: string; hideForStudent?: boolean; adminOnly?: boolean; hideForAdmin?: boolean }> = [
     { id: 'dashboard', name: '首页', icon: House, path: '/' },
     { id: 'database', name: '知识库', icon: DataAnalysis, path: '/database', requirePermission: 'knowledge:read' },
     { id: 'config', name: '模型配置', icon: Setting, path: '/config', requirePermission: 'config:read', adminOnly: true },

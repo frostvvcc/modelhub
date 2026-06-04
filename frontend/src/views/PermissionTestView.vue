@@ -231,7 +231,7 @@ const documentTestCases = reactive([
 ])
 
 // 运行知识库权限测试
-const runVectorDbTest = async (testCase: any) => {
+const runVectorDbTest = async (testCase: Record<string, unknown>) => {
   if (!userStore.user) {
     ElMessage.warning('请先登录')
     return
@@ -267,7 +267,7 @@ const runVectorDbTest = async (testCase: any) => {
 }
 
 // 运行文档操作权限测试
-const runDocumentTest = async (testCase: any) => {
+const runDocumentTest = async (testCase: Record<string, unknown>) => {
   if (!userStore.user) {
     ElMessage.warning('请先登录')
     return

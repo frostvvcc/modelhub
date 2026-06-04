@@ -55,7 +55,7 @@ const sortBy = ref<'updated' | 'created' | 'name'>('updated');
 const creatorOptions = computed(() => {
   const names = new Set<string>();
   for (const db of allVectorDBs.value) {
-    if ((db as any).creator_name) names.add((db as any).creator_name);
+    if ((db as Record<string, unknown>).creator_name) names.add((db as Record<string, unknown>).creator_name);
   }
   return Array.from(names).sort();
 });
@@ -70,7 +70,7 @@ const filteredVectorDBs = computed(() => {
     );
   }
   if (selectedCreator.value) {
-    list = list.filter(db => (db as any).creator_name === selectedCreator.value);
+    list = list.filter(db => (db as Record<string, unknown>).creator_name === selectedCreator.value);
   }
   list.sort((a, b) => {
     if (sortBy.value === 'name') return (a.name || '').localeCompare(b.name || '');
@@ -136,7 +136,7 @@ const scopeGrouped = computed(() => {
         groups.college.push(db);
       }
     }
-    if ((db as any).user_id === currentUserId.value) {
+    if ((db as Record<string, unknown>).user_id === currentUserId.value) {
       groups.mine.push(db);
     }
   }
@@ -208,7 +208,7 @@ const countByTab = (key: string) => {
   if (key === 'allColleges') {
     const items = scopeGrouped.value.allColleges || [];
     if (adminCollegeFilter.value) {
-      return items.filter(db => (db as any).organization_id === adminCollegeFilter.value).length;
+      return items.filter(db => (db as Record<string, unknown>).organization_id === adminCollegeFilter.value).length;
     }
     return items.length;
   }
@@ -220,7 +220,7 @@ const currentTabItems = computed(() => {
   if (activeTab.value === 'allColleges') {
     const items = scopeGrouped.value.allColleges || [];
     if (adminCollegeFilter.value) {
-      return items.filter(db => (db as any).organization_id === adminCollegeFilter.value);
+      return items.filter(db => (db as Record<string, unknown>).organization_id === adminCollegeFilter.value);
     }
     return items;
   }
@@ -284,7 +284,7 @@ const submitForm = async () => {
     ElMessage.success('创建成功');
     dialogVisible.value = false;
     loadData();
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error.response?.data?.message || '创建失败');
   } finally {
     loading.value = false;

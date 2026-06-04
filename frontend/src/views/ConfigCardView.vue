@@ -37,7 +37,7 @@ const baseModelOptions = computed(() => {
 const creatorOptions = computed(() => {
   const names = new Set<string>();
   for (const config of allConfigs.value) {
-    if ((config as any).author_name) names.add((config as any).author_name);
+    if ((config as Record<string, unknown>).author_name) names.add((config as Record<string, unknown>).author_name);
   }
   return Array.from(names).sort();
 });
@@ -56,7 +56,7 @@ const filteredConfigs = computed(() => {
     if (modelId) list = list.filter(c => c.base_model_id === modelId);
   }
   if (selectedCreator.value) {
-    list = list.filter(c => (c as any).author_name === selectedCreator.value);
+    list = list.filter(c => (c as Record<string, unknown>).author_name === selectedCreator.value);
   }
   list.sort((a, b) => {
     if (sortBy.value === 'name') return (a.name || '').localeCompare(b.name || '');

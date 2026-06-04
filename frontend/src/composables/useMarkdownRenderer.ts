@@ -1,5 +1,6 @@
 import { ref, computed } from 'vue'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import hljs from 'highlight.js'
 import type { SourceCitation } from '../types/chat'
 
@@ -28,7 +29,7 @@ export function useMarkdownRenderer() {
   const renderMarkdown = (content: string) => {
     void renderKey.value
     if (!content) return ''
-    let html = marked.parse(content) as string
+    let html = DOMPurify.sanitize(marked.parse(content) as string, { ADD_ATTR: ["data-cite-index"] })
     html = html.replace(/\[来源(\d+)\]/g, '<span class="cite-inline" data-cite-index="$1">来源$1</span>')
     return html
   }

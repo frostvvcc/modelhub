@@ -18,7 +18,7 @@ const activeTab = ref('docs');
 
 const orgDisplayName = computed(() => {
   if (!vectorDb.value.organization_id) return '私有';
-  const orgName = (vectorDb.value as any).org_name;
+  const orgName = (vectorDb.value as Record<string, unknown>).org_name;
   if (orgName) return orgName;
   const org = userStore.userOrganizations.find(o => o.id === vectorDb.value.organization_id);
   return org?.name || '组织';
@@ -58,7 +58,7 @@ const vectorDb = ref<VectorDbForm>({
   documents: []
 });
 
-const documentTree = ref<any[]>([]);
+const documentTree = ref<Record<string, unknown>[]>([]);
 const selectedParentId = ref<number | null>(null);
 const viewMode = ref<'tree' | 'list'>('list');
 const selectedDocument = ref<number | null>(null);
@@ -95,7 +95,7 @@ const uploadRules = {
   files: [
     {
       required: true,
-      validator: (rule: any, value: any, callback: any) => {
+      validator: (rule: unknown, value: string, callback: (error?: Error) => void) => {
         if (uploadForm.value.files.length === 0) {
           callback(new Error('请至少选择一个文件'));
         } else {
@@ -112,7 +112,7 @@ const uploadRules = {
 
 const folderCount = computed(() => {
   let count = 0;
-  const traverse = (nodes: any[]) => {
+  const traverse = (nodes: Record<string, unknown>[]) => {
     for (const node of nodes) {
       if (node.is_folder) {
         count++;
@@ -126,7 +126,7 @@ const folderCount = computed(() => {
 
 const totalSize = computed(() => {
   let size = 0;
-  const traverse = (nodes: any[]) => {
+  const traverse = (nodes: Record<string, unknown>[]) => {
     for (const node of nodes) {
       if (!node.is_folder && node.size) size += node.size;
       if (node.children?.length) traverse(node.children);
@@ -157,7 +157,7 @@ const fetchDocumentTree = async () => {
   }
 };
 
-const handleFileChange = (uploadFile: any, uploadFiles: any[]) => {
+const handleFileChange = (uploadFile: { raw: File; name: string }, uploadFiles: Record<string, unknown>[]) => {
   uploadForm.value.files = uploadFiles.map(file => file.raw || file);
   return false;
 };
@@ -224,13 +224,13 @@ const submitCreateFolder = async () => {
     ElMessage.success('文件夹创建成功');
     folderDialogVisible.value = false;
     await fetchDocumentTree();
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('创建文件夹失败:', error);
     ElMessage.error(error.response?.data?.message || '创建文件夹失败');
   }
 };
 
-const handleRename = (node: any) => {
+const handleRename = (node: Record<string, unknown>) => {
   renameForm.value = { id: node.id, name: node.name };
   renameDialogVisible.value = true;
 };
@@ -245,7 +245,7 @@ const submitRename = async () => {
     ElMessage.success('重命名成功');
     renameDialogVisible.value = false;
     await fetchDocumentTree();
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('重命名失败:', error);
     ElMessage.error(error.response?.data?.message || '重命名失败');
   }
@@ -259,7 +259,7 @@ const handleDeleteDocument = async (documentId: number) => {
     await deleteDocument(documentId);
     ElMessage.success('删除成功');
     await fetchDocumentTree();
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (error !== 'cancel') {
       console.error('删除失败:', error);
       ElMessage.error(error.response?.data?.message || '删除失败');
@@ -277,7 +277,7 @@ const getDocumentStatusType = (status?: string): 'primary' | 'success' | 'warnin
   return types[status || 'success'] || 'success';
 };
 
-const handleArchiveDocument = async (doc: any) => {
+const handleArchiveDocument = async (doc: Record<string, unknown>) => {
   try {
     await ElMessageBox.confirm(
       doc.is_folder ? '确定要归档该文件夹及其所有子文档吗？归档后不参与检索。' : '确定要归档该文档吗？归档后不参与检索。',
@@ -286,7 +286,7 @@ const handleArchiveDocument = async (doc: any) => {
     await archiveDocument(doc.id);
     ElMessage.success('归档成功');
     await fetchDocumentTree();
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (error !== 'cancel') {
       console.error('归档失败:', error);
       ElMessage.error(error.response?.data?.message || '归档失败');
@@ -294,12 +294,12 @@ const handleArchiveDocument = async (doc: any) => {
   }
 };
 
-const handleRestoreDocument = async (doc: any) => {
+const handleRestoreDocument = async (doc: Record<string, unknown>) => {
   try {
     await restoreDocument(doc.id);
     ElMessage.success('恢复成功，文档已重新加入检索');
     await fetchDocumentTree();
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('恢复失败:', error);
     ElMessage.error(error.response?.data?.message || '恢复失败');
   }
@@ -314,9 +314,9 @@ const formatFileSize = (size: number) => {
 
 const treeProps = { children: 'children', label: 'name' };
 
-const getAllFolders = (tree: any[]): any[] => {
-  const folders: any[] = [];
-  const traverse = (nodes: any[]) => {
+const getAllFolders = (tree: Record<string, unknown>[]): Record<string, unknown>[] => {
+  const folders: Record<string, unknown>[] = [];
+  const traverse = (nodes: Record<string, unknown>[]) => {
     for (const node of nodes) {
       if (node.is_folder) {
         folders.push({ id: node.id, name: node.name });
@@ -328,9 +328,9 @@ const getAllFolders = (tree: any[]): any[] => {
   return folders;
 };
 
-const getFlatDocuments = (tree: any[]): any[] => {
-  const documents: any[] = [];
-  const traverse = (nodes: any[], parentPath: string = '') => {
+const getFlatDocuments = (tree: Record<string, unknown>[]): Record<string, unknown>[] => {
+  const documents: Record<string, unknown>[] = [];
+  const traverse = (nodes: Record<string, unknown>[], parentPath: string = '') => {
     for (const node of nodes) {
       if (!node.is_folder) {
         documents.push({ ...node, displayPath: parentPath ? `${parentPath} / ${node.name}` : node.name });
@@ -460,7 +460,7 @@ const searchDebugMode = ref(false);
 const debugAlpha = ref(0.7);
 const debugUseHybrid = ref(true);
 const debugLoading = ref(false);
-const debugResult = ref<any>(null);
+const debugResult = ref<Record<string, unknown> | null>(null);
 
 const getDebugMethodLabel = (method?: string) => {
   const labels: Record<string, string> = { vector: '语义检索', bm25: '关键词检索', hybrid: '混合检索' };
@@ -473,7 +473,7 @@ const handleSearch = async () => {
     debugLoading.value = true;
     try {
       debugResult.value = await debugQuery(vectorDbId.value, searchInput.value, 10, debugAlpha.value, debugUseHybrid.value);
-    } catch (error: any) {
+    } catch (error: unknown) {
       ElMessage.error(error.response?.data?.detail || '检索失败');
     } finally { debugLoading.value = false; }
   } else {

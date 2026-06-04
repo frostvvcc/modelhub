@@ -12,19 +12,19 @@ const router = useRouter();
 const userStore = useUserStore();
 const botId = ref(Number(route.params.id));
 const bot = ref<BotResponse | null>(null);
-const knowledgeBases = ref<any[]>([]);
+const knowledgeBases = ref<Record<string, unknown>[]>([]);
 const loading = ref(false);
 
-const getKbVisibilityLabel = (kb: any) => {
+const getKbVisibilityLabel = (kb: Record<string, unknown>) => {
   if (!kb.organization_id) return '私有';
   if (kb.org_name) return kb.org_name;
-  const org = userStore.userOrganizations.find((o: any) => o.id === kb.organization_id);
+  const org = userStore.userOrganizations.find((o: Record<string, unknown>) => o.id === kb.organization_id);
   return org?.name || '组织';
 };
 
-const getKbVisibilityType = (kb: any): 'success' | 'warning' | 'info' => {
+const getKbVisibilityType = (kb: Record<string, unknown>): 'success' | 'warning' | 'info' => {
   if (!kb.organization_id) return 'info';
-  const org = userStore.userOrganizations.find((o: any) => o.id === kb.organization_id);
+  const org = userStore.userOrganizations.find((o: Record<string, unknown>) => o.id === kb.organization_id);
   if (org?.type === 'school') return 'success';
   return 'warning';
 };
@@ -52,10 +52,10 @@ onMounted(async () => {
         bot.value.vector_db_ids.map(id => getVectorDb(id))
       );
       knowledgeBases.value = results
-        .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled' && r.value)
+        .filter((r): r is PromiseFulfilledResult<Record<string, unknown>> => r.status === 'fulfilled' && r.value)
         .map(r => r.value);
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error?.response?.data?.detail || "加载失败");
     router.go(-1);
   } finally {

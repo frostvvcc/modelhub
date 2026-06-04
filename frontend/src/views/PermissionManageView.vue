@@ -49,7 +49,7 @@ const userRoleForm = reactive({
 });
 
 const userSearchKeyword = ref('');
-const userList = ref<any[]>([]);
+const userList = ref<Record<string, unknown>[]>([]);
 const userListLoading = ref(false);
 const roleMap: Record<string, string> = { admin: '管理员', teacher: '教师', student: '学生' };
 const roleOptions = [
@@ -65,7 +65,7 @@ const searchUsers = async () => {
   try {
     const res = await api.get('/user/admin/users', { params: { keyword: userSearchKeyword.value } });
     userList.value = res.data.data || [];
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error.response?.data?.message || '搜索用户失败');
   } finally {
     userListLoading.value = false;
@@ -77,7 +77,7 @@ const changeUserRole = async (userId: number, newRole: string) => {
     await api.put(`/user/admin/users/${userId}/role`, null, { params: { role: newRole } });
     ElMessage.success('角色更新成功');
     await searchUsers();
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error.response?.data?.message || '角色更新失败');
   }
 };
@@ -123,7 +123,7 @@ const loadData = async () => {
       const usersRes = await api.get('/user/admin/users', { params: { keyword: '' } });
       totalMembers.value = usersRes.data.data?.length || 0;
     } catch { totalMembers.value = 0; }
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error.response?.data?.message || '加载数据失败');
   } finally {
     loading.value = false;
@@ -145,7 +145,7 @@ const selectRole = async (role: Role) => {
   try {
     const rolePerms = await getRolePermissions(role.id);
     rolePermissions.value = rolePerms.map((p: Permission) => p.id);
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error('加载角色权限失败');
   }
 };
@@ -196,7 +196,7 @@ const saveRole = async () => {
         await loadData();
         await selectRole(newRole);
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       ElMessage.error(error.response?.data?.message || '保存失败');
     }
   });
@@ -224,7 +224,7 @@ const saveRolePermissions = async () => {
     }
 
     ElMessage.success('权限分配成功');
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error.response?.data?.message || '权限分配失败');
   }
 };
@@ -247,7 +247,7 @@ const handleDeleteRole = async (role: Role) => {
       selectedRole.value = null;
     }
     await loadData();
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (error !== 'cancel') {
       ElMessage.error(error.response?.data?.message || '删除失败');
     }
@@ -273,7 +273,7 @@ const assignUserRole = async () => {
       role_id: null,
       organization_id: null,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error.response?.data?.message || '角色分配失败');
   }
 };

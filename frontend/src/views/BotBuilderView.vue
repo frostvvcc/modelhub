@@ -19,8 +19,8 @@ const formRef = ref<FormInstance>();
 const submitting = ref(false);
 const loading = ref(false);
 const newForbiddenTopic = ref("");
-const vectorDbs = ref<any[]>([]);
-const modelConfigs = ref<any[]>([]);
+const vectorDbs = ref<Record<string, unknown>[]>([]);
+const modelConfigs = ref<Record<string, unknown>[]>([]);
 
 const form = ref<BotCreate>({
   name: "",
@@ -114,7 +114,7 @@ const submit = async () => {
       ElMessage.success("数字助理已创建");
     }
     router.push("/bots");
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error?.response?.data?.detail || "保存失败");
   } finally {
     submitting.value = false;
@@ -126,7 +126,7 @@ onMounted(async () => {
   try {
     await loadOptions();
     await loadBot();
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error?.response?.data?.detail || "页面初始化失败");
   } finally {
     loading.value = false;
@@ -149,7 +149,7 @@ const kbScopeLabels: Record<string, string> = {
 const schoolOrgId = computed(() => userStore.currentSchool?.id || null);
 
 const kbGrouped = computed(() => {
-  const groups: Record<string, any[]> = {};
+  const groups: Record<string, Record<string, unknown>[]> = {};
   const keyword = kbSearch.value.trim().toLowerCase();
   for (const db of vectorDbs.value) {
     if (keyword && !(db.name || '').toLowerCase().includes(keyword) && !(db.describe || '').toLowerCase().includes(keyword)) continue;

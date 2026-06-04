@@ -2,23 +2,27 @@
 RAG 运行时质量监控
 
 采集检索链路各阶段的 latency、质量指标，提供滑动窗口统计。
-用于线上监控 RAG 质量退化和性能瓶颈。
+支持双写：内存滑动窗口（实时聚合）+ 数据库持久化（历史分析）。
 """
 import time
 import logging
+import json
 from collections import deque
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
+from dataclasses import dataclass, field, asdict
+from typing import Optional, Dict, Any, List
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _WINDOW_SIZE = 200
+_METRICS_LOG_DIR = Path(__file__).parent.parent.parent / "data" / "rag_metrics"
 
 
 @dataclass
 class RAGQueryMetrics:
     """单次 RAG 查询的完整指标"""
     query_id: str = ""
+    timestamp: float = field(default_factory=time.time)
     vector_search_ms: float = 0
     bm25_search_ms: float = 0
     rerank_ms: float = 0
@@ -34,10 +38,13 @@ class RAGQueryMetrics:
 
 
 class RAGMonitor:
-    """RAG 链路滑动窗口监控器（单例）"""
+    """RAG 链路滑动窗口监控器（单例），支持持久化"""
 
-    def __init__(self, window_size: int = _WINDOW_SIZE):
+    def __init__(self, window_size: int = _WINDOW_SIZE, persist: bool = True):
         self._window: deque[RAGQueryMetrics] = deque(maxlen=window_size)
+        self._persist = persist
+        if self._persist:
+            _METRICS_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     def record(self, metrics: RAGQueryMetrics):
         self._window.append(metrics)
@@ -46,6 +53,39 @@ class RAGMonitor:
                 f"[RAG Monitor] 低置信度查询 query_id={metrics.query_id} "
                 f"top1_sim={metrics.top1_similarity:.3f} grounded={metrics.grounded_ratio:.2%}"
             )
+        if self._persist:
+            self._persist_to_jsonl(metrics)
+
+    def _persist_to_jsonl(self, metrics: RAGQueryMetrics):
+        """追加写入 JSON Lines 文件（按日期分片），零依赖、无阻塞风险"""
+        try:
+            date_str = time.strftime("%Y-%m-%d", time.localtime(metrics.timestamp))
+            log_file = _METRICS_LOG_DIR / f"rag_metrics_{date_str}.jsonl"
+            record = asdict(metrics)
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.debug(f"RAG 指标持久化失败（非致命）: {e}")
+
+    def load_history(self, days: int = 7) -> List[RAGQueryMetrics]:
+        """从 JSONL 文件加载历史指标，用于长期趋势分析"""
+        results = []
+        if not _METRICS_LOG_DIR.exists():
+            return results
+        cutoff = time.time() - days * 86400
+        for f in sorted(_METRICS_LOG_DIR.glob("rag_metrics_*.jsonl")):
+            try:
+                with open(f, "r", encoding="utf-8") as fh:
+                    for line in fh:
+                        record = json.loads(line.strip())
+                        if record.get("timestamp", 0) >= cutoff:
+                            results.append(RAGQueryMetrics(**{
+                                k: v for k, v in record.items()
+                                if k in RAGQueryMetrics.__dataclass_fields__
+                            }))
+            except Exception:
+                continue
+        return results
 
     def get_stats(self) -> Dict[str, Any]:
         if not self._window:

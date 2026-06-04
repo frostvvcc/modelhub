@@ -1,10 +1,15 @@
 """
 缓存工具
 使用 Redis 实现缓存装饰器
+
+缓存键生成：SHA256 + JSON 确定性序列化（sort_keys），避免 MD5 碰撞和参数顺序不稳定问题。
+支持缓存版本号，数据结构变更时递增 version 即可批量失效旧缓存。
 """
 from functools import wraps
 import json
 import hashlib
+import asyncio
+import inspect
 from typing import Callable, Any
 import logging
 from app.config import settings
@@ -13,11 +18,25 @@ import redis
 
 logger = logging.getLogger(__name__)
 
+_CACHE_VERSION = 1
+
+
+def _stable_cache_key(prefix: str, func_name: str, args: tuple, kwargs: dict) -> str:
+    """生成确定性缓存键：SHA256 + JSON 稳定序列化"""
+    key_data = json.dumps(
+        {"a": list(args), "k": kwargs},
+        sort_keys=True,
+        default=str,
+        ensure_ascii=False,
+    )
+    digest = hashlib.sha256(key_data.encode("utf-8")).hexdigest()[:20]
+    return f"v{_CACHE_VERSION}:{prefix}:{func_name}:{digest}"
+
 
 def cache_result(ttl: int = 3600, key_prefix: str = ""):
     """
     缓存装饰器
-    
+
     Args:
         ttl: 缓存过期时间（秒）
         key_prefix: 缓存键前缀
@@ -25,60 +44,54 @@ def cache_result(ttl: int = 3600, key_prefix: str = ""):
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
-            # 生成缓存键
-            cache_key = f"{key_prefix}:{func.__name__}:{hashlib.md5(str(args + tuple(kwargs.items())).encode()).hexdigest()}"
-            
+            cache_key = _stable_cache_key(key_prefix, func.__name__, args, kwargs)
+
             try:
                 redis_pool = get_redis_pool()
                 redis_client = redis.Redis(connection_pool=redis_pool)
-                
-                # 从 Redis 获取
+
                 cached = redis_client.get(cache_key)
                 if cached:
                     logger.debug(f"缓存命中: {cache_key}")
                     return json.loads(cached)
-                
-                # 执行函数
+
                 result = await func(*args, **kwargs)
-                
-                # 缓存结果
-                redis_client.setex(cache_key, ttl, json.dumps(result, default=str))
+
+                redis_client.setex(cache_key, ttl, json.dumps(result, default=str, ensure_ascii=False))
                 logger.debug(f"缓存写入: {cache_key}")
-                
+
                 return result
             except Exception as e:
                 logger.warning(f"缓存操作失败: {e}，直接执行函数")
                 return await func(*args, **kwargs)
-        
+
         @wraps(func)
         def sync_wrapper(*args, **kwargs):
-            # 同步函数版本
-            cache_key = f"{key_prefix}:{func.__name__}:{hashlib.md5(str(args + tuple(kwargs.items())).encode()).hexdigest()}"
-            
+            cache_key = _stable_cache_key(key_prefix, func.__name__, args, kwargs)
+
             try:
                 redis_pool = get_redis_pool()
                 redis_client = redis.Redis(connection_pool=redis_pool)
-                
+
                 cached = redis_client.get(cache_key)
                 if cached:
                     logger.debug(f"缓存命中: {cache_key}")
                     return json.loads(cached)
-                
+
                 result = func(*args, **kwargs)
-                
-                redis_client.setex(cache_key, ttl, json.dumps(result, default=str))
+
+                redis_client.setex(cache_key, ttl, json.dumps(result, default=str, ensure_ascii=False))
                 logger.debug(f"缓存写入: {cache_key}")
-                
+
                 return result
             except Exception as e:
                 logger.warning(f"缓存操作失败: {e}，直接执行函数")
                 return func(*args, **kwargs)
-        
-        # 根据函数类型返回对应的包装器
-        if hasattr(func, '__code__') and 'async' in str(func.__code__.co_flags):
+
+        if asyncio.iscoroutinefunction(func):
             return async_wrapper
         return sync_wrapper
-    
+
     return decorator
 
 

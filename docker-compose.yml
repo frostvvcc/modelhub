@@ -58,6 +58,15 @@ services:
       - "${ES_PORT:-9200}:9200"
     volumes:
       - modelhub_es_data:/usr/share/elasticsearch/data
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\\|yellow\"'"]
       interval: 30s
@@ -105,8 +114,18 @@ services:
     volumes:
       - modelhub_uploads:/app/uploads
       - modelhub_backend_data:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
     command: >
-      sh -c "python scripts/create_tables.py &&
+      sh -c "python -m alembic upgrade head &&
              if [ \"$${INIT_SAMPLE_DATA}\" = \"true\" ]; then python scripts/init_sample_data.py; fi &&
              gunicorn main_fastapi:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:5000 --timeout 120 --graceful-timeout 30"
     healthcheck:
@@ -152,6 +171,15 @@ services:
     volumes:
       - modelhub_uploads:/app/uploads
       - modelhub_backend_data:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     command: celery -A app.celery_app worker --loglevel=info --concurrency=2
 
   neo4j:

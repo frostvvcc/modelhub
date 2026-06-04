@@ -21,7 +21,7 @@ const loadSpaces = async () => {
   loading.value = true;
   try {
     spaces.value = await listAllTeachingSpaces();
-  } catch (error: any) {
+  } catch (error: unknown) {
     ElMessage.error(error?.response?.data?.message || '加载教学空间失败');
   } finally {
     loading.value = false;

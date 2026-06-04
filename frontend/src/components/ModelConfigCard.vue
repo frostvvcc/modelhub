@@ -38,7 +38,7 @@ const providerColor = computed(() => {
 });
 
 const authorName = computed(() => {
-  const c = props.config as any;
+  const c = props.config as Record<string, unknown>;
   return c.author_name || c.author || `用户 #${c.user_id}`;
 });
 

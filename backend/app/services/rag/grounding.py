@@ -120,7 +120,7 @@ async def verify_grounding(
             "supported_count": 8,
         }
     """
-    model = model or getattr(settings, 'rag_llm_model', None) or "qwen-plus"
+    model = model or settings.rag_llm_model
 
     if not answer or not sources:
         return {

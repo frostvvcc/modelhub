@@ -57,7 +57,7 @@ export const checkPermission = async (
     // FormData 会自动设置正确的 Content-Type
     const response = await api.post('/permission/check', formData);
     return response.data.data?.has_permission || false;
-  } catch (error: any) {
+  } catch (error: unknown) {
     // 如果是 422 错误，可能是参数验证失败
     if (error.response?.status === 422) {
       console.warn('权限检查失败：参数验证错误', error.response?.data);

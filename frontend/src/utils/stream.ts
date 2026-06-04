@@ -7,24 +7,40 @@
 
 import { useUserStore } from '../stores/user'
 
+import type { SourceCitation, TraceInfo, MemoryStats, ToolCallRecord } from '../types/chat'
+
+export interface StateChangePayload {
+  state: string
+  label: string
+  tool_count?: number
+}
+
+export interface DonePayload {
+  content: string
+  iterations?: number
+  rag_result?: Record<string, unknown> | null
+  state_machine?: Record<string, unknown>
+  token_budget?: Record<string, unknown>
+}
+
 export interface SSEEvent {
   type: string
-  data: any
+  data: Record<string, unknown>
 }
 
 export interface StreamCallbacks {
   onToken?: (content: string) => void
-  onStateChange?: (state: string, label: string, meta?: any) => void
+  onStateChange?: (state: string, label: string, meta?: StateChangePayload) => void
   onThinking?: (content: string) => void
-  onToolCall?: (tool: string, args: any, callId: string) => void
-  onToolResult?: (tool: string, result: any, callId: string, latencyMs: number) => void
-  onSources?: (sources: any[]) => void
-  onMetadata?: (metadata: any) => void
-  onMemory?: (stats: any) => void
+  onToolCall?: (tool: string, args: Record<string, unknown>, callId: string) => void
+  onToolResult?: (tool: string, result: Record<string, unknown>, callId: string, latencyMs: number) => void
+  onSources?: (sources: SourceCitation[]) => void
+  onMetadata?: (metadata: Record<string, unknown>) => void
+  onMemory?: (stats: MemoryStats) => void
   onConversation?: (info: { conversation_id: number | string; conversation_name?: string }) => void
-  onTrace?: (trace: any) => void
+  onTrace?: (trace: TraceInfo) => void
   onError?: (message: string) => void
-  onDone?: (data: any) => void
+  onDone?: (data: DonePayload) => void
 }
 
 function getBaseUrl(): string {
@@ -150,42 +166,56 @@ async function processSSEStream(
 }
 
 function dispatchEvent(event: SSEEvent, callbacks: StreamCallbacks): void {
+  const d = event.data
   switch (event.type) {
     case 'token':
-      callbacks.onToken?.(event.data.content || '')
+      callbacks.onToken?.(String(d.content ?? ''))
       break
     case 'state_change':
-      callbacks.onStateChange?.(event.data.state, event.data.label, event.data)
+      callbacks.onStateChange?.(
+        String(d.state ?? ''),
+        String(d.label ?? ''),
+        d as unknown as StateChangePayload,
+      )
       break
     case 'thinking':
-      callbacks.onThinking?.(event.data.content || '')
+      callbacks.onThinking?.(String(d.content ?? ''))
       break
     case 'tool_call':
-      callbacks.onToolCall?.(event.data.tool, event.data.args, event.data.call_id)
+      callbacks.onToolCall?.(
+        String(d.tool ?? ''),
+        (d.args ?? {}) as Record<string, unknown>,
+        String(d.call_id ?? ''),
+      )
       break
     case 'tool_result':
-      callbacks.onToolResult?.(event.data.tool, event.data.result, event.data.call_id, event.data.latency_ms || 0)
+      callbacks.onToolResult?.(
+        String(d.tool ?? ''),
+        (d.result ?? {}) as Record<string, unknown>,
+        String(d.call_id ?? ''),
+        Number(d.latency_ms ?? 0),
+      )
       break
     case 'sources':
-      callbacks.onSources?.(event.data)
+      callbacks.onSources?.(d as unknown as SourceCitation[])
       break
     case 'metadata':
-      callbacks.onMetadata?.(event.data)
+      callbacks.onMetadata?.(d)
       break
     case 'memory':
-      callbacks.onMemory?.(event.data)
+      callbacks.onMemory?.(d as unknown as MemoryStats)
       break
     case 'conversation':
-      callbacks.onConversation?.(event.data)
+      callbacks.onConversation?.(d as unknown as { conversation_id: number | string; conversation_name?: string })
       break
     case 'trace':
-      callbacks.onTrace?.(event.data)
+      callbacks.onTrace?.(d as unknown as TraceInfo)
       break
     case 'done':
-      callbacks.onDone?.(event.data)
+      callbacks.onDone?.(d as unknown as DonePayload)
       break
     case 'error':
-      callbacks.onError?.(event.data.message || '未知错误')
+      callbacks.onError?.(String(d.message ?? '未知错误'))
       break
   }
 }

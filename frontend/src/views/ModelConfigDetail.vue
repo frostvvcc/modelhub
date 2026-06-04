@@ -31,7 +31,7 @@ const baseModelName = computed(() => {
 
 const authorName = computed(() => {
   if (!modelConfig.value) return '';
-  const c = modelConfig.value as any;
+  const c = modelConfig.value as Record<string, unknown>;
   return c.author || c.author_name || `用户 #${modelConfig.value.user_id}`;
 });
 

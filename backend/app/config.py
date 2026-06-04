@@ -47,12 +47,28 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 1440))
 
     @model_validator(mode='after')
-    def _warn_insecure_secret(self):
+    def _validate_critical_config(self):
+        import warnings
+        env = os.getenv("APP_ENV", "development")
+
         if self.secret_key == "CHANGE_ME_IN_PRODUCTION_USE_ENV_VAR":
-            import warnings
+            if env == "production":
+                raise ValueError("生产环境禁止使用默认 SECRET_KEY，请在 .env 中设置 SECRET_KEY")
             warnings.warn(
                 "SECRET_KEY 使用了不安全的默认值，请在 .env 中设置 SECRET_KEY 环境变量",
-                stacklevel=2
+                stacklevel=2,
+            )
+
+        if not self.embedding_api_key:
+            warnings.warn(
+                "EMBEDDING_API_KEY 未配置，Embedding 和 RAG 功能将不可用",
+                stacklevel=2,
+            )
+
+        if not self.rag_llm_api_key and not self.embedding_api_key:
+            warnings.warn(
+                "RAG_LLM_API_KEY 和 EMBEDDING_API_KEY 均未配置，所有 LLM 功能将不可用",
+                stacklevel=2,
             )
         return self
     
