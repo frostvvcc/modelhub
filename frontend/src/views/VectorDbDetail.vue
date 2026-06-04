@@ -490,12 +490,50 @@ const handleSearch = async () => {
   }
 };
 
-const highlightContent = (content: string, keyword: string) => {
-  if (!keyword) return content;
-  const regex = new RegExp(escapeRegExp(keyword), 'gi');
-  return content.replace(regex, match => `<span class="highlight">${match}</span>`);
+const escapeHtml = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+const highlightContent = (content: string, query: string) => {
+  if (!query || !content) return escapeHtml(content || '');
+  const cleanQ = query.replace(/[\s，。、；：！？""''（）\[\]【】\n\r]/g, '');
+  const ngrams = new Set<string>();
+  for (let len = 2; len <= 4; len++) {
+    for (let i = 0; i <= cleanQ.length - len; i++) ngrams.add(cleanQ.slice(i, i + len));
+  }
+  if (!ngrams.size) return escapeHtml(content);
+
+  const breaks: number[] = [0];
+  for (let i = 0; i < content.length; i++) {
+    if ('。！？\n'.includes(content[i]) && i + 1 < content.length) breaks.push(i + 1);
+  }
+  breaks.push(content.length);
+
+  const regions: { start: number; end: number; score: number }[] = [];
+  for (let i = 0; i < breaks.length - 1; i++) {
+    const s = breaks[i], e = breaks[i + 1];
+    if (!content.slice(s, e).trim()) continue;
+    const clean = content.slice(s, e).replace(/[\s，。、；：！？""''（）\[\]【】]/g, '');
+    let score = 0;
+    for (const ng of ngrams) { if (clean.includes(ng)) score++; }
+    regions.push({ start: s, end: e, score });
+  }
+  if (!regions.length) return escapeHtml(content);
+
+  let bestIdx = -1, bestLen = 0, bestScore = 0;
+  for (let ws = 1; ws <= Math.min(3, regions.length); ws++) {
+    for (let i = 0; i <= regions.length - ws; i++) {
+      let total = 0;
+      for (let j = i; j < i + ws; j++) total += regions[j].score;
+      if (total > bestScore) { bestScore = total; bestIdx = i; bestLen = ws; }
+    }
+  }
+  if (bestScore === 0) return escapeHtml(content);
+
+  const hlStart = regions[bestIdx].start;
+  const hlEnd = regions[bestIdx + bestLen - 1].end;
+  return escapeHtml(content.slice(0, hlStart))
+    + '<span class="highlight">' + escapeHtml(content.slice(hlStart, hlEnd)) + '</span>'
+    + escapeHtml(content.slice(hlEnd));
 };
-const escapeRegExp = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 onMounted(async () => {
   fetchVectorDbDetail();
@@ -866,7 +904,7 @@ onMounted(async () => {
                       <span class="score-badge score-final">融合 {{ (r.final_score * 100).toFixed(1) }}%</span>
                     </div>
                   </div>
-                  <div class="debug-result-content">{{ r.content }}</div>
+                  <div class="debug-result-content" v-html="highlightContent(r.content, searchInput)"></div>
                   <div v-if="r.highlighted_terms?.length" class="debug-terms">
                     命中关键词：
                     <el-tag v-for="t in r.highlighted_terms" :key="t" size="small" type="warning" style="margin:0 2px">{{ t }}</el-tag>
@@ -1017,7 +1055,8 @@ onMounted(async () => {
 .score-vector { background: #e6f0ff; color: #3a6eff; }
 .score-bm25 { background: #e6ffe6; color: #389e0d; }
 .score-final { background: #f9f0ff; color: #722ed1; font-weight: 600; }
-.debug-result-content { font-size: 0.88rem; color: #4a5568; line-height: 1.6; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 6px; }
+.debug-result-content { font-size: 0.88rem; color: #4a5568; line-height: 1.6; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 6px; white-space: pre-wrap; word-break: break-word; }
+.debug-result-content :deep(.highlight) { background-color: #ff0; font-weight: bold; padding: 0 2px; color: #000; }
 .debug-terms { font-size: 0.8rem; color: #909399; }
 
 .query-results { margin-top: 16px; }
