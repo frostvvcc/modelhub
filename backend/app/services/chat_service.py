@@ -96,17 +96,23 @@ class AsyncChatService:
         return score, label
 
     @staticmethod
+    def _count_tokens(text: str) -> int:
+        """Token 精确计数，用于 context budget 控制。"""
+        from app.services.agent.memory import count_tokens
+        return count_tokens(text)
+
+    @staticmethod
     def _build_context_blocks(
         raw_sources: List[Dict[str, Any]],
         citation_template: Optional[str],
-        max_context_chars: Optional[int],
+        max_context_tokens: Optional[int],
     ) -> tuple[str, List[Dict[str, Any]], List[str]]:
-        """把检索结果编排成带来源编号的上下文块，并按字符预算截断。"""
-        budget = max(1000, min(int(max_context_chars or 4000), 20000))
+        """把检索结果编排成带来源编号的上下文块，并按 token 预算截断。"""
+        budget = max(500, min(int(max_context_tokens or 2000), 8000))
         blocks: List[str] = []
         enriched_sources: List[Dict[str, Any]] = []
         labels: List[str] = []
-        used_chars = 0
+        used_tokens = 0
         label_counter = 0
 
         for source in raw_sources:
@@ -121,13 +127,21 @@ class AsyncChatService:
             if len(source_name) > 40:
                 source_name = source_name[:37] + '...'
             header = f"{label}（{source_name}）"
-            available = budget - used_chars - len(header) - 2
-            if available <= 80:
+            header_tokens = AsyncChatService._count_tokens(header)
+            available_tokens = budget - used_tokens - header_tokens - 5
+            if available_tokens <= 40:
                 break
-            trimmed_content = content[:available].rstrip()
+            content_tokens = AsyncChatService._count_tokens(content)
+            if content_tokens > available_tokens:
+                ratio = available_tokens / content_tokens
+                trim_len = max(40, int(len(content) * ratio))
+                trimmed_content = content[:trim_len].rstrip()
+            else:
+                trimmed_content = content
             block = f"{header}\n{trimmed_content}"
+            block_tokens = AsyncChatService._count_tokens(block)
             blocks.append(block)
-            used_chars += len(block) + 2
+            used_tokens += block_tokens + 5
             labels.append(label)
             enriched = dict(source)
             enriched["citation_label"] = label
@@ -230,10 +244,14 @@ class AsyncChatService:
         rag_result: Dict[str, Any],
     ) -> tuple[List[ChatMessage], List[Dict[str, Any]], List[str]]:
         raw_sources = rag_result.get("sources", [])
+        max_ctx_tokens = getattr(model_config, "max_context_tokens", None)
+        if max_ctx_tokens is None:
+            max_ctx_chars = getattr(model_config, "max_context_chars", None)
+            max_ctx_tokens = int(max_ctx_chars) // 2 if max_ctx_chars else 2000
         context_blocks, enriched_sources, citation_labels = AsyncChatService._build_context_blocks(
             raw_sources,
             getattr(model_config, "citation_template", None),
-            getattr(model_config, "max_context_chars", 6000),
+            max_ctx_tokens,
         )
         variables = {
             "user_question": message,

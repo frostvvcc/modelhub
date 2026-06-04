@@ -231,17 +231,29 @@ def _extract_pdf_with_tables(file_path: str) -> Optional[str]:
             tables = page.find_tables() or []
             table_bboxes = [t.bbox for t in tables]
 
-            # 提取表格并转 Markdown
+            # 提取表格并转 Markdown（处理合并单元格和多行内容）
             for table in tables:
                 table_data = table.extract()
                 if not table_data:
                     continue
+                non_empty = [r for r in table_data if any(c for c in r if c and str(c).strip())]
+                if not non_empty:
+                    continue
+                col_count = max(len(r) for r in non_empty)
                 rows = []
-                for ri, row in enumerate(table_data):
-                    cells = [str(c or '').strip() for c in row]
+                prev_cells = [''] * col_count
+                for ri, row in enumerate(non_empty):
+                    cells = []
+                    for ci in range(col_count):
+                        raw = row[ci] if ci < len(row) else None
+                        cell = str(raw or '').strip().replace('\n', ' ').replace('|', '\\|')
+                        if not cell and ci < len(prev_cells):
+                            cell = prev_cells[ci]
+                        cells.append(cell)
+                    prev_cells = cells
                     rows.append('| ' + ' | '.join(cells) + ' |')
                     if ri == 0:
-                        rows.append('| ' + ' | '.join(['---'] * len(cells)) + ' |')
+                        rows.append('| ' + ' | '.join(['---'] * col_count) + ' |')
                 parts.append('\n'.join(rows))
 
             # 提取非表格区域的文本，避免内容重复

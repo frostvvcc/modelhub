@@ -2,7 +2,19 @@
 import asyncio
 import json
 from typing import List, Dict
-from eval.metrics import QueryResult, hit_rate_at_k, recall_at_k, mrr_at_k
+from eval.metrics import QueryResult, hit_rate_at_k, recall_at_k, mrr_at_k, ndcg_at_k
+
+
+def _per_query_recall(results: List[QueryResult], k: int) -> List[float]:
+    """返回每条 query 的 recall@k，用于 bootstrap 置信区间。"""
+    per_q = []
+    for r in results:
+        top_k = set(r.retrieved_doc_ids[:k])
+        if r.relevant_doc_ids:
+            per_q.append(len(top_k & r.relevant_doc_ids) / len(r.relevant_doc_ids))
+        else:
+            per_q.append(0.0)
+    return per_q
 
 
 async def evaluate_retrieval(
@@ -48,5 +60,8 @@ async def evaluate_retrieval(
         "recall@10": round(recall_at_k(query_results, 10), 4),
         "mrr@5": round(mrr_at_k(query_results, 5), 4),
         "mrr@10": round(mrr_at_k(query_results, 10), 4),
+        "ndcg@5": round(ndcg_at_k(query_results, 5), 4),
+        "ndcg@10": round(ndcg_at_k(query_results, 10), 4),
         "total_queries": len(query_results),
+        "per_query_recall@5": _per_query_recall(query_results, 5),
     }

@@ -257,6 +257,23 @@ class AgentEngine:
                         "label": "分析工具结果中...",
                     })
 
+                    tool_summary = "; ".join(
+                        f"{tn}→{'成功' if 'error' not in str(res) else '失败'}"
+                        for _, tn, _, res, _ in tool_results
+                    )
+                    reflection_prompt = (
+                        f"你刚调用了以下工具：{tool_summary}。\n"
+                        "请审查结果：\n"
+                        "1. 工具返回的信息是否足以回答用户问题？\n"
+                        "2. 是否有工具调用失败需要重试或换工具？\n"
+                        "3. 是否需要补充调用其他工具获取更多信息？\n"
+                        "如果信息充分，直接生成最终回答。如果不充分，调用需要的工具。"
+                    )
+                    working_messages.append({
+                        "role": "system",
+                        "content": reflection_prompt,
+                    })
+
                 continue
 
             # 无 tool_calls → 最终回答，用真流式输出

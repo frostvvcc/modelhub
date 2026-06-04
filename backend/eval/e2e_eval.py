@@ -1,8 +1,58 @@
 """Layer 3：端到端回答质量评测 — LLM-as-Judge 四维评分"""
 import asyncio
 import json
+import re
 from typing import List, Dict, Any
 from openai import AsyncOpenAI
+
+MAX_JUDGE_RETRIES = 2
+
+JUDGE_PROMPT = """\
+你是一个 RAG 系统的评测专家。请评估以下回答的质量。
+
+用户问题：{query}
+
+系统回答：{answer}
+
+系统引用的来源：
+{sources_text}
+
+标准参考文档：
+{ground_truth}
+
+请按以下 4 个维度评分（每项 1-5 分）：
+1. faithfulness（忠实度）：回答是否忠于检索到的来源？
+2. completeness（完整性）：回答是否覆盖了问题的所有方面？
+3. citation_quality（引用质量）：引用标注是否准确？
+4. no_hallucination（无幻觉）：有没有编造信息？5=无幻觉,1=严重幻觉
+
+严格按如下 JSON 格式输出（不要输出其他任何内容）：
+```json
+{{"faithfulness": 分数, "completeness": 分数, "citation_quality": 分数, "no_hallucination": 分数, "reasoning": "简短理由"}}
+```"""
+
+
+def _extract_json(text: str) -> Dict:
+    """多策略 JSON 提取：先找代码块，再找花括号，最后正则兜底。"""
+    code_block = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+    if code_block:
+        return json.loads(code_block.group(1))
+
+    start = text.find("{")
+    end = text.rfind("}") + 1
+    if start >= 0 and end > start:
+        try:
+            return json.loads(text[start:end])
+        except json.JSONDecodeError:
+            pass
+
+    pattern = r'"?(\w+)"?\s*[:：]\s*(\d)'
+    matches = dict(re.findall(pattern, text))
+    dims = ["faithfulness", "completeness", "citation_quality", "no_hallucination"]
+    if all(d in matches for d in dims):
+        return {d: int(matches[d]) for d in dims}
+
+    raise ValueError(f"无法从 LLM 输出中提取评分 JSON")
 
 
 async def judge_answer(
@@ -18,36 +68,35 @@ async def judge_answer(
         for i, s in enumerate(sources[:5])
     )
 
-    prompt = (
-        "你是一个 RAG 系统的评测专家。请评估以下回答的质量。\n\n"
-        f"用户问题：{query}\n\n"
-        f"系统回答：{answer[:800]}\n\n"
-        f"系统引用的来源：\n{sources_text}\n\n"
-        f"标准参考文档：\n{ground_truth[:500]}\n\n"
-        "请按以下 4 个维度评分（每项 1-5 分）：\n"
-        "1. faithfulness（忠实度）：回答是否忠于检索到的来源？\n"
-        "2. completeness（完整性）：回答是否覆盖了问题的所有方面？\n"
-        "3. citation_quality（引用质量）：引用标注是否准确？\n"
-        "4. no_hallucination（无幻觉）：有没有编造信息？5=无幻觉,1=严重幻觉\n\n"
-        '只输出 JSON，不要其他内容：\n'
-        '{"faithfulness":分数,"completeness":分数,"citation_quality":分数,"no_hallucination":分数,"reasoning":"一句话理由"}'
+    prompt = JUDGE_PROMPT.format(
+        query=query,
+        answer=answer[:800],
+        sources_text=sources_text,
+        ground_truth=ground_truth[:500],
     )
 
-    try:
-        resp = await client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=200,
-            temperature=0.0,
-        )
-        text = resp.choices[0].message.content.strip()
-        start = text.find("{")
-        end = text.rfind("}") + 1
-        if start >= 0 and end > start:
-            return json.loads(text[start:end])
-        return {"error": "无法解析", "raw": text}
-    except Exception as e:
-        return {"error": str(e)}
+    text = ""
+    for attempt in range(MAX_JUDGE_RETRIES + 1):
+        try:
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=300,
+                temperature=0.0,
+            )
+            text = resp.choices[0].message.content.strip()
+            result = _extract_json(text)
+            dims = ["faithfulness", "completeness", "citation_quality", "no_hallucination"]
+            for d in dims:
+                if d not in result or not isinstance(result[d], (int, float)):
+                    raise ValueError(f"缺少维度 {d}")
+                result[d] = max(1, min(5, int(result[d])))
+            return result
+        except Exception as e:
+            if attempt < MAX_JUDGE_RETRIES:
+                await asyncio.sleep(0.3)
+                continue
+            return {"error": f"解析失败(重试{MAX_JUDGE_RETRIES}次): {e}", "raw": text}
 
 
 async def run_e2e_eval(
@@ -130,14 +179,18 @@ async def run_e2e_eval(
                 "avg": round(sum(values) / len(values), 2),
                 "min": min(values),
                 "max": max(values),
+                "count": len(values),
             }
 
     valid = [s for s in all_scores if isinstance(s.get("no_hallucination"), (int, float))]
+    parse_failures = [s for s in all_scores if "error" in s and "解析" in str(s.get("error", ""))]
     hallucination_rate = sum(1 for s in valid if s["no_hallucination"] <= 2) / len(valid) if valid else 0
 
     return {
         "total_queries": total,
         "valid_scores": len(valid),
+        "parse_failures": len(parse_failures),
+        "parse_success_rate": round(len(valid) / total, 4) if total else 0,
         "dimension_scores": summary,
         "hallucination_rate": round(hallucination_rate, 4),
         "detail": all_scores,

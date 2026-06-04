@@ -491,7 +491,12 @@ class VectorRetriever:
           Query 改写 → (可选)HyDE
           → Vector + BM25 混合检索 + (可选)GraphRAG 三路召回
           → RRF 融合 → Reranker 精排 → MMR 去重
+        增强检索管线：Query 改写 → (可选)HyDE → 多路混合检索 → RRF 融合 → Reranker 精排
+        集成 RAG Monitor 采集各阶段 latency 和质量指标。
         """
+        from app.services.rag.monitor import RAGTimer, RAGQueryMetrics, get_rag_monitor
+        timer = RAGTimer()
+
         queries = [query_text]
         if use_rewrite:
             try:
@@ -537,6 +542,9 @@ class VectorRetriever:
             retrieval_tasks.append(graph_task)
 
         multi_results = await asyncio.gather(*retrieval_tasks, return_exceptions=True)
+        timer.start("retrieval")
+        multi_results = await asyncio.gather(*retrieval_tasks)
+        timer.stop()
 
         seen_chunks = set()
         all_results: List[RetrievalResult] = []
@@ -576,17 +584,41 @@ class VectorRetriever:
         all_results.sort(key=lambda r: r.score, reverse=True)
         coarse_results = all_results[:coarse_n]
 
+        pre_rerank_top1 = coarse_results[0].chunk_id if coarse_results else ""
+
         if use_rerank and len(coarse_results) > n_results:
             try:
                 from app.services.rag.reranker import rerank
+                timer.start("rerank")
                 final_results = await rerank(query_text, coarse_results, top_k=n_results)
+                timer.stop()
             except Exception as e:
                 logger.warning(f"Reranker 失败，降级为粗排: {e}")
                 final_results = coarse_results[:n_results]
         else:
             final_results = coarse_results[:n_results]
 
-        return _mmr_diversify(final_results, n_results)
+        final_results = _mmr_diversify(final_results, n_results)
+
+        post_rerank_top1 = final_results[0].chunk_id if final_results else ""
+        top1_sim = final_results[0].similarity if final_results else 0
+        avg_sim = sum(r.similarity for r in final_results) / len(final_results) if final_results else 0
+
+        metrics = RAGQueryMetrics(
+            query_id=query_text[:40],
+            vector_search_ms=timer.get("retrieval"),
+            rerank_ms=timer.get("rerank"),
+            total_ms=timer.total,
+            result_count=len(final_results),
+            top1_similarity=top1_sim,
+            avg_similarity=avg_sim,
+            rerank_changed_top1=(pre_rerank_top1 != post_rerank_top1 and use_rerank),
+            retrieval_method=final_results[0].retrieval_method if final_results else "none",
+            low_confidence=(top1_sim < 0.4),
+        )
+        get_rag_monitor().record(metrics)
+
+        return final_results
 
 
 # ------------------------------------------------------------------

@@ -60,3 +60,4 @@ backend/uploads/*
 
 # Misc
 .deps_installed
+.claude/

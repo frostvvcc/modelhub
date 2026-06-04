@@ -717,3 +717,15 @@ async def get_task_status(task_id: str):
     elif result.state == "FAILURE":
         response["error"] = str(result.result)
     return SuccessResponse(data=response)
+
+
+@router.get("/rag/monitor")
+async def get_rag_monitor_stats(
+    current_user: User = Depends(get_current_user),
+):
+    """RAG 检索链路运行时监控（滑动窗口统计）"""
+    if current_user.role not in ADMIN_ROLES:
+        raise ForbiddenError("仅管理员可查看 RAG 监控")
+    from app.services.rag.monitor import get_rag_monitor
+    stats = get_rag_monitor().get_stats()
+    return SuccessResponse(data=stats)

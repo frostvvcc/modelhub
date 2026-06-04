@@ -12,16 +12,29 @@ ModelHub RAG 三层评测体系入口脚本
   # Layer 2：单次检索评测
   python scripts/run_rag_eval.py --mode retrieval --alpha 0.7
 
-  # Layer 2：消融实验
+  # Layer 2：消融实验（含 Bootstrap 95% CI）
   python scripts/run_rag_eval.py --mode ablation
 
-  # 全量（Layer 1 + 生成评测集 + Layer 2 消融）
+  # Layer 2：Reranker 模式消融（off / cross_encoder / llm）
+  python scripts/run_rag_eval.py --mode reranker
+
+  # Layer 3：端到端回答质量评测（含重试 + 多策略 JSON 解析）
+  python scripts/run_rag_eval.py --mode e2e --vector-db-id 11
+
+  # GraphRAG A/B 对比评测
+  python scripts/run_rag_eval.py --mode graphrag --vector-db-id 11
+
+  # Grounding 模块准确率评测
+  python scripts/run_rag_eval.py --mode grounding
+
+  # 全量评测（Layer 1-3 + 消融 + Reranker + GraphRAG + Grounding）
   python scripts/run_rag_eval.py --mode full --vector-db-id 11
 """
 import asyncio
 import argparse
 import sys
 import os
+import json
 from pathlib import Path
 
 project_root = Path(__file__).parent.parent
@@ -41,8 +54,10 @@ def get_llm_config():
 
 async def main():
     parser = argparse.ArgumentParser(description="ModelHub RAG 三层评测")
-    parser.add_argument("--mode", choices=["generate", "chunk", "retrieval", "ablation", "e2e", "full"],
-                        default="retrieval", help="评测模式")
+    parser.add_argument("--mode", choices=[
+        "generate", "chunk", "retrieval", "ablation", "reranker",
+        "e2e", "graphrag", "grounding", "full",
+    ], default="retrieval", help="评测模式")
     parser.add_argument("--vector-db-id", type=int, default=11, help="知识库 ID")
     parser.add_argument("--dataset", default="eval/dataset.json", help="评测集路径")
     parser.add_argument("--output", default="eval/report.json", help="报告输出路径")
@@ -93,10 +108,18 @@ async def main():
             print(f"  {k}: {v}")
 
     elif args.mode == "ablation":
-        print(f"\n=== Layer 2: 消融实验 ===\n")
+        print(f"\n=== Layer 2: 消融实验（含 Bootstrap 95% CI） ===\n")
         from eval.ablation import run_ablation
         await run_ablation(dataset_path=dataset_path, output_path=output_path)
         print(f"\n报告已保存: {output_path}")
+
+    elif args.mode == "reranker":
+        print(f"\n=== Reranker 模式消融 (off / cross_encoder / llm) ===\n")
+        from eval.reranker_eval import run_reranker_ablation
+        reranker_path = str(project_root / "eval" / "reranker_report.json")
+        report = await run_reranker_ablation(dataset_path=dataset_path, output_path=reranker_path)
+        print(f"\n最优模式: {report.get('best_mode', '?')}")
+        print(f"报告已保存: {reranker_path}")
 
     elif args.mode == "e2e":
         print(f"\n=== Layer 3: 端到端回答质量评测 ===\n")
@@ -109,18 +132,46 @@ async def main():
             **llm_config,
         )
         e2e_path = str(project_root / "eval" / "e2e_report.json")
-        import json
         with open(e2e_path, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
         print(f"\n=== 回答质量评测结果 ===")
+        print(f"  有效评分: {result['valid_scores']}/{result['total_queries']} (解析成功率 {result['parse_success_rate']:.0%})")
         for dim, scores in result.get("dimension_scores", {}).items():
-            print(f"  {dim}: avg={scores['avg']} (min={scores['min']}, max={scores['max']})")
+            print(f"  {dim}: avg={scores['avg']} (min={scores['min']}, max={scores['max']}, n={scores['count']})")
         print(f"  幻觉率: {result.get('hallucination_rate', '?')}")
         print(f"\n报告已保存: {e2e_path}")
 
+    elif args.mode == "graphrag":
+        print(f"\n=== GraphRAG A/B 对比评测 ===\n")
+        from eval.graphrag_eval import run_graphrag_ab
+        result = await run_graphrag_ab(
+            dataset_path=dataset_path,
+            vector_db_id=args.vector_db_id,
+            **llm_config,
+        )
+        graphrag_path = str(project_root / "eval" / "graphrag_report.json")
+        with open(graphrag_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        print(f"\n结论: {result.get('conclusion', '?')}")
+        for dim, comp in result.get("comparison", {}).items():
+            print(f"  {dim}: with={comp['with_graph']} without={comp['without_graph']} Δ={comp['delta']:+.2f}")
+        print(f"\n报告已保存: {graphrag_path}")
+
+    elif args.mode == "grounding":
+        print(f"\n=== Grounding 模块准确率评测 ===\n")
+        from eval.grounding_eval import run_grounding_eval
+        result = await run_grounding_eval(**llm_config)
+        grounding_path = str(project_root / "eval" / "grounding_report.json")
+        with open(grounding_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        print(f"\n  总体准确率: {result['accuracy']:.2%} ({result['correct']}/{result['total_claims']})")
+        for cls, m in result.get("per_class_metrics", {}).items():
+            print(f"  {cls}: P={m['precision']:.2f} R={m['recall']:.2f} F1={m['f1']:.2f} (n={m['support']})")
+        print(f"\n报告已保存: {grounding_path}")
+
     elif args.mode == "full":
         print(f"\n{'='*60}")
-        print(f"  ModelHub RAG 三层评测 (vector_db_{args.vector_db_id})")
+        print(f"  ModelHub RAG 全量评测 (vector_db_{args.vector_db_id})")
         print(f"{'='*60}\n")
 
         # Layer 1
@@ -144,16 +195,58 @@ async def main():
             **llm_config,
         )
 
-        # Layer 2
+        # Layer 2: 消融
         print("\n--- Layer 2: 消融实验 ---")
         from eval.ablation import run_ablation
         ablation_path = str(project_root / "eval" / "ablation_report.json")
         await run_ablation(dataset_path=dataset_path, output_path=ablation_path)
 
+        # Reranker 消融
+        print("\n--- Reranker 模式消融 ---")
+        from eval.reranker_eval import run_reranker_ablation
+        reranker_path = str(project_root / "eval" / "reranker_report.json")
+        await run_reranker_ablation(dataset_path=dataset_path, output_path=reranker_path)
+
+        # Layer 3: E2E
+        print("\n--- Layer 3: 端到端回答质量 ---")
+        from eval.e2e_eval import run_e2e_eval
+        e2e_result = await run_e2e_eval(
+            dataset_path=dataset_path,
+            vector_db_id=args.vector_db_id,
+            **llm_config,
+        )
+        e2e_path = str(project_root / "eval" / "e2e_report.json")
+        with open(e2e_path, "w", encoding="utf-8") as f:
+            json.dump(e2e_result, f, ensure_ascii=False, indent=2)
+
+        # Grounding 评测
+        print("\n--- Grounding 模块准确率 ---")
+        from eval.grounding_eval import run_grounding_eval
+        grounding_result = await run_grounding_eval(**llm_config)
+        grounding_path = str(project_root / "eval" / "grounding_report.json")
+        with open(grounding_path, "w", encoding="utf-8") as f:
+            json.dump(grounding_result, f, ensure_ascii=False, indent=2)
+
+        # GraphRAG A/B
+        print("\n--- GraphRAG A/B 对比 ---")
+        from eval.graphrag_eval import run_graphrag_ab
+        graphrag_result = await run_graphrag_ab(
+            dataset_path=dataset_path,
+            vector_db_id=args.vector_db_id,
+            **llm_config,
+        )
+        graphrag_path = str(project_root / "eval" / "graphrag_report.json")
+        with open(graphrag_path, "w", encoding="utf-8") as f:
+            json.dump(graphrag_result, f, ensure_ascii=False, indent=2)
+
         print(f"\n{'='*60}")
-        print("  评测完成！")
-        print(f"  分块质量报告: 平均完整度 {chunk_result.get('avg_completeness', '?')}/5")
-        print(f"  消融实验报告: {ablation_path}")
+        print("  全量评测完成！")
+        print(f"  分块质量: 平均完整度 {chunk_result.get('avg_completeness', '?')}/5")
+        print(f"  消融实验: {ablation_path}")
+        print(f"  Reranker: {reranker_path}")
+        print(f"  E2E 质量: 解析成功率 {e2e_result.get('parse_success_rate', '?'):.0%}")
+        print(f"  Grounding 准确率: {grounding_result.get('accuracy', '?'):.2%}")
+        print(f"  GraphRAG 结论: {graphrag_result.get('conclusion', '?')}")
         print(f"{'='*60}")
 
 
