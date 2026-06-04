@@ -527,6 +527,8 @@ class StreamChatService:
                 bot_metadata["grounding_detail"] = {
                     "total_claims": grounding_detail.get("total_claims", 0),
                     "supported_count": grounding_detail.get("supported_count", 0),
+                    "unsupported_claims": grounding_detail.get("unsupported_claims", []),
+                    "contradicted_claims": grounding_detail.get("contradicted_claims", []),
                 }
             if trace_data:
                 bot_metadata["trace"] = trace_data

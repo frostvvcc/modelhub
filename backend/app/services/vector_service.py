@@ -594,6 +594,25 @@ class AsyncVectorService:
             except Exception as e:
                 logger.warning(f"ES 索引删除失败: vector_db_id={vector_db_id}, 错误: {e}")
 
+            try:
+                from app.services.rag.graph_rag import NEO4J_ENABLED, _get_driver
+                if NEO4J_ENABLED and _get_driver():
+                    def _delete_kb_graph():
+                        driver = _get_driver()
+                        with driver.session() as neo_session:
+                            neo_session.run(
+                                "MATCH ()-[r:RELATION {kb_id: $kb_id}]->() DELETE r",
+                                kb_id=str(vector_db_id),
+                            )
+                            neo_session.run(
+                                "MATCH (n:Entity {kb_id: $kb_id}) DELETE n",
+                                kb_id=str(vector_db_id),
+                            )
+                    await asyncio.to_thread(_delete_kb_graph)
+                    logger.info(f"Neo4j 图谱已清理: vector_db_id={vector_db_id}")
+            except Exception as e:
+                logger.warning(f"Neo4j 图谱清理失败: vector_db_id={vector_db_id}, 错误: {e}")
+
             from app.models.teaching_space import TeachingSpaceResource
             from sqlalchemy import delete as sa_delete
             await session.execute(
@@ -694,8 +713,10 @@ class AsyncVectorService:
     @staticmethod
     async def _delete_document_vectors(vector_db_id: int, document_id: int) -> None:
         try:
-            collection = get_chromadb_client().get_collection(f"vector_db_{vector_db_id}")
-            await asyncio.to_thread(collection.delete, where={"document_id": document_id})
+            collection = await asyncio.to_thread(
+                get_chromadb_client().get_collection, f"vector_db_{vector_db_id}",
+            )
+            await asyncio.to_thread(collection.delete, where={"document_id": str(document_id)})
             from app.services.rag.retrieval import invalidate_bm25_cache
             invalidate_bm25_cache(vector_db_id)
         except Exception as e:
@@ -874,11 +895,24 @@ class AsyncVectorService:
                                 f"vector_db_{child.vector_db_id}"
                             )
                             await asyncio.to_thread(
-                                collection.delete, where={"document_id": child.id}
+                                collection.delete, where={"document_id": str(child.id)}
                             )
                             logger.info(f"从向量数据库删除: document_id={child.id}")
                         except Exception as e:
                             logger.warning(f"从向量数据库删除失败: {e}")
+
+                        # 2b. 清理 ES 索引和 Neo4j 图谱
+                        try:
+                            from app.services.rag.es_retrieval import delete_by_document as es_delete_doc
+                            await es_delete_doc(child.vector_db_id, str(child.id))
+                        except Exception:
+                            pass
+                        try:
+                            from app.services.rag.graph_rag import NEO4J_ENABLED, delete_graph_by_document
+                            if NEO4J_ENABLED:
+                                await asyncio.to_thread(delete_graph_by_document, child.vector_db_id, str(child.id))
+                        except Exception:
+                            pass
 
                         # 3. 删除数据库记录
                         await AsyncDB.delete(session, child)
