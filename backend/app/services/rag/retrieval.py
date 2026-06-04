@@ -482,11 +482,15 @@ class VectorRetriever:
         use_rewrite: bool = True,
         use_rerank: bool = True,
         use_hyde: bool = False,
+        use_graph: bool = True,
         folder_path: Optional[str] = None,
         parent_id: Optional[int] = None,
     ) -> List[RetrievalResult]:
         """
-        增强检索管线：Query 改写 → (可选)HyDE → 多路混合检索 → RRF 融合 → Reranker 精排
+        增强检索管线（三路融合）：
+          Query 改写 → (可选)HyDE
+          → Vector + BM25 混合检索 + (可选)GraphRAG 三路召回
+          → RRF 融合 → Reranker 精排 → MMR 去重
         """
         queries = [query_text]
         if use_rewrite:
@@ -519,15 +523,55 @@ class VectorRetriever:
                 )
             )
 
-        multi_results = await asyncio.gather(*retrieval_tasks)
+        # GraphRAG 第三路召回：图谱三元组转为伪检索结果参与 RRF 融合
+        graph_task = None
+        if use_graph:
+            try:
+                from app.services.rag.graph_rag import graph_augmented_retrieval, NEO4J_ENABLED
+                if NEO4J_ENABLED:
+                    graph_task = graph_augmented_retrieval(query_text, vector_db_id)
+            except ImportError:
+                pass
+
+        if graph_task:
+            retrieval_tasks.append(graph_task)
+
+        multi_results = await asyncio.gather(*retrieval_tasks, return_exceptions=True)
 
         seen_chunks = set()
         all_results: List[RetrievalResult] = []
-        for results in multi_results:
-            for r in results:
-                if r.chunk_id not in seen_chunks:
-                    all_results.append(r)
-                    seen_chunks.add(r.chunk_id)
+        graph_triples = []
+
+        for result in multi_results:
+            if isinstance(result, Exception):
+                logger.warning(f"检索路径失败: {result}")
+                continue
+            if isinstance(result, list) and result and isinstance(result[0], dict):
+                graph_triples = result
+                continue
+            if isinstance(result, list):
+                for r in result:
+                    if hasattr(r, 'chunk_id') and r.chunk_id not in seen_chunks:
+                        all_results.append(r)
+                        seen_chunks.add(r.chunk_id)
+
+        # 图谱三元组转为高置信度伪检索结果（置信度加成 0.15）
+        GRAPH_CONFIDENCE_BOOST = 0.15
+        for i, triple in enumerate(graph_triples[:10]):
+            content = f"{triple['subject']} {triple['relation']} {triple['object']}"
+            chunk_id = f"graph_triple_{i}"
+            if chunk_id not in seen_chunks:
+                all_results.append(RetrievalResult(
+                    chunk_id=chunk_id,
+                    content=content,
+                    score=0.8 + GRAPH_CONFIDENCE_BOOST,
+                    similarity=0.8 + GRAPH_CONFIDENCE_BOOST,
+                    source="knowledge_graph",
+                    document_id="",
+                    retrieval_method="graph_rag",
+                    metadata={"triple": triple, "is_graph_result": True},
+                ))
+                seen_chunks.add(chunk_id)
 
         all_results.sort(key=lambda r: r.score, reverse=True)
         coarse_results = all_results[:coarse_n]

@@ -6,6 +6,7 @@ from typing import List, Sequence, Optional, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from llama_index.core.llms import ChatMessage, ChatResponse, MessageRole
 from openai import AsyncOpenAI
+import httpx
 import logging
 import asyncio
 
@@ -14,6 +15,13 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+LLM_TIMEOUT = httpx.Timeout(
+    timeout=60.0,
+    connect=10.0,
+    read=50.0,
+    write=10.0,
+)
 
 
 class AsyncChatGLM:
@@ -37,11 +45,13 @@ class AsyncChatGLM:
         self._client: Optional[AsyncOpenAI] = None
     
     def _get_client(self) -> AsyncOpenAI:
-        """获取异步客户端"""
+        """获取异步客户端（带超时控制）"""
         if self._client is None:
             self._client = AsyncOpenAI(
                 api_key=self.api_key,
-                base_url=self.base_url
+                base_url=self.base_url,
+                timeout=LLM_TIMEOUT,
+                max_retries=2,
             )
         return self._client
     

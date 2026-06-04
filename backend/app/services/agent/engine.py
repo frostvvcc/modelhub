@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from app.services.agent.tools import BaseTool, ToolSafetyLevel
 from app.services.agent.state_machine import AgentStateMachine, AgentState
 from app.services.agent.trace import TraceContext, Span
+from app.utils.token_budget import TokenBudget, BudgetExhaustedError
 from app.utils.logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -44,6 +45,7 @@ class AgentEngine:
         max_iterations: int = 5,
         user_id: Optional[int] = None,
         session: Optional[Any] = None,
+        token_budget: Optional[TokenBudget] = None,
     ):
         self.tools = {tool.name: tool for tool in tools}
         self.tool_list = tools
@@ -52,6 +54,7 @@ class AgentEngine:
         self._session = session
         self.state_machine = AgentStateMachine()
         self.trace = TraceContext()
+        self.token_budget = token_budget or TokenBudget(max_tokens=16000)
 
     def _get_openai_tools(self) -> List[Dict[str, Any]]:
         return [tool.to_openai_tool() for tool in self.tool_list]
@@ -112,8 +115,21 @@ class AgentEngine:
                     llm_span.tokens_used = response.usage.total_tokens
                     llm_span.prompt_tokens = response.usage.prompt_tokens
                     llm_span.completion_tokens = response.usage.completion_tokens
+                    try:
+                        self.token_budget.consume(
+                            prompt_tokens=response.usage.prompt_tokens,
+                            completion_tokens=response.usage.completion_tokens,
+                        )
+                    except BudgetExhaustedError:
+                        logger.warning(f"Token 预算耗尽 (已用 {self.token_budget.used}/{self.token_budget.max_tokens})，强制进入最终回答")
+                        llm_span.finish(output={"finish_reason": "budget_exhausted"})
+                        break
 
                 llm_span.finish(output={"finish_reason": choice.finish_reason})
+
+                if self.token_budget.should_stop(reserve=1000):
+                    logger.info(f"Token 预算剩余不足 (剩余 {self.token_budget.remaining})，跳过后续工具调用，直接回答")
+                    break
 
             except Exception as e:
                 llm_span.finish(error=str(e))
@@ -297,6 +313,7 @@ class AgentEngine:
             "iterations": iteration,
             "rag_result": rag_result_cache,
             "state_machine": self.state_machine.to_dict(),
+            "token_budget": self.token_budget.summary(),
         })
 
         yield AgentEvent(type="trace", data=self.trace.to_dict())

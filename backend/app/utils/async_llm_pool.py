@@ -1,7 +1,8 @@
 """
 异步 LLM 客户端连接池
-使用异步客户端，支持真正的异步调用。
+
 Semaphore 控制全局 LLM 并发上限，防止打爆 API rate limit。
+支持模型自动降级：主模型超时/失败时自动切换到默认模型。
 """
 import os
 from typing import Optional, Dict, Any
@@ -25,35 +26,69 @@ def release_llm_slot():
     _llm_semaphore.release()
 
 
+async def _get_default_model_config_id(session: AsyncSession) -> Optional[int]:
+    """查询系统默认模型配置 ID（is_default=True 的 ModelInfo 对应的 ModelConfig）"""
+    try:
+        from sqlalchemy import select
+        from app.models.model_config import ModelConfig
+        from app.models.model_info import ModelInfo
+        stmt = (
+            select(ModelConfig.id)
+            .join(ModelInfo, ModelConfig.base_model_id == ModelInfo.id)
+            .where(ModelInfo.is_default.is_(True), ModelInfo.is_active.is_(True))
+            .limit(1)
+        )
+        result = await session.execute(stmt)
+        row = result.scalar_one_or_none()
+        return row
+    except Exception as e:
+        logger.warning(f"查询默认模型失败: {e}")
+        return None
+
+
 class AsyncLLMPool:
-    """异步 LLM 客户端连接池"""
+    """异步 LLM 客户端连接池（带模型自动降级）"""
     _clients: Dict[int, Any] = {}
     _lock = asyncio.Lock()
-    
+
     @classmethod
     async def get_client(cls, model_config_id: int, session: AsyncSession):
-        """
-        获取或创建异步 LLM 客户端
-        
-        Args:
-            model_config_id: 模型配置ID
-            session: 异步数据库会话
-        
-        Returns:
-            异步 LLM 客户端实例
-        """
         if model_config_id not in cls._clients:
             async with cls._lock:
-                # 双重检查锁定
                 if model_config_id not in cls._clients:
                     try:
                         from app.utils.async_llm import get_chatllm_async
                         cls._clients[model_config_id] = await get_chatllm_async(model_config_id, session)
-                        logger.info(f"创建新的异步LLM客户端: model_config_id={model_config_id}")
+                        logger.info(f"创建异步LLM客户端: model_config_id={model_config_id}")
                     except Exception as e:
                         logger.error(f"创建异步LLM客户端失败: {e}")
                         raise
         return cls._clients[model_config_id]
+
+    @classmethod
+    async def get_client_with_fallback(
+        cls,
+        model_config_id: int,
+        session: AsyncSession,
+    ):
+        """
+        获取 LLM 客户端，主模型不可用时自动降级到系统默认模型。
+        返回 (client, actually_used_config_id)。
+        """
+        try:
+            client = await cls.get_client(model_config_id, session)
+            return client, model_config_id
+        except Exception as primary_err:
+            logger.warning(f"主模型 config_id={model_config_id} 不可用: {primary_err}，尝试降级")
+            fallback_id = await _get_default_model_config_id(session)
+            if fallback_id and fallback_id != model_config_id:
+                try:
+                    client = await cls.get_client(fallback_id, session)
+                    logger.info(f"降级成功: {model_config_id} → {fallback_id}")
+                    return client, fallback_id
+                except Exception as fallback_err:
+                    logger.error(f"降级模型也失败: {fallback_err}")
+            raise primary_err
     
     @classmethod
     async def clear_cache(cls, model_config_id: Optional[int] = None):

@@ -235,19 +235,27 @@ def format_triples_for_context(triples: List[Dict[str, str]]) -> str:
     return "【知识图谱先验】\n" + "\n".join(lines)
 
 
+async def graph_augmented_retrieval(
+    query: str,
+    vector_db_id: int,
+) -> List[Dict[str, str]]:
+    """GraphRAG 检索流程：返回三元组列表（供 RRF 三路融合使用）"""
+    if not NEO4J_ENABLED or not _get_driver():
+        return []
+
+    entities = await extract_query_entities(query)
+    if not entities:
+        return []
+
+    return await asyncio.to_thread(query_subgraph, entities, vector_db_id)
+
+
 async def graph_augmented_context(
     query: str,
     vector_db_id: int,
 ) -> str:
     """完整的 GraphRAG 检索流程：query→实体提取→子图查询→格式化上下文"""
-    if not NEO4J_ENABLED or not _get_driver():
-        return ""
-
-    entities = await extract_query_entities(query)
-    if not entities:
-        return ""
-
-    triples = await asyncio.to_thread(query_subgraph, entities, vector_db_id)
+    triples = await graph_augmented_retrieval(query, vector_db_id)
     return format_triples_for_context(triples)
 
 

@@ -157,7 +157,7 @@ def process_document_task(
                 "current": total, "total_chunks": total,
             })
 
-        # GraphRAG 三元组抽取
+        # GraphRAG 三元组抽取（分批异步，无上限）
         self.update_state(state="PROGRESS", meta={"progress": 92, "step": "graph_extraction"})
         try:
             from app.services.rag.graph_rag import NEO4J_ENABLED, extract_triples, store_triples
@@ -165,15 +165,28 @@ def process_document_task(
                 import asyncio
                 loop = asyncio.new_event_loop()
                 all_triples = []
-                graph_texts = ([pc.parent_content for pc in pc_chunks] if pc_chunks else chunks)[:30]
-                for idx, text in enumerate(graph_texts):
-                    triples = loop.run_until_complete(extract_triples(
-                        text, chunk_id=f"{document_id}_chunk_{idx}", document_id=str(document_id),
-                    ))
-                    all_triples.extend(triples)
+                graph_texts = [pc.parent_content for pc in pc_chunks] if pc_chunks else chunks
+                BATCH_SIZE = 10
+
+                for batch_start in range(0, len(graph_texts), BATCH_SIZE):
+                    batch = graph_texts[batch_start:batch_start + BATCH_SIZE]
+                    coros = [
+                        extract_triples(
+                            text,
+                            chunk_id=f"{document_id}_chunk_{batch_start + i}",
+                            document_id=str(document_id),
+                        )
+                        for i, text in enumerate(batch)
+                    ]
+                    batch_results = loop.run_until_complete(asyncio.gather(*coros, return_exceptions=True))
+                    for result in batch_results:
+                        if isinstance(result, list):
+                            all_triples.extend(result)
+
                 loop.close()
                 if all_triples:
                     store_triples(all_triples, vector_db_id)
+                logger.info(f"GraphRAG 抽取完成: {len(all_triples)} 条三元组 from {len(graph_texts)} chunks")
         except Exception as graph_err:
             logger.warning(f"Celery 任务 GraphRAG 抽取失败: {graph_err}")
 
