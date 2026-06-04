@@ -32,6 +32,7 @@ openai==1.86.0
 redis==4.6.0
 
 # 文件处理
+chardet>=5.0.0       # 文件编码检测（纯文本入库必需）
 aiofiles>=23.2.1
 python-docx==0.8.11
 doc2text>=0.1.0  # 支持 .doc 格式（旧版Word）

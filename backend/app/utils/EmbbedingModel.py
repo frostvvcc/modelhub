@@ -49,24 +49,29 @@ class ChatEmbeddings(BaseEmbedding):
     def class_name(cls) -> str:
         return "ChatEmbeddings"
 
-    # 通用嵌入生成方法
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
-    def get_general_text_embedding(self, prompt: str) -> List[float]:
-        response = self._get_client().embeddings.create(
-            model=self.model,
-            input=prompt,
-        )
+    def get_general_text_embedding(
+        self, prompt: str, input_type: str = "document",
+    ) -> List[float]:
+        kwargs: dict = {"model": self.model, "input": prompt}
+        if self.model.startswith("text-embedding"):
+            kwargs["extra_body"] = {"input_type": input_type}
+        response = self._get_client().embeddings.create(**kwargs)
         return response.data[0].embedding
 
-    # 文本嵌入方法
-    def _get_text_embedding(self, text: str) -> List[float]:
-        return self.get_general_text_embedding(text)
+    def get_query_embedding(self, query: str) -> List[float]:
+        return self.get_general_text_embedding(query, input_type="query")
 
-    # 批量文本嵌入方法（单次 API 调用）
+    def get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
+        return self._get_text_embeddings(texts)
+
+    def _get_text_embedding(self, text: str) -> List[float]:
+        return self.get_general_text_embedding(text, input_type="document")
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
@@ -77,25 +82,33 @@ class ChatEmbeddings(BaseEmbedding):
             return []
         batch_size = 20
         all_embeddings: List[List[float]] = []
+        extra_body = (
+            {"input_type": "document"}
+            if self.model.startswith("text-embedding")
+            else None
+        )
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
-            response = self._get_client().embeddings.create(
-                model=self.model,
-                input=batch,
-            )
+            kwargs: dict = {"model": self.model, "input": batch}
+            if extra_body:
+                kwargs["extra_body"] = extra_body
+            response = self._get_client().embeddings.create(**kwargs)
             batch_embeddings = [item.embedding for item in sorted(response.data, key=lambda x: x.index)]
             all_embeddings.extend(batch_embeddings)
         return all_embeddings
 
-    # 查询嵌入方法
     def _get_query_embedding(self, query: str) -> List[float]:
-        return self.get_general_text_embedding(query)
+        return self.get_general_text_embedding(query, input_type="query")
 
     async def _aget_query_embedding(self, query: str) -> List[float]:
-        return await asyncio.to_thread(self.get_general_text_embedding, query)
+        return await asyncio.to_thread(
+            self.get_general_text_embedding, query, "query",
+        )
 
     async def _aget_text_embedding(self, text: str) -> List[float]:
-        return await asyncio.to_thread(self.get_general_text_embedding, text)
+        return await asyncio.to_thread(
+            self.get_general_text_embedding, text, "document",
+        )
 
     async def _aget_text_embeddings(self, texts: List[str]) -> List[List[float]]:
         return await asyncio.to_thread(self._get_text_embeddings, texts)

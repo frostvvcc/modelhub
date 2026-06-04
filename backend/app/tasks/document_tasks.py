@@ -27,7 +27,7 @@ def process_document_task(
     document_id: int,
     folder_hierarchy: str = None,
     parent_id: int = None,
-    chunk_strategy: str = "fixed",
+    chunk_strategy: str = "markdown",
     chunk_size: int = 800,
     chunk_overlap: int = 150,
 ):

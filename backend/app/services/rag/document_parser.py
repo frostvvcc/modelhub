@@ -35,6 +35,14 @@ _NAV_KEYWORDS = frozenset({
     "教学单位", "机构设置", "导航", "正文", "信息公开", "接诉即办",
     "党政办公室", "教务部", "学团工作部", "安全管理部", "后勤管理部",
     "图书馆", "国际交流部", "工会", "科研部", "财务部", "资产部",
+    "学部概况", "学部简介", "学部信箱", "学校主页", "泰安校区", "济南校区",
+    "青岛校区", "通知公告", "学部新闻", "教育教学", "教学动态", "管理制度",
+    "实验教学", "教学团队", "党建工作", "工会活动", "下载专区", "联系我们",
+    "English", "智慧校园", "师资队伍", "新闻中心", "新闻动态", "科研成果",
+    "学生工作", "团学活动", "就业信息", "招生信息", "学院概况", "学院简介",
+    "专业介绍", "培养方案", "课程建设", "教学改革", "实践教学", "创新创业",
+    "学术交流", "学术讲座", "规章制度", "办事指南", "常用下载", "友情链接",
+    "快速通道", "服务指南", "网站地图", "在线服务", "数字资源", "馆藏查询",
 })
 
 _ATTACHMENT_PATTERN = re.compile(r'附件【[^】]*】已下载\s*\d*\s*次?')
@@ -73,20 +81,20 @@ def clean_web_text(text: str) -> str:
         if any(kw in lower for kw in _FOOTER_KEYWORDS):
             continue
 
-        # 导航菜单行：短行（<=10字符）且是导航关键词
-        if len(stripped) <= 10 and stripped in _NAV_KEYWORDS:
+        # 导航菜单行：<=20 字符且匹配导航关键词
+        if len(stripped) <= 20 and stripped in _NAV_KEYWORDS:
             nav_streak += 1
             continue
 
-        # 如果之前连续跳过了多个导航行，说明在菜单区域
-        if nav_streak >= 3 and len(stripped) <= 10:
+        # 连续短行区域检测：3+ 行连续 <=25 字符视为导航/菜单区域
+        if nav_streak >= 3 and len(stripped) <= 25:
             nav_streak += 1
             continue
 
         nav_streak = 0
 
-        # 单个字符的噪声行（如 "X", "-"）
-        if len(stripped) <= 1:
+        # 单个字符或纯标点的噪声行
+        if len(stripped) <= 2:
             continue
 
         cleaned_lines.append(stripped)
@@ -112,12 +120,13 @@ def clean_web_text(text: str) -> str:
     return result
 
 
-def is_worth_indexing(text: str, min_length: int = 100) -> bool:
-    """判断清洗后的文本是否值得入库"""
+def is_worth_indexing(text: str, min_length: int = 150) -> bool:
+    """判断清洗后的文本是否值得入库（有意义字符占比需 > 60%）"""
     if not text or len(text.strip()) < min_length:
         return False
     meaningful_chars = sum(1 for c in text if c.isalnum() or c in '，。！？、；：""''（）')
-    return meaningful_chars >= min_length * 0.5
+    total = len(text.strip())
+    return meaningful_chars >= total * 0.6 and meaningful_chars >= min_length * 0.5
 
 
 def extract_text(file_path: str) -> Optional[str]:
