@@ -80,7 +80,7 @@ class ChatEmbeddings(BaseEmbedding):
     def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
         if not texts:
             return []
-        batch_size = 20
+        batch_size = 10
         all_embeddings: List[List[float]] = []
         extra_body = (
             {"input_type": "document"}
