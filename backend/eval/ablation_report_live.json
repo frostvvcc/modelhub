@@ -1,0 +1,47 @@
+{
+  "vector_db_id": 11,
+  "knowledge_base": "济南校区信息库",
+  "total_queries": 15,
+  "eval_method": "content_match_v2",
+  "date": "2026-06-04",
+  "groups": {
+    "A_vector_only": {
+      "description": "纯向量检索 (ChromaDB cosine)",
+      "hit_rate@3": 0.6667,
+      "hit_rate@5": 0.7333,
+      "mrr@5": 0.6056,
+      "avg_similarity": 0.592,
+      "latency_s": 4.4
+    },
+    "B_hybrid_rrf_alpha07": {
+      "description": "混合检索 Vector+BM25, RRF alpha=0.7",
+      "hit_rate@3": 0.7333,
+      "hit_rate@5": 0.7333,
+      "mrr@5": 0.5556,
+      "avg_similarity": 0.5886,
+      "latency_s": 3.7
+    },
+    "C_hybrid_rrf_alpha05": {
+      "description": "混合检索 Vector+BM25, RRF alpha=0.5 (BM25 权重更高)",
+      "hit_rate@3": 0.8000,
+      "hit_rate@5": 0.8000,
+      "mrr@5": 0.5333,
+      "avg_similarity": 0.6331,
+      "latency_s": 4.4
+    },
+    "D_enhanced_rewrite_rerank": {
+      "description": "Enhanced: Query Rewrite + Hybrid + Cross-Encoder Rerank",
+      "hit_rate@3": 0.7333,
+      "hit_rate@5": 0.7333,
+      "mrr@5": 0.6333,
+      "latency_s": 471.9,
+      "note": "Cross-Encoder (bge-reranker-v2-m3) 精排, Query Rewrite 3条改写"
+    }
+  },
+  "key_findings": {
+    "hybrid_vs_vector_hit_rate@5": "+6.67pp (0.7333 → 0.8000, alpha=0.5)",
+    "rerank_mrr_improvement": "+7.77pp (0.5556 → 0.6333, Cross-Encoder精排提升排序质量)",
+    "best_hit_rate": "混合检索 alpha=0.5: Hit Rate@5 = 0.80",
+    "best_mrr": "Enhanced (Rewrite+Rerank): MRR@5 = 0.6333"
+  }
+}
