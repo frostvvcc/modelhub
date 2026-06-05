@@ -277,9 +277,22 @@ async def upload_file(
     )
 
 
+def _resolve_document_path(document) -> "Path":
+    """解析文档物理路径，支持新旧两种存储位置"""
+    from pathlib import Path
+    if not document.save_path:
+        raise NotFoundError("文件路径不存在")
+    resolved = Path(document.save_path).resolve()
+    if not resolved.is_file():
+        raise NotFoundError("文件不存在或已被清理")
+    if "knowledge_sources" not in str(resolved):
+        raise ForbiddenError("非法文件路径")
+    return resolved
+
+
 @router.get(
     "/download_file/{document_id}",
-    summary="下载��档",
+    summary="下载文档",
     response_class=FileResponse
 )
 async def download_file(
@@ -288,34 +301,69 @@ async def download_file(
     db: AsyncSession = Depends(get_async_db)
 ):
     """下载知识库中的原始文档。"""
-    from pathlib import Path
-
     document = await _require_document_read(db, current_user, document_id)
     if document.is_folder:
         raise ValidationError("文件夹不能直接下载")
-    if not document.save_path:
-        raise NotFoundError("文件路径不存在")
-
-    file_path = Path(document.save_path)
-    if not file_path.is_absolute():
-        file_path = Path.cwd() / file_path
-
-    base_dir = (Path.cwd() / "data" / "knowledge_sources").resolve()
-    resolved_path = file_path.resolve()
-    try:
-        is_inside_docs = resolved_path.is_relative_to(base_dir)
-    except AttributeError:
-        is_inside_docs = str(resolved_path).startswith(str(base_dir))
-    if not is_inside_docs:
-        raise ForbiddenError("非法文件路径")
-    if not resolved_path.is_file():
-        raise NotFoundError("文件不存在或已被清理")
-
+    resolved_path = _resolve_document_path(document)
     return FileResponse(
         path=str(resolved_path),
         filename=document.original_name or document.name,
         headers={"X-Content-Type-Options": "nosniff"}
     )
+
+
+@router.get(
+    "/preview/{document_id}",
+    response_model=SuccessResponse[dict],
+    summary="预览文档内容"
+)
+async def preview_document(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db)
+):
+    """预览文档的文本内容（提取前 5000 字符）。"""
+    document = await _require_document_read(db, current_user, document_id)
+    if document.is_folder:
+        raise ValidationError("文件夹不能预览")
+    resolved_path = _resolve_document_path(document)
+
+    suffix = resolved_path.suffix.lower()
+    max_chars = 5000
+
+    if suffix in ('.txt', '.md'):
+        for enc in ('utf-8', 'gbk', 'gb2312', 'latin-1'):
+            try:
+                text = resolved_path.read_text(encoding=enc)[:max_chars]
+                break
+            except (UnicodeDecodeError, ValueError):
+                continue
+        else:
+            text = "[无法解码文件内容]"
+    elif suffix in ('.docx', '.doc'):
+        try:
+            from app.services.rag.document_parser import extract_text
+            full = extract_text(str(resolved_path)) or ""
+            text = full[:max_chars]
+        except Exception:
+            text = "[文档解析失败]"
+    elif suffix == '.pdf':
+        try:
+            from app.services.rag.document_parser import extract_text
+            full = extract_text(str(resolved_path)) or ""
+            text = full[:max_chars]
+        except Exception:
+            text = "[PDF 解析失败]"
+    else:
+        text = f"[不支持预览的文件类型: {suffix}]"
+
+    return SuccessResponse(data={
+        "id": document.id,
+        "name": document.original_name or document.name,
+        "type": suffix.lstrip('.'),
+        "content": text,
+        "truncated": len(text) >= max_chars,
+    })
 
 
 @router.delete(

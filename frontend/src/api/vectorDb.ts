@@ -47,7 +47,12 @@ export const DownloadFile = async (id: number) => {
     });
     return response;
 }
-export const deleteDocument = async (id: number) => { 
+export const previewDocument = async (id: number) => {
+    const response = await api.get(`/vector/preview/${id}`)
+    return response.data.data
+}
+
+export const deleteDocument = async (id: number) => {
     return await api.delete(`/vector/delete_file/${id}`)
 }
 

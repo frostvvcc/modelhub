@@ -3,7 +3,7 @@ import { ref, onMounted, computed } from 'vue';
 import { useRoute } from 'vue-router';
 import { Connection, Delete, Edit, Back, Upload, Folder, FolderOpened, Document, Plus, QuestionFilled } from '@element-plus/icons-vue';
 import type { VectorDbForm } from '../types/vectorDb';
-import { getVectorDb, updateVectorDb, uploadDocument, deleteDocument, archiveDocument, restoreDocument, deleteVectorDb, DownloadFile, getDocumentsTree, createFolder, renameDocument, debugQuery } from '../api/vectorDb';
+import { getVectorDb, updateVectorDb, uploadDocument, deleteDocument, archiveDocument, restoreDocument, deleteVectorDb, DownloadFile, previewDocument, getDocumentsTree, createFolder, renameDocument, debugQuery } from '../api/vectorDb';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useRouter } from 'vue-router';
 import type { ModelInfo } from '../types/model_config';
@@ -375,9 +375,26 @@ const handleDownloadDocument = async (id: number) => {
 
 const viewDialogVisible = ref(false);
 const currentDocumentContent = ref('');
+const currentDocumentTitle = ref('');
 const handleViewDocument = (text: string) => {
   currentDocumentContent.value = text;
+  currentDocumentTitle.value = '内容详情';
   viewDialogVisible.value = true;
+};
+
+const previewLoading = ref(false);
+const handlePreviewDocument = async (id: number) => {
+  previewLoading.value = true;
+  try {
+    const data = await previewDocument(id);
+    currentDocumentContent.value = data.content;
+    currentDocumentTitle.value = data.name + (data.truncated ? '（前 5000 字）' : '');
+    viewDialogVisible.value = true;
+  } catch (error) {
+    ElMessage.error('预览失败');
+  } finally {
+    previewLoading.value = false;
+  }
 };
 
 const dialogVisible = ref(false);
@@ -551,8 +568,8 @@ onMounted(async () => {
     </ElDialog>
 
     <!-- 文档内容查看对话框 -->
-    <el-dialog v-model="viewDialogVisible" title="文档内容" width="70%" top="5vh">
-      <div class="full-content" v-html="highlightContent(currentDocumentContent, searchInput)"></div>
+    <el-dialog v-model="viewDialogVisible" :title="currentDocumentTitle || '文档内容'" width="70%" top="5vh">
+      <pre class="full-content" style="white-space: pre-wrap; word-break: break-word; max-height: 70vh; overflow-y: auto;">{{ currentDocumentContent }}</pre>
       <template #footer>
         <el-button @click="viewDialogVisible = false">关闭</el-button>
       </template>
@@ -787,6 +804,7 @@ onMounted(async () => {
                   </div>
                   <div class="document-actions" @click.stop>
                     <el-button v-if="canManage" link type="primary" size="small" :icon="Edit" @click="handleRename(doc)">重命名</el-button>
+                    <el-button link type="primary" size="small" @click="handlePreviewDocument(doc.id)" :loading="previewLoading">预览</el-button>
                     <el-button link type="primary" size="small" @click="handleDownloadDocument(doc.id)">下载</el-button>
                     <el-button v-if="canManage && doc.status !== 'archived'" link type="warning" size="small" @click="handleArchiveDocument(doc)">归档</el-button>
                     <el-button v-if="canManage && doc.status === 'archived'" link type="success" size="small" @click="handleRestoreDocument(doc)">恢复</el-button>
@@ -816,6 +834,7 @@ onMounted(async () => {
                     <div class="node-actions">
                       <el-button v-if="canManage && data.is_folder" link type="primary" size="small" :icon="Plus" @click.stop="handleCreateFolder(data.id)">新建</el-button>
                       <el-button v-if="canManage" link type="primary" size="small" :icon="Edit" @click.stop="handleRename(data)">重命名</el-button>
+                      <el-button v-if="!data.is_folder" link type="primary" size="small" @click.stop="handlePreviewDocument(data.id)" :loading="previewLoading">预览</el-button>
                       <el-button v-if="!data.is_folder" link type="primary" size="small" @click.stop="handleDownloadDocument(data.id)">下载</el-button>
                       <el-button v-if="canManage && !data.is_folder && data.status !== 'archived'" link type="warning" size="small" @click.stop="handleArchiveDocument(data)">归档</el-button>
                       <el-button v-if="canManage && !data.is_folder && data.status === 'archived'" link type="success" size="small" @click.stop="handleRestoreDocument(data)">恢复</el-button>
