@@ -1,0 +1,1 @@
+{"query_id": "查重标准", "timestamp": 1780637260.1018481, "vector_search_ms": 7966.839542030357, "bm25_search_ms": 0, "rerank_ms": 0, "grounding_ms": 0, "total_ms": 7966.839542030357, "result_count": 2, "top1_similarity": 0.32657891, "avg_similarity": 0.30237604249999994, "rerank_changed_top1": false, "grounded_ratio": 1.0, "retrieval_method": "hybrid", "low_confidence": true}
