@@ -469,7 +469,10 @@ class VectorRetriever:
             fused.append(result)
 
         fused.sort(key=lambda r: r.score, reverse=True)
-        return fused[:n_results]
+
+        # 质量过滤：BM25=0 说明没命中任何关键词，向量分数也不高的直接丢弃
+        filtered = [r for r in fused if r.bm25_score > 0 or r.vector_score >= 0.65]
+        return (filtered or fused[:1])[:n_results]
 
     # ---- 增强检索：Query 改写 + HyDE + 混合检索 + Reranker 精排 ----
 
