@@ -176,11 +176,37 @@ async def search(
             index=index,
             body={
                 "query": {
-                    "match": {
-                        "content": {
-                            "query": query,
-                            "analyzer": "ik_smart",
-                        }
+                    "bool": {
+                        "should": [
+                            {
+                                "match": {
+                                    "content": {
+                                        "query": query,
+                                        "analyzer": "ik_smart",
+                                        "operator": "and",
+                                        "boost": 3.0,
+                                    }
+                                }
+                            },
+                            {
+                                "match_phrase": {
+                                    "content": {
+                                        "query": query,
+                                        "analyzer": "ik_smart",
+                                        "boost": 5.0,
+                                    }
+                                }
+                            },
+                            {
+                                "match": {
+                                    "content": {
+                                        "query": query,
+                                        "analyzer": "ik_smart",
+                                    }
+                                }
+                            },
+                        ],
+                        "minimum_should_match": 1,
                     }
                 },
                 "size": n_results,

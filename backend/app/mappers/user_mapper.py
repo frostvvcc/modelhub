@@ -51,12 +51,11 @@ class AsyncUserMapper:
 
     @staticmethod
     async def get_user_by_account(session: AsyncSession, account: str) -> Optional[User]:
-        """根据学号/工号/邮箱查找用户"""
+        """根据学号/工号查找用户"""
         stmt = select(User).where(
             or_(
                 User.student_id == account,
                 User.employee_id == account,
-                User.email == account
             )
         )
         result = await session.execute(stmt)

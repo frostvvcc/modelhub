@@ -110,7 +110,7 @@ class AsyncUserService:
 
     @staticmethod
     async def login(session: AsyncSession, account: str, password: str) -> dict:
-        """用户登录（学号/工号/邮箱 + 密码）"""
+        """用户登录（学号/工号 + 密码）"""
         logger.info(f"用户登录请求: account={account}")
 
         user = await AsyncUserMapper.get_user_by_account(session, account)

@@ -413,14 +413,13 @@ class VectorRetriever:
 
     @staticmethod
     def _tokenize(text: str) -> List[str]:
-        """分词：jieba 分词 + 停用词/标点过滤，降级为字符 bigram"""
+        """分词：jieba 搜索模式分词 + 停用词/标点过滤，降级为字符 bigram"""
         text = _PUNCT_RE.sub(' ', text).lower().strip()
         if not text:
             return []
         if _HAS_JIEBA:
-            tokens = list(jieba.cut(text))
+            tokens = list(jieba.cut_for_search(text))
         else:
-            # 降级：字符 bigram 而非单字符，保留基本语义
             tokens = [text[i:i+2] for i in range(len(text) - 1)] if len(text) > 1 else [text]
         return [t.strip() for t in tokens if t.strip() and t.strip() not in _STOPWORDS]
 

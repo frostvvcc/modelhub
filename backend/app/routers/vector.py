@@ -635,6 +635,7 @@ async def debug_query(
     use_enhanced = request.use_rewrite or request.use_hyde
 
     if use_enhanced or request.use_hybrid:
+        t_bm25_start = time.time()
         tasks = [
             VectorRetriever.hybrid_query(
                 vector_db_id=vector_id, query_text=q,
@@ -646,6 +647,7 @@ async def debug_query(
             tasks.append(VectorRetriever.query(vector_id, hyde_text, request.n_results))
 
         multi_results = await asyncio.gather(*tasks)
+        bm25_time = (time.time() - t_bm25_start) * 1000
         seen = set()
         results = []
         for batch in multi_results:
@@ -661,19 +663,9 @@ async def debug_query(
             query_text=request.query,
             n_results=request.n_results,
         )
+        bm25_time = 0.0
 
     vector_time = (time.time() - t_vec_start) * 1000
-
-    # 从 RAGMonitor 获取最近一次查询的 BM25 耗时
-    bm25_time = 0.0
-    try:
-        from app.services.rag.monitor import get_rag_monitor
-        monitor = get_rag_monitor()
-        if monitor._window:
-            latest = monitor._window[-1]
-            bm25_time = latest.bm25_search_ms
-    except Exception:
-        pass
 
     # Step 3: Rerank（可选）
     if request.use_rerank and len(results) > 1:
@@ -696,7 +688,7 @@ async def debug_query(
             rerank_score=round(r.rerank_score, 4),
             final_score=round(r.score, 4),
             retrieval_method=r.retrieval_method,
-            highlighted_terms=[t for t in query_terms if t in r.content],
+            highlighted_terms=[t for t in query_terms if t in r.content.lower()],
         ))
 
     return DebugQueryResponse(

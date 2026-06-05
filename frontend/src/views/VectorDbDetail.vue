@@ -495,44 +495,21 @@ const escapeHtml = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').r
 const highlightContent = (content: string, query: string) => {
   if (!query || !content) return escapeHtml(content || '');
   const cleanQ = query.replace(/[\s，。、；：！？""''（）\[\]【】\n\r]/g, '');
-  const ngrams = new Set<string>();
-  for (let len = 2; len <= 4; len++) {
-    for (let i = 0; i <= cleanQ.length - len; i++) ngrams.add(cleanQ.slice(i, i + len));
-  }
-  if (!ngrams.size) return escapeHtml(content);
+  if (!cleanQ) return escapeHtml(content);
 
-  const breaks: number[] = [0];
-  for (let i = 0; i < content.length; i++) {
-    if ('。！？\n'.includes(content[i]) && i + 1 < content.length) breaks.push(i + 1);
-  }
-  breaks.push(content.length);
-
-  const regions: { start: number; end: number; score: number }[] = [];
-  for (let i = 0; i < breaks.length - 1; i++) {
-    const s = breaks[i], e = breaks[i + 1];
-    if (!content.slice(s, e).trim()) continue;
-    const clean = content.slice(s, e).replace(/[\s，。、；：！？""''（）\[\]【】]/g, '');
-    let score = 0;
-    for (const ng of ngrams) { if (clean.includes(ng)) score++; }
-    regions.push({ start: s, end: e, score });
-  }
-  if (!regions.length) return escapeHtml(content);
-
-  let bestIdx = -1, bestLen = 0, bestScore = 0;
-  for (let ws = 1; ws <= Math.min(3, regions.length); ws++) {
-    for (let i = 0; i <= regions.length - ws; i++) {
-      let total = 0;
-      for (let j = i; j < i + ws; j++) total += regions[j].score;
-      if (total > bestScore) { bestScore = total; bestIdx = i; bestLen = ws; }
+  const terms: string[] = [];
+  for (let len = cleanQ.length; len >= 2; len--) {
+    for (let i = 0; i <= cleanQ.length - len; i++) {
+      const sub = cleanQ.slice(i, i + len);
+      if (!terms.some(t => t.includes(sub))) terms.push(sub);
     }
   }
-  if (bestScore === 0) return escapeHtml(content);
+  if (!terms.length) return escapeHtml(content);
 
-  const hlStart = regions[bestIdx].start;
-  const hlEnd = regions[bestIdx + bestLen - 1].end;
-  return escapeHtml(content.slice(0, hlStart))
-    + '<span class="highlight">' + escapeHtml(content.slice(hlStart, hlEnd)) + '</span>'
-    + escapeHtml(content.slice(hlEnd));
+  const escaped = escapeHtml(content);
+  const escapedTerms = terms.map(t => escapeHtml(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const pattern = new RegExp(`(${escapedTerms.join('|')})`, 'gi');
+  return escaped.replace(pattern, '<span class="highlight">$1</span>');
 };
 
 onMounted(async () => {
