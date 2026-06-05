@@ -75,9 +75,12 @@ async def cross_encoder_rerank(
     scores = await asyncio.to_thread(model.predict, pairs)
 
     scored = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
+    max_ce = max(abs(s) for s, _ in scored) if scored else 1.0
     reranked = []
     for score, result in scored[:top_k]:
         result.rerank_score = float(score)
+        result.score = float(score) / max_ce if max_ce > 0 else 0.0
+        result.similarity = max(0.0, min(1.0, result.score))
         result.retrieval_method = "hybrid+cross_encoder"
         reranked.append(result)
 
@@ -147,6 +150,8 @@ async def llm_rerank(
         reranked = []
         for score, result in scored[:top_k]:
             result.rerank_score = float(score)
+            result.score = float(score) / 10.0
+            result.similarity = max(0.0, min(1.0, result.score))
             result.retrieval_method = "hybrid+rerank"
             reranked.append(result)
 

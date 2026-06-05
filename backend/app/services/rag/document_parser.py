@@ -129,6 +129,20 @@ def is_worth_indexing(text: str, min_length: int = 150) -> bool:
     return meaningful_chars >= total * 0.6 and meaningful_chars >= min_length * 0.5
 
 
+def is_quality_chunk(text: str) -> bool:
+    """检测 chunk 信息密度：过滤导航菜单、链接列表等低质内容"""
+    lines = [l for l in text.split('\n') if l.strip()]
+    if not lines:
+        return False
+    avg_len = sum(len(l.strip()) for l in lines) / len(lines)
+    short_lines = sum(1 for l in lines if len(l.strip()) <= 10)
+    short_ratio = short_lines / len(lines)
+    nav_hits = sum(1 for l in lines if l.strip() in _NAV_KEYWORDS)
+    if nav_hits >= 3 and nav_hits / len(lines) > 0.3:
+        return False
+    return avg_len >= 15 and short_ratio <= 0.6
+
+
 def extract_text(file_path: str) -> Optional[str]:
     """
     统一入口：根据文件扩展名分发到对应的解析器。

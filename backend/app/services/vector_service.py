@@ -461,6 +461,13 @@ class AsyncVectorService:
                     chunk_size=safe_chunk_size,
                     overlap=safe_overlap,
                 )
+                from app.services.rag.document_parser import is_quality_chunk
+                original_count = len(chunks)
+                chunks = [c for c in chunks if is_quality_chunk(c)]
+                if len(chunks) < original_count:
+                    logger.info(f"Chunk 质量过滤: {original_count} → {len(chunks)} (过滤 {original_count - len(chunks)} 个低质 chunk)")
+                if not chunks:
+                    raise ValueError("文档分块后无有效内容（全部被质量过滤器拦截）")
                 all_embeddings = embedding_model._get_text_embeddings(chunks)
                 all_ids = [f"{document_id}_chunk_{i}" for i in range(len(chunks))]
                 all_metadatas = [

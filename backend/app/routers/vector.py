@@ -686,7 +686,7 @@ async def debug_query(
             vector_score=round(r.vector_score, 4),
             bm25_score=round(r.bm25_score, 4),
             rerank_score=round(r.rerank_score, 4),
-            final_score=round(r.score, 4),
+            final_score=round(r.similarity, 4),
             retrieval_method=r.retrieval_method,
             highlighted_terms=[t for t in query_terms if t in r.content.lower()],
         ))

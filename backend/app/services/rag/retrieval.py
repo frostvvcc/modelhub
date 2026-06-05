@@ -3,6 +3,7 @@
 支持向量检索（ChromaDB）和混合检索（向量 + BM25，RRF 融合）
 """
 import asyncio
+import math
 import os
 import re
 import time
@@ -71,6 +72,11 @@ def _distance_to_similarity(distance: float, dist_fn: str) -> float:
     else:
         # L2 / 未知类型：用 1/(1+d) 保证结果在 (0, 1]
         return 1.0 / (1.0 + max(0.0, distance))
+
+
+def _sigmoid_normalize(raw_score: float, k: float = 10.0) -> float:
+    """BM25 原始分数 → [0, 1] sigmoid 归一化，保留绝对语义"""
+    return 1.0 / (1.0 + math.exp(-raw_score / k))
 
 
 # ------------------------------------------------------------------
@@ -232,6 +238,7 @@ class VectorRetriever:
                         retrieval_method='vector',
                         metadata=meta,
                     ))
+            output = [r for r in output if r.vector_score >= 0.35]
             return _mmr_diversify(output, n_results)
         except Exception as e:
             logger.error(f"向量检索失败 {collection_name}: {e}", exc_info=True)
@@ -292,14 +299,13 @@ class VectorRetriever:
             if ES_ENABLED:
                 es_results = await es_search(vector_db_id, query_text, n_results)
                 if es_results:
-                    max_score = max(r["score"] for r in es_results) if es_results else 1.0
                     return [
                         RetrievalResult(
                             chunk_id=r["chunk_id"],
                             content=r["content"],
-                            score=r["score"] / max_score if max_score > 0 else 0.0,
-                            bm25_score=r["score"] / max_score if max_score > 0 else 0.0,
-                            similarity=r["score"] / max_score if max_score > 0 else 0.0,
+                            score=_sigmoid_normalize(r["score"]),
+                            bm25_score=_sigmoid_normalize(r["score"]),
+                            similarity=_sigmoid_normalize(r["score"]),
                             source=r.get("source", ""),
                             document_id=r.get("document_id", ""),
                             retrieval_method="bm25_es",
@@ -333,11 +339,10 @@ class VectorRetriever:
         # 取 top-k
         top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:n_results]
         results = []
-        max_score = max(scores[i] for i in top_indices) if top_indices else 1.0
         for idx in top_indices:
             if scores[idx] <= 0:
                 continue
-            normalized = scores[idx] / max_score if max_score > 0 else 0.0
+            normalized = _sigmoid_normalize(scores[idx])
             meta = metas[idx]
             # Parent-Child: child 匹配但返回 parent 内容给 LLM
             content = meta.get('parent_content') or contents[idx]
@@ -470,8 +475,8 @@ class VectorRetriever:
 
         fused.sort(key=lambda r: r.score, reverse=True)
 
-        # 质量过滤：BM25=0 说明没命中任何关键词，向量分数也不高的直接丢弃
-        filtered = [r for r in fused if r.bm25_score > 0 or r.vector_score >= 0.65]
+        # 质量过滤：sigmoid(0)=0.5，高于0.5说明BM25有实质匹配
+        filtered = [r for r in fused if r.bm25_score > 0.5 or r.vector_score >= 0.6]
         return (filtered or fused[:1])[:n_results]
 
     # ---- 增强检索：Query 改写 + HyDE + 混合检索 + Reranker 精排 ----
