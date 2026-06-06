@@ -53,6 +53,8 @@ def classify_intent(message: str) -> str:
     """
     意图分类器（纯规则，不消耗 token）。
     返回: 'chitchat' | 'knowledge' | 'tool'
+    - chitchat / knowledge → 走简单流式（省一次 LLM 决策调用）
+    - tool → 走 Agent（需要多工具协同）
     """
     text = message.strip()
     if len(text) <= 30 and _CHITCHAT_PATTERNS.match(text):
@@ -60,6 +62,10 @@ def classify_intent(message: str) -> str:
     if any(kw in text for kw in ("计算", "算一下", "等于多少", "求解", "加减乘除")):
         return "tool"
     if any(kw in text for kw in ("几点", "几号", "什么时候", "今天", "星期")):
+        return "tool"
+    has_db_kw = any(kw in text for kw in ("学院", "专业", "班级", "组织", "院系", "多少人"))
+    has_calc_kw = any(kw in text for kw in ("比例", "占比", "百分比", "统计", "算"))
+    if has_db_kw and has_calc_kw:
         return "tool"
     return "knowledge"
 
@@ -204,6 +210,9 @@ class StreamChatService:
             if intent == "chitchat":
                 use_agent = False
                 logger.info(f"🚦 [路由] 意图=chitchat，降级为 SimpleStream，省去 Agent 调用")
+            elif intent == "knowledge":
+                use_agent = False
+                logger.info(f"🚦 [路由] 意图=knowledge，使用 SimpleStream（RAG 管线已含 query 改写，无需 Agent 决策）")
 
             if use_agent:
                 # === Agent 模式 ===

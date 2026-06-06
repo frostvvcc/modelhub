@@ -31,8 +31,8 @@ export interface SSEEvent {
 export interface StreamCallbacks {
   onToken?: (content: string) => void
   onStateChange?: (state: string, label: string, meta?: StateChangePayload) => void
-  onThinking?: (content: string) => void
-  onToolCall?: (tool: string, args: Record<string, unknown>, callId: string) => void
+  onThinking?: (content: string, iteration?: number) => void
+  onToolCall?: (tool: string, args: Record<string, unknown>, callId: string, iteration?: number) => void
   onToolResult?: (tool: string, result: Record<string, unknown>, callId: string, latencyMs: number) => void
   onSources?: (sources: SourceCitation[]) => void
   onMetadata?: (metadata: Record<string, unknown>) => void
@@ -179,13 +179,14 @@ function dispatchEvent(event: SSEEvent, callbacks: StreamCallbacks): void {
       )
       break
     case 'thinking':
-      callbacks.onThinking?.(String(d.content ?? ''))
+      callbacks.onThinking?.(String(d.content ?? ''), d.iteration as number | undefined)
       break
     case 'tool_call':
       callbacks.onToolCall?.(
         String(d.tool ?? ''),
         (d.args ?? {}) as Record<string, unknown>,
         String(d.call_id ?? ''),
+        d.iteration as number | undefined,
       )
       break
     case 'tool_result':

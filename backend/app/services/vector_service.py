@@ -1818,18 +1818,21 @@ class AsyncVectorService:
         vector_db: VectorDb,
         layer: str,
         message: str,
-        n_results: int = 5
+        n_results: int = 5,
+        use_rewrite: Optional[bool] = None,
     ) -> Dict[str, Any]:
         from app.services.rag.retrieval import VectorRetriever
 
         if not vector_db:
             return AsyncVectorService._empty_rag_result()
 
+        rewrite = use_rewrite if use_rewrite is not None else RAG_USE_REWRITE
+
         try:
             if RAG_USE_ENHANCED:
                 rag_results = await VectorRetriever.enhanced_query(
                     vector_db.id, message, n_results=n_results,
-                    use_rewrite=RAG_USE_REWRITE,
+                    use_rewrite=rewrite,
                     use_rerank=RAG_USE_RERANK,
                     use_hyde=RAG_USE_HYDE,
                 )
@@ -1857,6 +1860,7 @@ class AsyncVectorService:
         message: str,
         user_id: Optional[int] = None,
         extra_vector_db_ids: Optional[List[int]] = None,
+        use_rewrite: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         根据模型配置查询向量数据库（异步）。
@@ -1889,7 +1893,7 @@ class AsyncVectorService:
                 if extra_vector_db_ids:
                     vdb = await AsyncVectorMapper.get_vector_db(session, extra_vector_db_ids[0])
                     return await AsyncVectorService._query_single_vector_db_layer(
-                        vdb, "user_selected", message, n_results=3,
+                        vdb, "user_selected", message, n_results=3, use_rewrite=use_rewrite,
                     ) if vdb else AsyncVectorService._empty_rag_result()
                 return AsyncVectorService._empty_rag_result()
 
@@ -1913,6 +1917,7 @@ class AsyncVectorService:
                     primary_layer,
                     message,
                     n_results=3,
+                    use_rewrite=use_rewrite,
                 )
                 fallback_candidates = candidates[1:]
                 if primary_result["used_knowledge_base"] and primary_result["avg_similarity"] >= LAYERED_RAG_FALLBACK_THRESHOLD:
@@ -1926,7 +1931,9 @@ class AsyncVectorService:
             fallback_results = []
             if fallback_candidates:
                 fallback_results = await asyncio.gather(*[
-                    AsyncVectorService._query_single_vector_db_layer(vector_db, layer, message, n_results=3)
+                    AsyncVectorService._query_single_vector_db_layer(
+                        vector_db, layer, message, n_results=3, use_rewrite=use_rewrite,
+                    )
                     for vector_db, layer in fallback_candidates
                 ])
 

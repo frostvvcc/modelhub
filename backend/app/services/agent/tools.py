@@ -82,6 +82,7 @@ class KnowledgeSearchTool(BaseTool):
                 query,
                 user_id=self._user_id,
                 extra_vector_db_ids=self._vector_db_ids,
+                use_rewrite=False,
             )
             sources = rag_result.get("sources", [])
             if not sources:

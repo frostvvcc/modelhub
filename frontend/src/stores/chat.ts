@@ -80,12 +80,23 @@ export const useChatStore = defineStore('chat', () => {
       messages.value[msgIndex].agentState = state
       messages.value[msgIndex].agentStateLabel = label
     },
-    onThinking(content) {
+    onThinking(content, iteration?) {
       messages.value[msgIndex].thinkingContent = (messages.value[msgIndex].thinkingContent || '') + content
+      if (iteration !== undefined) {
+        (messages.value[msgIndex] as any)._pendingThinkingIteration = iteration
+        ;(messages.value[msgIndex] as any)._pendingThinking = content
+      }
     },
-    onToolCall(tool, args, callId) {
+    onToolCall(tool, args, callId, iteration?) {
       if (!messages.value[msgIndex].toolCalls) messages.value[msgIndex].toolCalls = []
-      messages.value[msgIndex].toolCalls!.push({ tool, args, callId, status: 'calling' } as ToolCallRecord)
+      const pending = (messages.value[msgIndex] as any)._pendingThinking as string | undefined
+      const pendingIter = (messages.value[msgIndex] as any)._pendingThinkingIteration as number | undefined
+      const thinkingBefore = (pendingIter !== undefined && iteration !== undefined && pendingIter === iteration) ? pending : undefined
+      if (thinkingBefore) {
+        delete (messages.value[msgIndex] as any)._pendingThinking
+        delete (messages.value[msgIndex] as any)._pendingThinkingIteration
+      }
+      messages.value[msgIndex].toolCalls!.push({ tool, args, callId, status: 'calling', iteration, thinkingBefore } as ToolCallRecord)
     },
     onToolResult(tool, result, callId, latencyMs) {
       const tc = messages.value[msgIndex].toolCalls?.find(t => t.callId === callId)

@@ -29,6 +29,8 @@ export interface ToolCallRecord {
   callId: string;
   latencyMs?: number;
   status: 'calling' | 'done' | 'error';
+  iteration?: number;
+  thinkingBefore?: string;
 }
 
 /** Agent Trace Span */
