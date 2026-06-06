@@ -120,6 +120,73 @@ def clean_web_text(text: str) -> str:
     return result
 
 
+# ------------------------------------------------------------------
+# 用户上传文档清洗（PDF/Word/Excel/PPT 等）
+# ------------------------------------------------------------------
+
+_PAGE_NUMBER_RE = re.compile(
+    r'^[\s\-–—]*\d+[\s\-–—]*$'
+    r'|^第\s*\d+\s*页$'
+    r'|^Page\s+\d+\s*$',
+    re.IGNORECASE,
+)
+
+
+def clean_document_text(text: str) -> str:
+    """
+    清洗用户上传文档的提取文本（PDF/Word/Excel/PPT 等）。
+    去除文档提取过程中的残留噪声（页码、重复页眉页脚、单字符噪声等），
+    保留章节标题等短行内容，不会误删网页特有的导航菜单或爬虫元数据。
+    """
+    if not text:
+        return ""
+
+    lines = text.split('\n')
+    cleaned_lines: List[str] = []
+    prev_line = ""
+
+    for line in lines:
+        stripped = line.strip()
+
+        if not stripped:
+            if cleaned_lines and cleaned_lines[-1] != '':
+                cleaned_lines.append('')
+            continue
+
+        # 纯页码行（"- 1 -"、"第 3 页"、"Page 5"）
+        if _PAGE_NUMBER_RE.match(stripped):
+            continue
+
+        # 单个非字母数字字符（纯标点/符号噪声）
+        if len(stripped) == 1 and not stripped.isalnum():
+            continue
+
+        # 连续重复短行（PDF 提取的重复页眉/页脚）
+        if stripped == prev_line and len(stripped) <= 50:
+            continue
+
+        prev_line = stripped
+        cleaned_lines.append(stripped)
+
+    # 去重复段落（相同内容只保留第一次出现）
+    seen: set = set()
+    deduped: List[str] = []
+    for line in cleaned_lines:
+        if line == '' or line not in seen:
+            deduped.append(line)
+            if line:
+                seen.add(line)
+
+    result = '\n'.join(deduped).strip()
+    result = re.sub(r'\n{3,}', '\n\n', result)
+
+    if text and result:
+        ratio = len(result) / len(text)
+        logger.info(f"文档清洗: 原始 {len(text)} 字符 → 清洗后 {len(result)} 字符 (保留 {ratio:.0%})")
+
+    return result
+
+
 def is_worth_indexing(text: str, min_length: int = 150) -> bool:
     """判断清洗后的文本是否值得入库（有意义字符占比需 > 60%）"""
     if not text or len(text.strip()) < min_length:

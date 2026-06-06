@@ -3,7 +3,7 @@
 import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElInput, ElIcon, ElSlider, ElDrawer } from 'element-plus';
-import { Promotion, DocumentCopy, ArrowDown, UploadFilled, Close, Plus, Setting, CopyDocument, ChatRound, ArrowLeft } from '@element-plus/icons-vue';
+import { Promotion, DocumentCopy, ArrowDown, ArrowUp, UploadFilled, Close, Plus, Setting, CopyDocument, ChatRound, ArrowLeft } from '@element-plus/icons-vue';
 import type { ChatMessage, QuoteInfo } from '../types/chat';
 import { getMessages, rechat, setChatHistory } from '../api/chat';
 import { getCurrentTime, getCurrentStatus } from '../utils/common';
@@ -117,6 +117,15 @@ const fileInputRef = ref<HTMLInputElement | null>(null);
 const hasInput = computed(() => userInput.value.trim() !== '' || selectedFiles.value.length > 0);
 const messageAreaRef = ref<HTMLElement | null>(null);
 
+const expandedRetrieval = ref<Record<number, boolean>>({});
+const toggleRetrieval = (index: number) => {
+  expandedRetrieval.value[index] = !expandedRetrieval.value[index];
+};
+const expandedStepDetail = ref<Record<string, boolean>>({});
+const toggleStepDetail = (msgIndex: number, stepIndex: number) => {
+  const key = `${msgIndex}-${stepIndex}`;
+  expandedStepDetail.value[key] = !expandedStepDetail.value[key];
+};
 const expandedSources = ref<number[]>([]);
 const expandedSourceContents = ref<string[]>([]);
 const toggleSources = (index: number) => {
@@ -445,7 +454,35 @@ const loadDate = async () => {
     const conversaton = (await getMessages(formData));
     conversationInfo.value = conversaton.conversation_info;
     const ori_messages = conversaton.history;
-    messages.value = ori_messages.messages.sort((a: ChatMessage, b: ChatMessage) => new Date(a.create_at).getTime() - new Date(b.create_at).getTime());
+    messages.value = ori_messages.messages
+      .sort((a: ChatMessage, b: ChatMessage) => new Date(a.create_at).getTime() - new Date(b.create_at).getTime())
+      .map((msg: ChatMessage) => {
+        // 从历史 metadata 中恢复检索思考过程
+        if (msg.role === 'assistant' && msg.toolCalls && !msg.retrievalProcess) {
+          const ksTool = (msg.toolCalls as any[]).find((t: any) => t.tool === 'knowledge_search');
+          if (ksTool) {
+            msg.retrievalProcess = [];
+            msg.retrievalProcess.push({
+              step: 'query_rewrite',
+              original_query: String(ksTool.args?.query || ''),
+              retrieval_query: String(ksTool.args?.query || ''),
+              is_reformulated: false,
+            });
+            if (ksTool.result) {
+              msg.retrievalProcess.push({
+                step: 'retrieval_complete',
+                total_results: ksTool.result.count ?? 0,
+                avg_similarity: ksTool.result.avg_similarity ?? 0,
+                used_knowledge_base: (ksTool.result.count ?? 0) > 0,
+                vector_db_ids: ksTool.result.queried_vector_db_ids ?? ksTool.result.vector_db_ids ?? [],
+                retrieval_layers: [],
+                fallback_used: false,
+              });
+            }
+          }
+        }
+        return msg;
+      });
     if (isBotMode.value) botConversationId.value = conversationId.value;
   }
   scrollToBottom();
@@ -591,43 +628,124 @@ const scrollToBottom = () => {
                     命中禁止话题：{{ (message as Record<string, unknown>).forbidden_topic_hit }}
                   </div>
 
-                  <!-- Agent 思考过程 -->
-                  <div class="agent-process" v-if="message.toolCalls && message.toolCalls.length > 0">
+                  <!-- Agent 思考过程（仅在没有检索过程时显示，避免重复） -->
+                  <div class="agent-process" v-if="message.toolCalls && message.toolCalls.length > 0 && !(message.retrievalProcess && message.retrievalProcess.length > 0)">
                     <div class="agent-process-header">
                       <span class="agent-process-icon">{{ getStateIcon(message.agentState) }}</span>
                       <span class="agent-process-label">{{ message.agentStateLabel || 'Agent 推理过程' }}</span>
                     </div>
                     <div class="agent-steps">
-                      <template v-for="(tc, ti) in message.toolCalls" :key="ti">
-                        <div class="agent-thinking" v-if="tc.thinkingBefore && tc.iteration && tc.iteration > 1">
-                          <span class="thinking-icon">💭</span>
-                          <span class="thinking-label">换词重搜</span>
-                          <span class="thinking-text">{{ tc.thinkingBefore.slice(0, 150) }}</span>
+                      <div class="agent-step" v-for="(tc, ti) in message.toolCalls" :key="ti"
+                           :class="{ 'is-calling': tc.status === 'calling', 'is-error': tc.status === 'error' }">
+                        <div class="agent-step-header">
+                          <span class="agent-step-icon">{{ tc.status === 'calling' ? '⏳' : tc.status === 'error' ? '❌' : '✅' }}</span>
+                          <span class="agent-step-tool">{{ getToolLabel(tc.tool) }}</span>
+                          <span v-if="tc.latencyMs" class="agent-step-time">{{ tc.latencyMs }}ms</span>
                         </div>
-                        <div class="agent-step"
-                             :class="{ 'is-calling': tc.status === 'calling', 'is-error': tc.status === 'error', 'is-retry': tc.iteration && tc.iteration > 1 }">
-                          <div class="agent-step-header">
-                            <span class="agent-step-icon">{{ tc.status === 'calling' ? '⏳' : tc.status === 'error' ? '❌' : '✅' }}</span>
-                            <span class="agent-step-tool">{{ getToolLabel(tc.tool) }}</span>
-                            <span v-if="tc.iteration && tc.iteration > 1" class="agent-retry-badge">重试</span>
-                            <span v-if="tc.latencyMs" class="agent-step-time">{{ tc.latencyMs }}ms</span>
+                        <div class="agent-step-args" v-if="tc.args">
+                          <code>{{ JSON.stringify(tc.args).slice(0, 120) }}</code>
+                        </div>
+                        <div class="agent-step-result" v-if="tc.result && tc.status === 'done'">
+                          <span v-if="tc.result.found === false" class="result-empty">未找到结果</span>
+                          <span v-else-if="tc.result.count" class="result-found">找到 {{ tc.result.count }} 条结果</span>
+                          <span v-else-if="tc.result.result !== undefined" class="result-value">= {{ tc.result.result }}</span>
+                          <span v-else class="result-ok">执行成功</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- 统一检索思考过程（合并 Agent tool call 信息） -->
+                  <div class="retrieval-process" v-if="message.retrievalProcess && message.retrievalProcess.length > 0">
+                    <div class="retrieval-process-header" @click="toggleRetrieval(index)">
+                      <span class="retrieval-process-icon">🔍</span>
+                      <span class="retrieval-process-label">思考过程</span>
+                      <span class="retrieval-process-time" v-if="message.trace">{{ message.trace.total_ms ? Math.round(message.trace.total_ms / 1000) + 's' : '' }}</span>
+                      <el-icon :size="12" class="retrieval-toggle">
+                        <ArrowDown v-if="!expandedRetrieval[index]" />
+                        <ArrowUp v-else />
+                      </el-icon>
+                    </div>
+                    <div class="retrieval-steps" v-show="expandedRetrieval[index] ?? true">
+                      <!-- 理解问题 -->
+                      <template v-for="(step, si) in message.retrievalProcess" :key="si">
+                        <div class="retrieval-step" v-if="step.step === 'query_rewrite'">
+                          <span class="step-icon">💬</span>
+                          <div class="step-body">
+                            <span class="step-title">理解问题</span>
+                            <span class="step-detail" v-if="step.is_reformulated">
+                              追问补全为：「{{ step.retrieval_query }}」
+                            </span>
+                            <span class="step-detail" v-else>
+                              检索查询：「{{ step.original_query }}」
+                            </span>
                           </div>
-                          <div class="agent-step-args" v-if="tc.args">
-                            <code>{{ JSON.stringify(tc.args).slice(0, 120) }}</code>
-                          </div>
-                          <div class="agent-step-result" v-if="tc.result && tc.status === 'done'">
-                            <span v-if="tc.result.found === false" class="result-empty">未找到结果</span>
-                            <span v-else-if="tc.result.count" class="result-found">找到 {{ tc.result.count }} 条结果</span>
-                            <span v-else-if="tc.result.result !== undefined" class="result-value">= {{ tc.result.result }}</span>
-                            <span v-else class="result-ok">执行成功</span>
+                        </div>
+                        <!-- 知识库检索 + 可展开详情 -->
+                        <div class="retrieval-step" v-if="step.step === 'retrieval_complete'">
+                          <span class="step-icon">{{ step.used_knowledge_base ? '📚' : '📭' }}</span>
+                          <div class="step-body">
+                            <div class="step-title-row">
+                              <span class="step-title">知识库检索</span>
+                              <span class="step-time" v-if="message.toolCalls?.find(t => t.tool === 'knowledge_search')?.latencyMs">
+                                {{ (message.toolCalls!.find(t => t.tool === 'knowledge_search')!.latencyMs! / 1000).toFixed(1) }}s
+                              </span>
+                            </div>
+                            <span class="step-detail" v-if="step.used_knowledge_base">
+                              搜索了 {{ (step.vector_db_ids as number[] || []).length }} 个知识库，
+                              找到 {{ step.total_results }} 条相关内容，
+                              平均相似度 {{ ((step.avg_similarity as number || 0) * 100).toFixed(0) }}%
+                            </span>
+                            <span class="step-detail" v-else>未匹配到相关知识库内容</span>
+                            <!-- 查看详情按钮 + 来源分数明细 -->
+                            <div v-if="step.used_knowledge_base && message.toolCalls?.find(t => t.tool === 'knowledge_search')?.result?.sources">
+                              <button class="detail-toggle" @click.stop="toggleStepDetail(index, si)">
+                                {{ expandedStepDetail[`${index}-${si}`] ? '收起详情' : '查看详情' }}
+                                <el-icon :size="10"><ArrowDown v-if="!expandedStepDetail[`${index}-${si}`]" /><ArrowUp v-else /></el-icon>
+                              </button>
+                              <div class="step-sources-detail" v-if="expandedStepDetail[`${index}-${si}`]">
+                                <div class="source-score-row" v-for="(src, srcIdx) in (message.toolCalls!.find(t => t.tool === 'knowledge_search')!.result as Record<string,unknown>).sources as any[]" :key="srcIdx">
+                                  <span class="source-rank">#{{ src.index || srcIdx + 1 }}</span>
+                                  <span class="source-name">{{ (src.source || '').replace(/^[0-9a-f]{32}_/, '') }}</span>
+                                  <div class="source-scores">
+                                    <span class="score-tag score-vector">语义 {{ ((src.vector_score || 0) * 100).toFixed(0) }}%</span>
+                                    <span class="score-tag score-bm25">关键词 {{ ((src.bm25_score || 0) * 100).toFixed(0) }}%</span>
+                                    <span class="score-tag score-sim">相似度 {{ ((src.similarity || 0) * 100).toFixed(0) }}%</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       </template>
+                      <!-- 精排筛选 -->
+                      <div class="retrieval-step" v-if="message.sources && message.sources.length > 0 && message.sources.some(s => s.retrieval_method?.includes('cross_encoder'))">
+                        <span class="step-icon">🎯</span>
+                        <div class="step-body">
+                          <span class="step-title">精排筛选</span>
+                          <span class="step-detail">Cross-Encoder 深度语义精排，筛选出 {{ message.sources.length }} 条最相关结果</span>
+                        </div>
+                      </div>
+                      <!-- 生成回答 -->
+                      <div class="retrieval-step" v-if="message.content || message.isStreaming">
+                        <span class="step-icon">✍️</span>
+                        <div class="step-body">
+                          <div class="step-title-row">
+                            <span class="step-title">{{ message.isStreaming ? '正在生成回答...' : '生成回答' }}</span>
+                            <span class="step-badge" v-if="message.grounded_level" :class="'confidence-' + ({高:'high',中:'medium',低:'low',不足:'weak'}[message.grounded_level] || 'low')">
+                              可信度：{{ message.grounded_level }}
+                            </span>
+                          </div>
+                          <span class="step-detail" v-if="message.trace && !message.isStreaming">
+                            {{ message.trace.tokens ? message.trace.tokens + ' tokens' : '' }}
+                          </span>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
                   <!-- 流式打字指示器 -->
-                  <div class="streaming-indicator" v-if="message.isStreaming && !message.content && (!message.toolCalls || message.toolCalls.length === 0)">
+                  <div class="streaming-indicator" v-if="message.isStreaming && !message.content && (!message.toolCalls || message.toolCalls.length === 0) && (!message.retrievalProcess || message.retrievalProcess.length === 0)">
                     <span class="dot-typing">
                       <span></span><span></span><span></span>
                     </span>
@@ -956,6 +1074,72 @@ const scrollToBottom = () => {
 .action-tip { font-size: 11px; color: #10b981; font-weight: 500; }
 .msg-system { text-align: center; font-size: 12px; color: #94a3b8; padding: 8px 0; }
 
+/* ===== Retrieval Process Thinking ===== */
+.retrieval-process {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  background: linear-gradient(135deg, #eff6ff 0%, #f0f4ff 100%);
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+}
+.retrieval-process-header {
+  display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+}
+.retrieval-process-icon { font-size: 14px; }
+.retrieval-process-label { font-size: 12px; font-weight: 600; color: #1e40af; flex: 1; }
+.retrieval-toggle { color: #93a3b8; transition: transform 0.2s; }
+.retrieval-steps {
+  display: flex; flex-direction: column; gap: 2px; margin-top: 10px;
+  padding-left: 4px; border-left: 2px solid #bfdbfe;
+}
+.retrieval-step {
+  display: flex; align-items: flex-start; gap: 8px; padding: 4px 0 4px 10px;
+  animation: fadeSlideIn 0.3s ease;
+}
+.retrieval-step .step-icon { font-size: 13px; flex-shrink: 0; margin-top: 1px; }
+.retrieval-step .step-body { display: flex; flex-direction: column; gap: 2px; }
+.retrieval-step .step-title { font-size: 12px; font-weight: 600; color: #334155; }
+.retrieval-step .step-detail { font-size: 11px; color: #64748b; line-height: 1.4; }
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateX(-6px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.retrieval-process-time { font-size: 11px; color: #94a3b8; margin-right: 4px; }
+.step-title-row { display: flex; align-items: center; gap: 8px; }
+.step-time { font-size: 10px; color: #94a3b8; }
+.step-badge {
+  font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 500;
+}
+.step-badge.confidence-high { background: #dcfce7; color: #166534; }
+.step-badge.confidence-medium { background: #fef3c7; color: #92400e; }
+.step-badge.confidence-low { background: #fee2e2; color: #991b1b; }
+.step-badge.confidence-weak { background: #f1f5f9; color: #64748b; }
+.detail-toggle {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; color: #3b82f6; cursor: pointer;
+  background: none; border: none; padding: 2px 0; margin-top: 4px;
+}
+.detail-toggle:hover { color: #1d4ed8; }
+.step-sources-detail {
+  margin-top: 6px; padding: 8px 10px;
+  background: #f8fafc; border-radius: 6px; border: 1px solid #e2e8f0;
+}
+.source-score-row {
+  display: flex; align-items: center; gap: 8px; padding: 4px 0;
+  border-bottom: 1px solid #f1f5f9; font-size: 11px;
+}
+.source-score-row:last-child { border-bottom: none; }
+.source-rank { color: #64748b; font-weight: 600; min-width: 20px; }
+.source-name { flex: 1; color: #334155; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+.source-scores { display: flex; gap: 4px; flex-shrink: 0; }
+.score-tag {
+  font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: 500;
+}
+.score-vector { background: #ede9fe; color: #5b21b6; }
+.score-bm25 { background: #dbeafe; color: #1e40af; }
+.score-sim { background: #d1fae5; color: #065f46; }
+
 /* ===== Agent Process Visualization ===== */
 .agent-process {
   margin-bottom: 12px;
@@ -988,12 +1172,6 @@ const scrollToBottom = () => {
 .result-empty { color: #94a3b8; }
 .result-value { color: #6366f1; font-weight: 600; font-family: monospace; }
 .result-ok { color: #059669; }
-.agent-step.is-retry { border-color: #bfdbfe; background: #eff6ff; }
-.agent-retry-badge { font-size: 10px; color: #2563eb; background: #dbeafe; padding: 1px 6px; border-radius: 9px; font-weight: 600; }
-.agent-thinking { display: flex; align-items: flex-start; gap: 6px; padding: 6px 10px; background: #fefce8; border-left: 3px solid #facc15; border-radius: 4px; }
-.thinking-icon { font-size: 12px; flex-shrink: 0; margin-top: 1px; }
-.thinking-label { font-size: 11px; font-weight: 600; color: #a16207; white-space: nowrap; }
-.thinking-text { font-size: 11px; color: #713f12; line-height: 1.4; }
 
 /* ===== Streaming Indicator ===== */
 .streaming-indicator { display: flex; align-items: center; gap: 8px; padding: 4px 0; }

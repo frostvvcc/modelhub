@@ -80,23 +80,22 @@ export const useChatStore = defineStore('chat', () => {
       messages.value[msgIndex].agentState = state
       messages.value[msgIndex].agentStateLabel = label
     },
-    onThinking(content, iteration?) {
+    onThinking(content) {
       messages.value[msgIndex].thinkingContent = (messages.value[msgIndex].thinkingContent || '') + content
-      if (iteration !== undefined) {
-        (messages.value[msgIndex] as any)._pendingThinkingIteration = iteration
-        ;(messages.value[msgIndex] as any)._pendingThinking = content
-      }
     },
-    onToolCall(tool, args, callId, iteration?) {
+    onToolCall(tool, args, callId) {
       if (!messages.value[msgIndex].toolCalls) messages.value[msgIndex].toolCalls = []
-      const pending = (messages.value[msgIndex] as any)._pendingThinking as string | undefined
-      const pendingIter = (messages.value[msgIndex] as any)._pendingThinkingIteration as number | undefined
-      const thinkingBefore = (pendingIter !== undefined && iteration !== undefined && pendingIter === iteration) ? pending : undefined
-      if (thinkingBefore) {
-        delete (messages.value[msgIndex] as any)._pendingThinking
-        delete (messages.value[msgIndex] as any)._pendingThinkingIteration
+      messages.value[msgIndex].toolCalls!.push({ tool, args, callId, status: 'calling' } as ToolCallRecord)
+      if (tool === 'knowledge_search') {
+        if (!messages.value[msgIndex].retrievalProcess) messages.value[msgIndex].retrievalProcess = []
+        messages.value[msgIndex].retrievalProcess!.push({
+          step: 'query_rewrite',
+          original_query: String((args as Record<string, unknown>).query || ''),
+          retrieval_query: String((args as Record<string, unknown>).query || ''),
+          is_reformulated: false,
+        })
+        triggerRender()
       }
-      messages.value[msgIndex].toolCalls!.push({ tool, args, callId, status: 'calling', iteration, thinkingBefore } as ToolCallRecord)
     },
     onToolResult(tool, result, callId, latencyMs) {
       const tc = messages.value[msgIndex].toolCalls?.find(t => t.callId === callId)
@@ -104,6 +103,20 @@ export const useChatStore = defineStore('chat', () => {
         tc.result = result
         tc.latencyMs = latencyMs
         tc.status = result?.error ? 'error' : 'done'
+      }
+      if (tool === 'knowledge_search' && result) {
+        if (!messages.value[msgIndex].retrievalProcess) messages.value[msgIndex].retrievalProcess = []
+        const r = result as Record<string, unknown>
+        messages.value[msgIndex].retrievalProcess!.push({
+          step: 'retrieval_complete',
+          total_results: (r.count ?? r.total_results ?? 0) as number,
+          avg_similarity: (r.avg_similarity ?? 0) as number,
+          used_knowledge_base: ((r.count ?? r.total_results ?? 0) as number) > 0,
+          vector_db_ids: (r.queried_vector_db_ids ?? r.vector_db_ids ?? []) as number[],
+          retrieval_layers: (r.retrieval_layers ?? []) as string[],
+          fallback_used: false,
+        })
+        triggerRender()
       }
     },
     onSources(sources) {
@@ -138,6 +151,11 @@ export const useChatStore = defineStore('chat', () => {
           config_name: configName.value,
         })
       }
+    },
+    onRetrievalInfo(info) {
+      if (!messages.value[msgIndex].retrievalProcess) messages.value[msgIndex].retrievalProcess = []
+      messages.value[msgIndex].retrievalProcess!.push(info as any)
+      triggerRender()
     },
     onTrace(trace) {
       messages.value[msgIndex].trace = trace

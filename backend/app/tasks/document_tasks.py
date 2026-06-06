@@ -46,7 +46,7 @@ def process_document_task(
 
         from app.utils.optimized_chromadb import get_chromadb_client
         from app.utils.EmbbedingModel import ChatEmbeddings
-        from app.services.rag.document_parser import extract_text
+        from app.services.rag.document_parser import extract_text, clean_web_text, clean_document_text, is_worth_indexing, is_quality_chunk
         from app.services.rag.chunking import split_text_into_chunks, split_parent_child, ChunkStrategy
         from app.config import settings
         import os
@@ -59,6 +59,14 @@ def process_document_task(
         text_content = extract_text(file_path)
         if not text_content or not text_content.strip():
             raise RuntimeError(f"文件内容为空: {os.path.basename(file_path)}")
+
+        source_ext = os.path.splitext(file_path)[1].lower()
+        if source_ext == '.txt':
+            text_content = clean_web_text(text_content)
+        else:
+            text_content = clean_document_text(text_content)
+        if not is_worth_indexing(text_content):
+            raise RuntimeError(f"文件清洗后有效内容不足: {os.path.basename(file_path)}")
 
         self.update_state(state="PROGRESS", meta={"progress": 20, "step": "chunking"})
 
@@ -97,7 +105,7 @@ def process_document_task(
                     "source": os.path.basename(file_path),
                     "chunk_id": i,
                     "total_chunks": total,
-                    "document_id": document_id,
+                    "document_id": str(document_id),
                     "chunk_strategy": "parent_child",
                     "parent_content": pc.parent_content,
                     "parent_index": pc.parent_index,
@@ -123,6 +131,12 @@ def process_document_task(
             })
         else:
             chunks = split_text_into_chunks(text_content, strategy=strategy, chunk_size=safe_chunk_size, overlap=safe_overlap)
+            original_count = len(chunks)
+            chunks = [c for c in chunks if is_quality_chunk(c)]
+            if len(chunks) < original_count:
+                logger.info(f"[Celery] Chunk 质量过滤: {original_count} → {len(chunks)}")
+            if not chunks:
+                raise ValueError("文档分块后无有效内容（全部被质量过滤器拦截）")
             total = len(chunks)
 
             self.update_state(state="PROGRESS", meta={"progress": 30, "step": "embedding", "total_chunks": total})
@@ -136,7 +150,7 @@ def process_document_task(
                     "source": os.path.basename(file_path),
                     "chunk_id": i,
                     "total_chunks": total,
-                    "document_id": document_id,
+                    "document_id": str(document_id),
                     "chunk_strategy": strategy.value,
                 }
                 if folder_hierarchy:

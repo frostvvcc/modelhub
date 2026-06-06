@@ -29,8 +29,6 @@ export interface ToolCallRecord {
   callId: string;
   latencyMs?: number;
   status: 'calling' | 'done' | 'error';
-  iteration?: number;
-  thinkingBefore?: string;
 }
 
 /** Agent Trace Span */
@@ -54,6 +52,12 @@ export interface TraceInfo {
   llm_calls: number;
   tool_calls: number;
   spans: TraceSpan[];
+}
+
+/** 检索过程步骤 */
+export interface RetrievalStep {
+  step: string;
+  [key: string]: unknown;
 }
 
 /** 记忆管理统计 */
@@ -91,6 +95,8 @@ export class ChatMessage {
     filenames: string[];
     errors?: string[];
   } | null;
+  /** 检索过程（展示给用户的思考步骤） */
+  retrievalProcess?: RetrievalStep[];
   /** Agent 相关字段 */
   isStreaming?: boolean;
   agentState?: string;

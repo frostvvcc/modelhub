@@ -358,13 +358,20 @@ class AsyncVectorService:
                 else:
                     raise RuntimeError(f"OCR识别失败，无法提取图片文字: {file_path}")
 
-            from app.services.rag.document_parser import extract_text, clean_web_text, is_worth_indexing
+            from app.services.rag.document_parser import extract_text, clean_web_text, clean_document_text, is_worth_indexing
             text_content = extract_text(actual_file_path)
 
             if not text_content or not text_content.strip():
                 raise RuntimeError(f"文件内容为空，无法解析文件: {os.path.basename(file_path)}")
 
-            text_content = clean_web_text(text_content)
+            # 根据源文件类型选择清洗策略：
+            # .txt 文件多为爬虫输出 → 用网页清洗（去导航/元数据/版权）
+            # 其他格式为用户上传 → 用文档清洗（去页码/重复页眉/噪声符号）
+            source_ext = os.path.splitext(file_path)[1].lower()
+            if source_ext == '.txt':
+                text_content = clean_web_text(text_content)
+            else:
+                text_content = clean_document_text(text_content)
             if not is_worth_indexing(text_content):
                 raise RuntimeError(f"文件清洗后有效内容不足，跳过入库: {os.path.basename(file_path)}")
 
@@ -1818,21 +1825,18 @@ class AsyncVectorService:
         vector_db: VectorDb,
         layer: str,
         message: str,
-        n_results: int = 5,
-        use_rewrite: Optional[bool] = None,
+        n_results: int = 5
     ) -> Dict[str, Any]:
         from app.services.rag.retrieval import VectorRetriever
 
         if not vector_db:
             return AsyncVectorService._empty_rag_result()
 
-        rewrite = use_rewrite if use_rewrite is not None else RAG_USE_REWRITE
-
         try:
             if RAG_USE_ENHANCED:
                 rag_results = await VectorRetriever.enhanced_query(
                     vector_db.id, message, n_results=n_results,
-                    use_rewrite=rewrite,
+                    use_rewrite=RAG_USE_REWRITE,
                     use_rerank=RAG_USE_RERANK,
                     use_hyde=RAG_USE_HYDE,
                 )
@@ -1860,7 +1864,6 @@ class AsyncVectorService:
         message: str,
         user_id: Optional[int] = None,
         extra_vector_db_ids: Optional[List[int]] = None,
-        use_rewrite: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         根据模型配置查询向量数据库（异步）。
@@ -1893,7 +1896,7 @@ class AsyncVectorService:
                 if extra_vector_db_ids:
                     vdb = await AsyncVectorMapper.get_vector_db(session, extra_vector_db_ids[0])
                     return await AsyncVectorService._query_single_vector_db_layer(
-                        vdb, "user_selected", message, n_results=3, use_rewrite=use_rewrite,
+                        vdb, "user_selected", message, n_results=3,
                     ) if vdb else AsyncVectorService._empty_rag_result()
                 return AsyncVectorService._empty_rag_result()
 
@@ -1917,7 +1920,6 @@ class AsyncVectorService:
                     primary_layer,
                     message,
                     n_results=3,
-                    use_rewrite=use_rewrite,
                 )
                 fallback_candidates = candidates[1:]
                 if primary_result["used_knowledge_base"] and primary_result["avg_similarity"] >= LAYERED_RAG_FALLBACK_THRESHOLD:
@@ -1931,9 +1933,7 @@ class AsyncVectorService:
             fallback_results = []
             if fallback_candidates:
                 fallback_results = await asyncio.gather(*[
-                    AsyncVectorService._query_single_vector_db_layer(
-                        vector_db, layer, message, n_results=3, use_rewrite=use_rewrite,
-                    )
+                    AsyncVectorService._query_single_vector_db_layer(vector_db, layer, message, n_results=3)
                     for vector_db, layer in fallback_candidates
                 ])
 

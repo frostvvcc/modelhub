@@ -203,9 +203,7 @@ class AgentEngine:
                 })
 
                 if message.content:
-                    yield AgentEvent(type="thinking", data={
-                        "content": message.content, "iteration": iteration,
-                    })
+                    yield AgentEvent(type="thinking", data={"content": message.content})
 
                 # 预解析所有 tool_call 参数
                 parsed_calls = []
@@ -218,7 +216,6 @@ class AgentEngine:
                     parsed_calls.append((tc, tool_name, tool_args))
                     yield AgentEvent(type="tool_call", data={
                         "tool": tool_name, "args": tool_args, "call_id": tc.id,
-                        "iteration": iteration,
                     })
 
                 # 并行执行所有工具调用（asyncio.gather），执行前按安全等级拦截
@@ -341,23 +338,7 @@ class AgentEngine:
                     if succeeded:
                         reflection_parts.append(f"成功获取结果的工具：{', '.join(succeeded)}。")
                     if no_result:
-                        retry_hint = (
-                            "改写策略："
-                            "使用同义词（如'查重'→'论文检测'）、"
-                            "上位词（如'毕设'→'毕业设计论文'）、"
-                            "或拆分为多个子问题分别检索。"
-                        )
-                        if iteration < self.max_iterations - 1:
-                            reflection_parts.append(
-                                f"以下工具未找到结果：{', '.join(no_result)}。\n"
-                                f"你必须立即用不同的关键词重新调用这些工具。{retry_hint}\n"
-                                "不允许在未重试至少一次的情况下直接回答「未找到」。"
-                            )
-                        else:
-                            reflection_parts.append(
-                                f"未找到相关信息的工具：{', '.join(no_result)}。"
-                                "已达最大重试次数，用你自己的知识回答，并说明这不是来自知识库。"
-                            )
+                        reflection_parts.append(f"未找到相关信息的工具：{', '.join(no_result)}。考虑改写查询关键词重试。")
                     if failed:
                         reflection_parts.append(f"执行失败的工具：{', '.join(failed)}。")
                     if blocked:

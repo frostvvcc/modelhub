@@ -9,6 +9,7 @@ Reranker 重排序模块
 Cross-Encoder 用 bge-reranker-v2-m3（多语言，MTEB 高排名），
 模型在首次调用时加载并缓存为单例。
 """
+import math
 import os
 import asyncio
 import json
@@ -75,12 +76,12 @@ async def cross_encoder_rerank(
     scores = await asyncio.to_thread(model.predict, pairs)
 
     scored = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
-    max_ce = max(abs(s) for s, _ in scored) if scored else 1.0
     reranked = []
     for score, result in scored[:top_k]:
         result.rerank_score = float(score)
-        result.score = float(score) / max_ce if max_ce > 0 else 0.0
-        result.similarity = max(0.0, min(1.0, result.score))
+        # Cross-Encoder 输出 logit，用 sigmoid 转换为真实相关性概率
+        result.similarity = 1.0 / (1.0 + math.exp(-float(score)))
+        result.score = result.similarity
         result.retrieval_method = "hybrid+cross_encoder"
         reranked.append(result)
 

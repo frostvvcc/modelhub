@@ -45,6 +45,16 @@ export function useStreamChat() {
     onToolCall(tool, args, callId) {
       if (!messages[msgIndex].toolCalls) messages[msgIndex].toolCalls = []
       messages[msgIndex].toolCalls!.push({ tool, args, callId, status: 'calling' })
+      if (tool === 'knowledge_search') {
+        if (!messages[msgIndex].retrievalProcess) messages[msgIndex].retrievalProcess = []
+        messages[msgIndex].retrievalProcess!.push({
+          step: 'query_rewrite',
+          original_query: String((args as Record<string, unknown>).query || ''),
+          retrieval_query: String((args as Record<string, unknown>).query || ''),
+          is_reformulated: false,
+        })
+        opts.triggerRender()
+      }
       opts.scrollToBottom()
     },
     onToolResult(tool, result, callId, latencyMs) {
@@ -53,6 +63,20 @@ export function useStreamChat() {
         tc.result = result
         tc.latencyMs = latencyMs
         tc.status = result?.error ? 'error' : 'done'
+      }
+      if (tool === 'knowledge_search' && result) {
+        if (!messages[msgIndex].retrievalProcess) messages[msgIndex].retrievalProcess = []
+        const r = result as Record<string, unknown>
+        messages[msgIndex].retrievalProcess!.push({
+          step: 'retrieval_complete',
+          total_results: r.count ?? r.total_results ?? 0,
+          avg_similarity: r.avg_similarity ?? 0,
+          used_knowledge_base: (r.count ?? r.total_results ?? 0) > 0,
+          vector_db_ids: (r.vector_db_ids ?? []) as number[],
+          retrieval_layers: (r.retrieval_layers ?? []) as string[],
+          fallback_used: false,
+        })
+        opts.triggerRender()
       }
     },
     onSources(sources) {
@@ -72,6 +96,11 @@ export function useStreamChat() {
       if (info.conversation_id) {
         opts.onConversationUpdate?.(String(info.conversation_id), info.conversation_name)
       }
+    },
+    onRetrievalInfo(info) {
+      if (!messages[msgIndex].retrievalProcess) messages[msgIndex].retrievalProcess = []
+      messages[msgIndex].retrievalProcess!.push(info as any)
+      opts.triggerRender()
     },
     onTrace(trace) {
       messages[msgIndex].trace = trace

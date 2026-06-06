@@ -315,9 +315,9 @@ class VectorRetriever:
         except Exception as es_err:
             logger.warning(f"Elasticsearch 检索失败，降级为内存 BM25: {es_err}")
 
-        # 降级：内存 BM25
+        # 降级：内存 BM25（使用 BM25L，IDF 始终非负，小语料库不会产生负分）
         try:
-            from rank_bm25 import BM25Okapi
+            from rank_bm25 import BM25L
         except ImportError:
             logger.warning("rank-bm25 未安装，BM25 检索不可用")
             return []
@@ -327,7 +327,7 @@ class VectorRetriever:
             logger.warning(f"BM25 内存索引为空: vector_db_id={vector_db_id}，BM25 检索不可用（ChromaDB 集合可能为空或不可达）")
             return []
 
-        bm25: BM25Okapi = index_data['bm25']
+        bm25 = index_data["bm25"]
         chunk_ids: List[str] = index_data['chunk_ids']
         contents: List[str] = index_data['contents']
         metas: List[Dict] = index_data['metas']
@@ -374,7 +374,7 @@ class VectorRetriever:
 
         # 从 ChromaDB 加载所有文本
         from app.utils.optimized_chromadb import get_chromadb_client
-        from rank_bm25 import BM25Okapi
+        from rank_bm25 import BM25L
 
         client = get_chromadb_client()
         if not client:
@@ -399,7 +399,7 @@ class VectorRetriever:
             return None
 
         tokenized = [VectorRetriever._tokenize(d) for d in docs]
-        bm25 = BM25Okapi(tokenized)
+        bm25 = BM25L(tokenized)
 
         index_data = {
             'bm25': bm25,
@@ -475,9 +475,9 @@ class VectorRetriever:
 
         fused.sort(key=lambda r: r.score, reverse=True)
 
-        # 质量过滤：sigmoid(0)=0.5，高于0.5说明BM25有实质匹配
-        filtered = [r for r in fused if r.bm25_score > 0.5 or r.vector_score >= 0.6]
-        return (filtered or fused[:1])[:n_results]
+        # 质量过滤：BM25 有实质匹配（sigmoid > 0.5）或向量相似度达标
+        filtered = [r for r in fused if r.bm25_score > 0.5 or r.vector_score >= 0.35]
+        return filtered[:n_results] if filtered else fused[:1]
 
     # ---- 增强检索：Query 改写 + HyDE + 混合检索 + Reranker 精排 ----
 
@@ -597,7 +597,7 @@ class VectorRetriever:
 
         pre_rerank_top1 = coarse_results[0].chunk_id if coarse_results else ""
 
-        if use_rerank and len(coarse_results) > n_results:
+        if use_rerank and len(coarse_results) > 1:
             try:
                 from app.services.rag.reranker import rerank
                 timer.start("rerank")

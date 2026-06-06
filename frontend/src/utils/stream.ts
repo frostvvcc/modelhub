@@ -31,13 +31,14 @@ export interface SSEEvent {
 export interface StreamCallbacks {
   onToken?: (content: string) => void
   onStateChange?: (state: string, label: string, meta?: StateChangePayload) => void
-  onThinking?: (content: string, iteration?: number) => void
-  onToolCall?: (tool: string, args: Record<string, unknown>, callId: string, iteration?: number) => void
+  onThinking?: (content: string) => void
+  onToolCall?: (tool: string, args: Record<string, unknown>, callId: string) => void
   onToolResult?: (tool: string, result: Record<string, unknown>, callId: string, latencyMs: number) => void
   onSources?: (sources: SourceCitation[]) => void
   onMetadata?: (metadata: Record<string, unknown>) => void
   onMemory?: (stats: MemoryStats) => void
   onConversation?: (info: { conversation_id: number | string; conversation_name?: string }) => void
+  onRetrievalInfo?: (info: Record<string, unknown>) => void
   onTrace?: (trace: TraceInfo) => void
   onError?: (message: string) => void
   onDone?: (data: DonePayload) => void
@@ -179,14 +180,13 @@ function dispatchEvent(event: SSEEvent, callbacks: StreamCallbacks): void {
       )
       break
     case 'thinking':
-      callbacks.onThinking?.(String(d.content ?? ''), d.iteration as number | undefined)
+      callbacks.onThinking?.(String(d.content ?? ''))
       break
     case 'tool_call':
       callbacks.onToolCall?.(
         String(d.tool ?? ''),
         (d.args ?? {}) as Record<string, unknown>,
         String(d.call_id ?? ''),
-        d.iteration as number | undefined,
       )
       break
     case 'tool_result':
@@ -208,6 +208,9 @@ function dispatchEvent(event: SSEEvent, callbacks: StreamCallbacks): void {
       break
     case 'conversation':
       callbacks.onConversation?.(d as unknown as { conversation_id: number | string; conversation_name?: string })
+      break
+    case 'retrieval_info':
+      callbacks.onRetrievalInfo?.(d)
       break
     case 'trace':
       callbacks.onTrace?.(d as unknown as TraceInfo)

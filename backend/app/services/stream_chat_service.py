@@ -53,8 +53,6 @@ def classify_intent(message: str) -> str:
     """
     意图分类器（纯规则，不消耗 token）。
     返回: 'chitchat' | 'knowledge' | 'tool'
-    - chitchat / knowledge → 走简单流式（省一次 LLM 决策调用）
-    - tool → 走 Agent（需要多工具协同）
     """
     text = message.strip()
     if len(text) <= 30 and _CHITCHAT_PATTERNS.match(text):
@@ -62,10 +60,6 @@ def classify_intent(message: str) -> str:
     if any(kw in text for kw in ("计算", "算一下", "等于多少", "求解", "加减乘除")):
         return "tool"
     if any(kw in text for kw in ("几点", "几号", "什么时候", "今天", "星期")):
-        return "tool"
-    has_db_kw = any(kw in text for kw in ("学院", "专业", "班级", "组织", "院系", "多少人"))
-    has_calc_kw = any(kw in text for kw in ("比例", "占比", "百分比", "统计", "算"))
-    if has_db_kw and has_calc_kw:
         return "tool"
     return "knowledge"
 
@@ -210,9 +204,6 @@ class StreamChatService:
             if intent == "chitchat":
                 use_agent = False
                 logger.info(f"🚦 [路由] 意图=chitchat，降级为 SimpleStream，省去 Agent 调用")
-            elif intent == "knowledge":
-                use_agent = False
-                logger.info(f"🚦 [路由] 意图=knowledge，使用 SimpleStream（RAG 管线已含 query 改写，无需 Agent 决策）")
 
             if use_agent:
                 # === Agent 模式 ===
@@ -251,6 +242,8 @@ class StreamChatService:
                 accumulated_content = ""
                 rag_result = None
                 trace_data = None
+                agent_tool_calls = []
+                agent_thinking = ""
 
                 async for event in engine.run(compressed, model, system_msgs):
                     yield _sse_event(event.type, event.data)
@@ -260,6 +253,19 @@ class StreamChatService:
                         rag_result = event.data.get("rag_result")
                     elif event.type == "trace":
                         trace_data = event.data
+                    elif event.type == "tool_call":
+                        agent_tool_calls.append({
+                            "tool": event.data.get("tool"),
+                            "args": event.data.get("args"),
+                            "call_id": event.data.get("call_id"),
+                        })
+                    elif event.type == "tool_result":
+                        tc = next((t for t in agent_tool_calls if t.get("call_id") == event.data.get("call_id")), None)
+                        if tc:
+                            tc["result"] = event.data.get("result")
+                            tc["latency_ms"] = event.data.get("latency_ms")
+                    elif event.type == "thinking":
+                        agent_thinking += event.data.get("content", "")
 
             else:
                 # === 简单流式模式 ===
@@ -275,12 +281,29 @@ class StreamChatService:
                     message, history_dicts,
                 )
 
+                yield _sse_event("retrieval_info", {
+                    "step": "query_rewrite",
+                    "original_query": message,
+                    "retrieval_query": retrieval_query,
+                    "is_reformulated": retrieval_query != message,
+                })
+
                 if model_config:
                     rag_result = await AsyncVectorService.query_vector_by_model(
                         session, model_config_id, retrieval_query,
                         user_id=user_id,
                         extra_vector_db_ids=all_extra_ids if all_extra_ids else None,
                     )
+
+                yield _sse_event("retrieval_info", {
+                    "step": "retrieval_complete",
+                    "total_results": (rag_result or {}).get("total_results", 0),
+                    "avg_similarity": round((rag_result or {}).get("avg_similarity", 0), 4),
+                    "used_knowledge_base": (rag_result or {}).get("used_knowledge_base", False),
+                    "vector_db_ids": (rag_result or {}).get("queried_vector_db_ids", []),
+                    "retrieval_layers": (rag_result or {}).get("retrieval_layers", []),
+                    "fallback_used": (rag_result or {}).get("fallback_used", False),
+                })
 
                 prompt_messages = []
                 enriched_sources = []
@@ -351,19 +374,25 @@ class StreamChatService:
                 }
             if trace_data:
                 assistant_metadata["trace"] = trace_data
+            if agent_tool_calls:
+                assistant_metadata["toolCalls"] = agent_tool_calls
+            if agent_thinking:
+                assistant_metadata["thinkingContent"] = agent_thinking
             if attachment_info and attachment_info.get("document_ids"):
                 assistant_metadata["attachment_info"] = attachment_info
 
-            await AsyncChatMapper.save_message(
-                session, conversation_id, "assistant", content,
-                metadata=assistant_metadata if assistant_metadata else None,
-            )
-
-            # 发送最终元数据
-            logger.info(f"📎 [sources] rag_result is None: {rag_result is None}, raw_sources count: {len(raw_sources)}, source_citations count: {len(source_citations)}")
-            if source_citations:
-                logger.info(f"📎 [sources] 第一条: content长度={len(source_citations[0].get('content',''))}, source={source_citations[0].get('source','')}")
+            # 先发 sources 事件给前端（不受数据库保存影响）
             yield _sse_event("sources", source_citations)
+
+            # 保存消息到数据库（float32 → float 防止 JSON 序列化失败）
+            safe_metadata = json.loads(json.dumps(assistant_metadata, ensure_ascii=False, default=str)) if assistant_metadata else None
+            try:
+                await AsyncChatMapper.save_message(
+                    session, conversation_id, "assistant", content,
+                    metadata=safe_metadata,
+                )
+            except Exception as save_err:
+                logger.warning(f"消息保存失败（不影响前端展示）: {save_err}")
             yield _sse_event("metadata", {
                 "grounded_ratio": round(grounded_ratio, 4),
                 "grounded_level": grounded_level,
@@ -448,6 +477,8 @@ class StreamChatService:
                 accumulated_content = ""
                 rag_result = None
                 trace_data = None
+                agent_tool_calls = []
+                agent_thinking = ""
 
                 async for event in engine.run(compressed, model, system_msgs):
                     yield _sse_event(event.type, event.data)
@@ -456,6 +487,19 @@ class StreamChatService:
                         rag_result = event.data.get("rag_result")
                     elif event.type == "trace":
                         trace_data = event.data
+                    elif event.type == "tool_call":
+                        agent_tool_calls.append({
+                            "tool": event.data.get("tool"),
+                            "args": event.data.get("args"),
+                            "call_id": event.data.get("call_id"),
+                        })
+                    elif event.type == "tool_result":
+                        tc = next((t for t in agent_tool_calls if t.get("call_id") == event.data.get("call_id")), None)
+                        if tc:
+                            tc["result"] = event.data.get("result")
+                            tc["latency_ms"] = event.data.get("latency_ms")
+                    elif event.type == "thinking":
+                        agent_thinking += event.data.get("content", "")
             else:
                 # 简单流式
                 rag_result = {"sources": [], "used_knowledge_base": False, "avg_similarity": 0.0}
@@ -539,19 +583,29 @@ class StreamChatService:
                 }
             if trace_data:
                 bot_metadata["trace"] = trace_data
+            if agent_tool_calls:
+                bot_metadata["toolCalls"] = agent_tool_calls
+            if agent_thinking:
+                bot_metadata["thinkingContent"] = agent_thinking
 
-            await AsyncChatMapper.save_message(
-                db, conv_id_int, "assistant", content,
-                metadata=bot_metadata if bot_metadata else None,
-            )
+            # 先发 sources 事件给前端（不受数据库保存影响）
+            yield _sse_event("sources", source_citations)
+
+            # 保存消息到数据库（float32 → 原生类型）
+            safe_bot_metadata = json.loads(json.dumps(bot_metadata, ensure_ascii=False, default=str)) if bot_metadata else None
+            try:
+                await AsyncChatMapper.save_message(
+                    db, conv_id_int, "assistant", content,
+                    metadata=safe_bot_metadata,
+                )
+            except Exception as save_err:
+                logger.warning(f"Bot 消息保存失败（不影响前端展示）: {save_err}")
 
             model_name = None
             if model_config:
                 await db.refresh(model_config, ["base_model"])
                 if model_config.base_model:
                     model_name = model_config.base_model.model_name
-
-            yield _sse_event("sources", source_citations)
             yield _sse_event("metadata", {
                 "grounded_ratio": round(grounded_ratio, 4),
                 "grounded_level": grounded_level,
