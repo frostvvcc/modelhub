@@ -109,6 +109,8 @@ class KnowledgeSearchTool(BaseTool):
                 "count": len(formatted),
                 "sources": formatted,
                 "avg_similarity": round(rag_result.get("avg_similarity", 0), 4),
+                "vector_db_ids": rag_result.get("vector_db_ids", []),
+                "queried_vector_db_ids": rag_result.get("queried_vector_db_ids", []),
                 "_raw_rag_result": rag_result,
             }
         except Exception as e:

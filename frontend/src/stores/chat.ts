@@ -112,8 +112,8 @@ export const useChatStore = defineStore('chat', () => {
           total_results: (r.count ?? r.total_results ?? 0) as number,
           avg_similarity: (r.avg_similarity ?? 0) as number,
           used_knowledge_base: ((r.count ?? r.total_results ?? 0) as number) > 0,
-          vector_db_ids: [] as number[],
-          retrieval_layers: [] as string[],
+          vector_db_ids: (r.queried_vector_db_ids ?? r.vector_db_ids ?? []) as number[],
+          retrieval_layers: (r.retrieval_layers ?? []) as string[],
           fallback_used: false,
         })
         triggerRender()
