@@ -566,17 +566,26 @@ const scrollToBottom = () => {
           <el-icon :size="15"><ArrowLeft /></el-icon>
         </button>
         <div class="header-info">
-          <span class="header-name" v-if="isBotMode && currentBot">{{ currentBot.name }}</span>
-          <span class="header-name" v-else-if="conversationInfo.name">{{ conversationInfo.name }}</span>
-          <span class="header-name" v-else>新对话</span>
-          <div class="header-tags">
-            <span class="header-model-tag">{{ currentConfigName }}</span>
-            <span v-if="useAgentMode" class="header-agent-tag">Agent</span>
-            <span v-if="selectedKbIds.length > 0 && !isBotMode" class="header-kb-tag">
-              <el-icon :size="10"><FolderOpened /></el-icon>
-              {{ selectedKbIds.length }} 个知识库
-            </span>
-          </div>
+          <template v-if="isBotMode && currentBot">
+            <span class="header-name">{{ currentBot.name }}</span>
+            <div class="header-tags">
+              <span class="header-bot-tag">助理</span>
+              <span class="header-model-tag">{{ currentConfigName }}</span>
+              <span v-if="useAgentMode" class="header-agent-tag">Agent</span>
+            </div>
+          </template>
+          <template v-else>
+            <span class="header-name" v-if="conversationInfo.name">{{ conversationInfo.name }}</span>
+            <span class="header-name" v-else>新对话</span>
+            <div class="header-tags">
+              <span class="header-model-tag">{{ currentConfigName }}</span>
+              <span v-if="useAgentMode" class="header-agent-tag">Agent</span>
+              <span v-if="selectedKbIds.length > 0" class="header-kb-tag">
+                <el-icon :size="10"><FolderOpened /></el-icon>
+                {{ selectedKbIds.length }} 个知识库
+              </span>
+            </div>
+          </template>
         </div>
       </div>
       <div class="chat-header-right">
@@ -1019,6 +1028,7 @@ const scrollToBottom = () => {
 .header-tags { display: flex; align-items: center; gap: 6px; }
 .header-model-tag { font-size: 11px; color: #6366f1; background: #eef2ff; padding: 1px 8px; border-radius: 4px; font-weight: 500; line-height: 1.5; }
 .header-agent-tag { font-size: 11px; color: #059669; background: #ecfdf5; padding: 1px 8px; border-radius: 4px; font-weight: 600; line-height: 1.5; }
+.header-bot-tag { font-size: 11px; color: #7c3aed; background: #f5f3ff; padding: 1px 8px; border-radius: 4px; font-weight: 600; line-height: 1.5; }
 .header-kb-tag { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: #64748b; line-height: 1.5; }
 .chat-header-right { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .header-icon-btn {
