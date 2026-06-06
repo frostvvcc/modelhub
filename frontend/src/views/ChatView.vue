@@ -598,23 +598,31 @@ const scrollToBottom = () => {
                       <span class="agent-process-label">{{ message.agentStateLabel || 'Agent 推理过程' }}</span>
                     </div>
                     <div class="agent-steps">
-                      <div class="agent-step" v-for="(tc, ti) in message.toolCalls" :key="ti"
-                           :class="{ 'is-calling': tc.status === 'calling', 'is-error': tc.status === 'error' }">
-                        <div class="agent-step-header">
-                          <span class="agent-step-icon">{{ tc.status === 'calling' ? '⏳' : tc.status === 'error' ? '❌' : '✅' }}</span>
-                          <span class="agent-step-tool">{{ getToolLabel(tc.tool) }}</span>
-                          <span v-if="tc.latencyMs" class="agent-step-time">{{ tc.latencyMs }}ms</span>
+                      <template v-for="(tc, ti) in message.toolCalls" :key="ti">
+                        <div class="agent-thinking" v-if="tc.thinkingBefore && tc.iteration && tc.iteration > 1">
+                          <span class="thinking-icon">💭</span>
+                          <span class="thinking-label">换词重搜</span>
+                          <span class="thinking-text">{{ tc.thinkingBefore.slice(0, 150) }}</span>
                         </div>
-                        <div class="agent-step-args" v-if="tc.args">
-                          <code>{{ JSON.stringify(tc.args).slice(0, 120) }}</code>
+                        <div class="agent-step"
+                             :class="{ 'is-calling': tc.status === 'calling', 'is-error': tc.status === 'error', 'is-retry': tc.iteration && tc.iteration > 1 }">
+                          <div class="agent-step-header">
+                            <span class="agent-step-icon">{{ tc.status === 'calling' ? '⏳' : tc.status === 'error' ? '❌' : '✅' }}</span>
+                            <span class="agent-step-tool">{{ getToolLabel(tc.tool) }}</span>
+                            <span v-if="tc.iteration && tc.iteration > 1" class="agent-retry-badge">重试</span>
+                            <span v-if="tc.latencyMs" class="agent-step-time">{{ tc.latencyMs }}ms</span>
+                          </div>
+                          <div class="agent-step-args" v-if="tc.args">
+                            <code>{{ JSON.stringify(tc.args).slice(0, 120) }}</code>
+                          </div>
+                          <div class="agent-step-result" v-if="tc.result && tc.status === 'done'">
+                            <span v-if="tc.result.found === false" class="result-empty">未找到结果</span>
+                            <span v-else-if="tc.result.count" class="result-found">找到 {{ tc.result.count }} 条结果</span>
+                            <span v-else-if="tc.result.result !== undefined" class="result-value">= {{ tc.result.result }}</span>
+                            <span v-else class="result-ok">执行成功</span>
+                          </div>
                         </div>
-                        <div class="agent-step-result" v-if="tc.result && tc.status === 'done'">
-                          <span v-if="tc.result.found === false" class="result-empty">未找到结果</span>
-                          <span v-else-if="tc.result.count" class="result-found">找到 {{ tc.result.count }} 条结果</span>
-                          <span v-else-if="tc.result.result !== undefined" class="result-value">= {{ tc.result.result }}</span>
-                          <span v-else class="result-ok">执行成功</span>
-                        </div>
-                      </div>
+                      </template>
                     </div>
                   </div>
 
@@ -980,6 +988,12 @@ const scrollToBottom = () => {
 .result-empty { color: #94a3b8; }
 .result-value { color: #6366f1; font-weight: 600; font-family: monospace; }
 .result-ok { color: #059669; }
+.agent-step.is-retry { border-color: #bfdbfe; background: #eff6ff; }
+.agent-retry-badge { font-size: 10px; color: #2563eb; background: #dbeafe; padding: 1px 6px; border-radius: 9px; font-weight: 600; }
+.agent-thinking { display: flex; align-items: flex-start; gap: 6px; padding: 6px 10px; background: #fefce8; border-left: 3px solid #facc15; border-radius: 4px; }
+.thinking-icon { font-size: 12px; flex-shrink: 0; margin-top: 1px; }
+.thinking-label { font-size: 11px; font-weight: 600; color: #a16207; white-space: nowrap; }
+.thinking-text { font-size: 11px; color: #713f12; line-height: 1.4; }
 
 /* ===== Streaming Indicator ===== */
 .streaming-indicator { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
