@@ -86,6 +86,16 @@ export const useChatStore = defineStore('chat', () => {
     onToolCall(tool, args, callId) {
       if (!messages.value[msgIndex].toolCalls) messages.value[msgIndex].toolCalls = []
       messages.value[msgIndex].toolCalls!.push({ tool, args, callId, status: 'calling' } as ToolCallRecord)
+      if (tool === 'knowledge_search') {
+        if (!messages.value[msgIndex].retrievalProcess) messages.value[msgIndex].retrievalProcess = []
+        messages.value[msgIndex].retrievalProcess!.push({
+          step: 'query_rewrite',
+          original_query: String((args as Record<string, unknown>).query || ''),
+          retrieval_query: String((args as Record<string, unknown>).query || ''),
+          is_reformulated: false,
+        })
+        triggerRender()
+      }
     },
     onToolResult(tool, result, callId, latencyMs) {
       const tc = messages.value[msgIndex].toolCalls?.find(t => t.callId === callId)
@@ -93,6 +103,20 @@ export const useChatStore = defineStore('chat', () => {
         tc.result = result
         tc.latencyMs = latencyMs
         tc.status = result?.error ? 'error' : 'done'
+      }
+      if (tool === 'knowledge_search' && result) {
+        if (!messages.value[msgIndex].retrievalProcess) messages.value[msgIndex].retrievalProcess = []
+        const r = result as Record<string, unknown>
+        messages.value[msgIndex].retrievalProcess!.push({
+          step: 'retrieval_complete',
+          total_results: (r.count ?? r.total_results ?? 0) as number,
+          avg_similarity: (r.avg_similarity ?? 0) as number,
+          used_knowledge_base: ((r.count ?? r.total_results ?? 0) as number) > 0,
+          vector_db_ids: [] as number[],
+          retrieval_layers: [] as string[],
+          fallback_used: false,
+        })
+        triggerRender()
       }
     },
     onSources(sources) {
@@ -127,6 +151,11 @@ export const useChatStore = defineStore('chat', () => {
           config_name: configName.value,
         })
       }
+    },
+    onRetrievalInfo(info) {
+      if (!messages.value[msgIndex].retrievalProcess) messages.value[msgIndex].retrievalProcess = []
+      messages.value[msgIndex].retrievalProcess!.push(info as any)
+      triggerRender()
     },
     onTrace(trace) {
       messages.value[msgIndex].trace = trace
