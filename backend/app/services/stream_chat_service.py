@@ -550,18 +550,24 @@ class StreamChatService:
             if trace_data:
                 bot_metadata["trace"] = trace_data
 
-            await AsyncChatMapper.save_message(
-                db, conv_id_int, "assistant", content,
-                metadata=bot_metadata if bot_metadata else None,
-            )
+            # 先发 sources 事件给前端（不受数据库保存影响）
+            yield _sse_event("sources", source_citations)
+
+            # 保存消息到数据库（float32 → 原生类型）
+            safe_bot_metadata = json.loads(json.dumps(bot_metadata, ensure_ascii=False, default=str)) if bot_metadata else None
+            try:
+                await AsyncChatMapper.save_message(
+                    db, conv_id_int, "assistant", content,
+                    metadata=safe_bot_metadata,
+                )
+            except Exception as save_err:
+                logger.warning(f"Bot 消息保存失败（不影响前端展示）: {save_err}")
 
             model_name = None
             if model_config:
                 await db.refresh(model_config, ["base_model"])
                 if model_config.base_model:
                     model_name = model_config.base_model.model_name
-
-            yield _sse_event("sources", source_citations)
             yield _sse_event("metadata", {
                 "grounded_ratio": round(grounded_ratio, 4),
                 "grounded_level": grounded_level,
