@@ -326,7 +326,8 @@ class AsyncChatService:
         user_id: int,
         model_config_id: Optional[int],
         message: str,
-        organization_id: Optional[int] = None
+        organization_id: Optional[int] = None,
+        bot_id: Optional[int] = None
     ) -> int:
         """
         创建对话（支持组织关联）
@@ -358,7 +359,8 @@ class AsyncChatService:
             
             conversation_id = await AsyncChatMapper.create_conversation(
                 session, user_id, name, model_config_id,
-                organization_id=organization_id, school_id=school_id
+                organization_id=organization_id, school_id=school_id,
+                bot_id=bot_id
             )
             logger.info(f"成功创建对话: conversation_id={conversation_id}")
             return conversation_id

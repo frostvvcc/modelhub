@@ -426,6 +426,7 @@ class StreamChatService:
         vector_db_ids: List[int],
         model_config_id: Optional[int],
         use_agent: bool = True,
+        bot_id: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
         """Bot 流式对话"""
         try:
@@ -442,9 +443,13 @@ class StreamChatService:
                     conv_id_int = None
 
             if not conv_id_int:
-                conv_id_int = await AsyncChatService.create_conversation(db, user.id, model_config_id, message)
+                conv_id_int = await AsyncChatService.create_conversation(db, user.id, model_config_id, message, bot_id=bot_id)
 
-            yield _sse_event("conversation", {"conversation_id": str(conv_id_int)})
+            _conv_info = await AsyncChatMapper.get_conversation_info(db, conv_id_int)
+            yield _sse_event("conversation", {
+                "conversation_id": str(conv_id_int),
+                "conversation_name": _conv_info.get("name", ""),
+            })
 
             await AsyncChatMapper.save_message(db, conv_id_int, "user", message)
 

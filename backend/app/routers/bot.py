@@ -162,6 +162,7 @@ async def bot_chat_stream(
                 vector_db_ids=bot.vector_db_ids or [],
                 model_config_id=bot.model_config_id,
                 use_agent=payload.use_agent,
+                bot_id=bot_id,
             ),
             media_type="text/event-stream",
             headers={

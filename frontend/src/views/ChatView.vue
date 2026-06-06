@@ -510,6 +510,13 @@ const loadDate = async () => {
         return msg;
       });
     if (isBotMode.value) botConversationId.value = conversationId.value;
+    const convBotId = (conversationInfo.value as any).bot_id;
+    if (convBotId && !currentBot.value) {
+      botId.value = convBotId;
+      try {
+        currentBot.value = await getBot(convBotId);
+      } catch { /* bot 可能已删除 */ }
+    }
   }
   scrollToBottom();
 };
@@ -566,26 +573,14 @@ const scrollToBottom = () => {
           <el-icon :size="15"><ArrowLeft /></el-icon>
         </button>
         <div class="header-info">
-          <template v-if="isBotMode && currentBot">
-            <span class="header-name">{{ currentBot.name }}</span>
-            <div class="header-tags">
-              <span class="header-bot-tag">助理</span>
-              <span class="header-model-tag">{{ currentConfigName }}</span>
-              <span v-if="useAgentMode" class="header-agent-tag">Agent</span>
-            </div>
-          </template>
-          <template v-else>
-            <span class="header-name" v-if="conversationInfo.name">{{ conversationInfo.name }}</span>
-            <span class="header-name" v-else>新对话</span>
-            <div class="header-tags">
-              <span class="header-model-tag">{{ currentConfigName }}</span>
-              <span v-if="useAgentMode" class="header-agent-tag">Agent</span>
-              <span v-if="selectedKbIds.length > 0" class="header-kb-tag">
-                <el-icon :size="10"><FolderOpened /></el-icon>
-                {{ selectedKbIds.length }} 个知识库
-              </span>
-            </div>
-          </template>
+          <span class="header-name" v-if="conversationInfo.name">{{ conversationInfo.name }}</span>
+          <span class="header-name" v-else-if="isBotMode && currentBot">{{ currentBot.name }}</span>
+          <span class="header-name" v-else>新对话</span>
+          <div class="header-tags">
+            <span v-if="isBotMode && currentBot" class="header-bot-tag">{{ currentBot.name }}</span>
+            <span class="header-model-tag">{{ currentConfigName }}</span>
+            <span v-if="useAgentMode" class="header-agent-tag">Agent</span>
+          </div>
         </div>
       </div>
       <div class="chat-header-right">

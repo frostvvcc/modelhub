@@ -34,7 +34,8 @@ class AsyncChatMapper:
         model_config_id: int,
         chat_history: int = 10,
         organization_id: Optional[int] = None,
-        school_id: Optional[int] = None
+        school_id: Optional[int] = None,
+        bot_id: Optional[int] = None
     ) -> int:
         """创建对话（支持组织关联）"""
         try:
@@ -44,7 +45,8 @@ class AsyncChatMapper:
                 model_config_id=model_config_id,
                 chat_history=chat_history,
                 organization_id=organization_id,
-                school_id=school_id
+                school_id=school_id,
+                bot_id=bot_id
             )
             conversation = await AsyncDB.create(session, conversation)
             await AsyncDB.commit(session)
@@ -121,6 +123,7 @@ class AsyncChatMapper:
                 "user_id": conversation.user_id,
                 "name": conversation.name,
                 "model_config_id": conversation.model_config_id,
+                "bot_id": getattr(conversation, "bot_id", None),
                 "chat_history": conversation.chat_history,
                 "type": 0,
                 "organization_id": conversation.organization_id,

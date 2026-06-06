@@ -9,6 +9,7 @@ class Conversation(Base):
     user_id = Column(Integer, ForeignKey('user.id'), nullable=False)
     name = Column(String(255), nullable=True)
     model_config_id = Column(Integer, ForeignKey('model_config.id'), nullable=False)
+    bot_id = Column(Integer, ForeignKey('bot.id'), nullable=True)
     chat_history = Column(Integer, default=20, nullable=False)
     organization_id = Column(Integer, ForeignKey('organization.id'), nullable=True, comment="所属组织ID")
     school_id = Column(Integer, ForeignKey('organization.id'), nullable=True, comment="所属学校ID")
