@@ -69,7 +69,14 @@ const router = createRouter({
       path: '/chat',
       name: 'chat',
       component: ChatView,
-      meta: { requiresAuth: true }
+      meta: { requiresAuth: true },
+      beforeEnter: (to, _from, next) => {
+        if (!to.query.bot_id && !to.query.conversation_id) {
+          next({ path: '/intro' })
+        } else {
+          next()
+        }
+      },
     },
     {
       path: '/bots',

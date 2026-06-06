@@ -2,7 +2,7 @@
 import NavBar from '@/components/NavBar.vue'
 import SideBar from '@/components/SideBar.vue'
 import { useUserStore } from '../stores/user'
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useThemeStore } from '../stores/theme'
 import { useRoute } from 'vue-router'
 import { ElButton } from 'element-plus'
@@ -15,6 +15,7 @@ const themeStore = useThemeStore()
 const route = useRoute()
 const isScrolled = ref(false)
 const isMobileSidebarOpen = ref(false)
+const isChatPage = computed(() => route.path === '/chat' || route.path.startsWith('/chat/'))
 
 const handleScroll = () => {
   isScrolled.value = window.scrollY > 10
@@ -64,22 +65,22 @@ watch(() => route.path, () => {
     </header>
 
     <!-- 主体布局 - 包含侧边栏和内容 -->
-    <div class="main-layout" :class="{ 'no-sidebar': !userStore.isAuthenticated }">
+    <div class="main-layout" :class="{ 'no-sidebar': !userStore.isAuthenticated || isChatPage }">
       <ElButton
-        v-if="userStore.isAuthenticated"
+        v-if="userStore.isAuthenticated && !isChatPage"
         class="mobile-sidebar-toggle"
         :icon="isMobileSidebarOpen ? Close : Menu"
         circle
         @click="isMobileSidebarOpen = !isMobileSidebarOpen"
       />
-      <!-- 左侧边栏 - 固定位置 -->
+      <!-- 左侧边栏 - 固定位置，对话页隐藏 -->
       <SideBar
-        v-if="userStore.isAuthenticated"
+        v-if="userStore.isAuthenticated && !isChatPage"
         class="sidebar"
         :class="{ 'mobile-open': isMobileSidebarOpen }"
       />
       <div
-        v-if="userStore.isAuthenticated && isMobileSidebarOpen"
+        v-if="userStore.isAuthenticated && !isChatPage && isMobileSidebarOpen"
         class="sidebar-backdrop"
         @click="isMobileSidebarOpen = false"
       />
@@ -201,6 +202,10 @@ watch(() => route.path, () => {
 .main-content {
   padding: 1.25rem 1.5rem;
   flex: 1;
+}
+
+.main-layout.no-sidebar .content-container {
+  width: 100%;
 }
 
 /* 响应式设计 */

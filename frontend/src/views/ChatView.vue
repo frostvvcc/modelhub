@@ -1,19 +1,20 @@
 <!-- src/views/ChatView.vue -->
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue';
+import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElInput, ElIcon, ElSlider, ElDrawer } from 'element-plus';
 import { Promotion, DocumentCopy, ArrowDown, UploadFilled, Close, Plus, Setting, CopyDocument, ChatRound, ArrowLeft } from '@element-plus/icons-vue';
-import type { Conversation, ChatMessage, QuoteInfo, ToolCallRecord } from '../types/chat';
-import { getMessages, chat, rechat, setChatHistory } from '../api/chat';
+import type { ChatMessage, QuoteInfo } from '../types/chat';
+import { getMessages, rechat, setChatHistory } from '../api/chat';
 import { getCurrentTime, getCurrentStatus } from '../utils/common';
 import { fetchOwnConfigs, getModelConfig, getModelConfigs } from '../api/model';
 import { fetchOwnVectors, DownloadFile } from '../api/vectorDb';
 import { Refresh, FolderOpened, Download } from '@element-plus/icons-vue';
 import { useUserStore } from '../stores/user';
 import type { VectorDbBase } from '../types/vectorDb';
-import { getBot, botChat, type BotResponse } from '../api/bot';
-import { streamChat, streamBotChat, type StreamCallbacks } from '../utils/stream';
+import { getBot } from '../api/bot';
+import { useChatStore } from '../stores/chat';
+import { storeToRefs } from 'pinia';
 
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -36,29 +37,16 @@ marked.setOptions({
 const route = useRoute();
 const router = useRouter();
 const userStore = useUserStore();
+const chatStore = useChatStore();
+const { messages, conversationId, modelConfigId, configName, conversationInfo, botId, currentBot, botConversationId, useAgentMode, isGenerating, isBotMode, renderKey } = storeToRefs(chatStore);
+const { stopGenerating } = chatStore;
 
-const configName = ref(route.query.config_name as string || '');
-const modelConfigId = ref(route.query.model_config_id as string || '');
-const conversationId = ref(route.query.conversation_id as string || '');
 const greetingTime = ref(getCurrentStatus());
-
-// Bot 模式
-const botId = ref(route.query.bot_id ? Number(route.query.bot_id) : 0);
-const currentBot = ref<BotResponse | null>(null);
-const isBotMode = computed(() => botId.value > 0 && !!currentBot.value);
-const botConversationId = ref<string | undefined>();
-
-const messages = ref<ChatMessage[]>([]);
 const allConfigs = ref<Record<string, unknown>[]>([]);
 const isConversationLocked = computed(() => !!conversationId.value);
 
 // 设置面板
 const settingsDrawerVisible = ref(false);
-// Agent 模式开关
-const useAgentMode = ref(true);
-// 流式中断控制
-const abortController = ref<AbortController | null>(null);
-const isGenerating = ref(false);
 
 const loadAllConfigs = async () => {
   const configs: Record<string, unknown>[] = [];
@@ -241,172 +229,33 @@ const ensureModelConfig = async (showMessage = true) => {
   return false;
 };
 
-// 流式渲染节流
-let renderTimer: ReturnType<typeof setTimeout> | null = null;
-const renderKey = ref(0);
-const triggerRender = () => {
-  if (renderTimer) return;
-  renderTimer = setTimeout(() => {
-    renderKey.value++;
-    renderTimer = null;
-  }, 50);
-};
-
-const stopGenerating = () => {
-  if (abortController.value) {
-    abortController.value.abort();
-    abortController.value = null;
-  }
-  isGenerating.value = false;
-  const lastMsg = messages.value[messages.value.length - 1];
-  if (lastMsg && lastMsg.isStreaming) {
-    lastMsg.isStreaming = false;
-  }
-};
-
 const sendMessage = async (query: string) => {
-  query = query.trim() || userInput.value;
-  const filesToSend = [...selectedFiles.value];
-  if (query.trim() === '' && filesToSend.length === 0) return;
-  if (query.trim() === '' && filesToSend.length > 0) query = '请总结并回答我上传的附件内容。';
+  query = query.trim();
+  if (!query && selectedFiles.value.length === 0) return;
+
+  if (!isBotMode.value) {
+    if (!(await ensureModelConfig())) return;
+  }
 
   const pendingQuote = quotedMessage.value ? { ...quotedMessage.value } : undefined;
   quotedMessage.value = null;
   userInput.value = '';
+  const filesToSend = [...selectedFiles.value];
   selectedFiles.value = [];
 
-  // 添加用户消息
-  const attachmentText = filesToSend.length ? `\n\n附件：${filesToSend.map(file => file.name).join('、')}` : '';
-  const userMsg: ChatMessage = { content: `${query}${attachmentText}`, role: 'user', create_at: getCurrentTime() } as ChatMessage;
-  if (pendingQuote) userMsg.quote = pendingQuote;
-  messages.value.push(userMsg);
-
-  // 添加空的 AI 消息（将被流式填充）
-  const aiMsg: ChatMessage = {
-    content: '',
-    role: 'assistant',
-    create_at: getCurrentTime(),
-    isStreaming: true,
-    agentState: 'planning',
-    agentStateLabel: '分析问题中...',
-    toolCalls: [],
-  } as ChatMessage;
-  messages.value.push(aiMsg);
-  scrollToBottom();
-
-  isGenerating.value = true;
-  abortController.value = new AbortController();
-  const msgIndex = messages.value.length - 1;
-
-  // 构建流式回调
-  const callbacks: StreamCallbacks = {
-    onToken(content) {
-      messages.value[msgIndex].content += content;
-      triggerRender();
-      scrollToBottom();
-    },
-    onStateChange(state, label) {
-      messages.value[msgIndex].agentState = state;
-      messages.value[msgIndex].agentStateLabel = label;
-    },
-    onThinking(content) {
-      messages.value[msgIndex].thinkingContent = (messages.value[msgIndex].thinkingContent || '') + content;
-    },
-    onToolCall(tool, args, callId) {
-      if (!messages.value[msgIndex].toolCalls) messages.value[msgIndex].toolCalls = [];
-      messages.value[msgIndex].toolCalls!.push({ tool, args, callId, status: 'calling' });
-      scrollToBottom();
-    },
-    onToolResult(tool, result, callId, latencyMs) {
-      const tc = messages.value[msgIndex].toolCalls?.find(t => t.callId === callId);
-      if (tc) {
-        tc.result = result;
-        tc.latencyMs = latencyMs;
-        tc.status = result?.error ? 'error' : 'done';
-      }
-    },
-    onSources(sources) {
-      messages.value[msgIndex].sources = sources;
-    },
-    onMetadata(metadata) {
-      messages.value[msgIndex].grounded_ratio = metadata.grounded_ratio;
-      messages.value[msgIndex].grounded_level = metadata.grounded_level;
-      if (metadata.conversation_id) {
-        conversationId.value = String(metadata.conversation_id);
-        ConversationInfo.value.id = metadata.conversation_id;
-        if (metadata.conversation_name) ConversationInfo.value.name = metadata.conversation_name;
-        router.replace({ path: '/chat', query: { ...route.query, conversation_id: conversationId.value, model_config_id: modelConfigId.value, config_name: configName.value } });
-      }
-    },
-    onMemory(stats) {
-      messages.value[msgIndex].memoryStats = stats;
-    },
-    onConversation(info) {
-      if (info.conversation_id) {
-        conversationId.value = String(info.conversation_id);
-        ConversationInfo.value.id = Number(info.conversation_id);
-        if (info.conversation_name) ConversationInfo.value.name = info.conversation_name;
-        if (isBotMode.value) botConversationId.value = conversationId.value;
-        router.replace({ path: '/chat', query: { ...route.query, conversation_id: conversationId.value, model_config_id: modelConfigId.value, config_name: configName.value } });
-      }
-    },
-    onTrace(trace) {
-      messages.value[msgIndex].trace = trace;
-    },
-    onDone() {
-      messages.value[msgIndex].isStreaming = false;
-      messages.value[msgIndex].agentState = 'done';
-      messages.value[msgIndex].agentStateLabel = '完成';
-      isGenerating.value = false;
-      renderKey.value++;
-      scrollToBottom();
-    },
-    onError(message) {
-      if (!messages.value[msgIndex].content) {
-        messages.value[msgIndex].content = message;
-      }
-      messages.value[msgIndex].isStreaming = false;
-      messages.value[msgIndex].agentState = 'error';
-      isGenerating.value = false;
-    },
+  const routerReplace = (q: Record<string, string>) => {
+    router.replace({ path: '/chat', query: { ...route.query, ...q } });
   };
 
-  try {
-    if (isBotMode.value && currentBot.value) {
-      await streamBotChat(
-        currentBot.value.id,
-        query,
-        botConversationId.value,
-        useAgentMode.value,
-        callbacks,
-        abortController.value.signal,
-      );
-      if (conversationId.value) botConversationId.value = conversationId.value;
-    } else {
-      if (!(await ensureModelConfig())) {
-        messages.value.pop();
-        return;
-      }
-      const formData = new FormData();
-      if (conversationId.value) formData.append('conversation_id', conversationId.value);
-      formData.append('message', query);
-      formData.append('model_config_id', modelConfigId.value);
-      formData.append('use_agent', String(useAgentMode.value));
-      filesToSend.forEach(file => formData.append('files', file));
-      if (userStore.currentOrganization) formData.append('organization_id', userStore.currentOrganization.id.toString());
-      if (selectedKbIds.value.length > 0) formData.append('vector_db_ids', JSON.stringify(selectedKbIds.value));
-      if (pendingQuote) {
-        formData.append('quoted_content', pendingQuote.content);
-        formData.append('quoted_role', pendingQuote.role);
-      }
-      await streamChat(formData, callbacks, abortController.value.signal);
-    }
-  } catch (e: unknown) {
-    if (e.name === 'AbortError') return;
-    messages.value[msgIndex].content = getRequestErrorMessage(e);
-    messages.value[msgIndex].isStreaming = false;
-    isGenerating.value = false;
-  }
+  await chatStore.sendMessage(
+    query,
+    filesToSend,
+    selectedKbIds.value,
+    userStore.currentOrganization?.id,
+    pendingQuote,
+    routerReplace,
+  );
+  scrollToBottom();
 };
 
 const handleRegenerate = async (index: number) => {
@@ -573,11 +422,6 @@ const handleDownloadSource = async (src: SourceCitation) => {
   } catch {}
 };
 
-const ConversationInfo = ref<Conversation>({
-  id: 0, name: '', model_config_id: 0, messages: [],
-  chat_history: 10, create_at: '', type: 0, update_at: ''
-});
-
 const loadDate = async () => {
   if (botId.value > 0) {
     try {
@@ -599,7 +443,7 @@ const loadDate = async () => {
     const formData = new FormData();
     formData.append('conversation_id', conversationId.value);
     const conversaton = (await getMessages(formData));
-    ConversationInfo.value = conversaton.conversation_info;
+    conversationInfo.value = conversaton.conversation_info;
     const ori_messages = conversaton.history;
     messages.value = ori_messages.messages.sort((a: ChatMessage, b: ChatMessage) => new Date(a.create_at).getTime() - new Date(b.create_at).getTime());
     if (isBotMode.value) botConversationId.value = conversationId.value;
@@ -610,7 +454,7 @@ const loadDate = async () => {
 const handleChatHistoryChange = (val: number) => {
   const v = typeof val === 'object' ? val?.target?.value : val;
   setChatHistory(conversationId.value, v).then(() => {
-    ConversationInfo.value.chat_history = Number(v);
+    conversationInfo.value.chat_history = Number(v);
   });
 };
 
@@ -620,14 +464,29 @@ const handleClickOutsideKb = (e: MouseEvent) => {
     kbPanelOpen.value = false;
   }
 };
-onMounted(async () => {
-  loadDate();
+onMounted(() => {
+  const routeConvId = route.query.conversation_id as string || '';
+  const routeBotId = route.query.bot_id ? Number(route.query.bot_id) : 0;
+  const storeMatchesRoute = chatStore.conversationId === routeConvId && chatStore.botId === routeBotId && (chatStore.messages.length > 0 || chatStore.isGenerating);
+  if (!storeMatchesRoute) {
+    chatStore.reset();
+    botId.value = routeBotId;
+    conversationId.value = routeConvId;
+    modelConfigId.value = route.query.model_config_id as string || '';
+    configName.value = route.query.config_name as string || '';
+    loadDate();
+  } else {
+    loadAllConfigs();
+    loadKnowledgeBases();
+    scrollToBottom();
+  }
   document.addEventListener('click', handleClickOutsideKb);
 });
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutsideKb);
-  stopGenerating();
 });
+
+watch(renderKey, () => { scrollToBottom(); });
 
 const scrollToBottom = () => {
   nextTick(() => { if (messageAreaRef.value) messageAreaRef.value.scrollTop = messageAreaRef.value.scrollHeight; });
@@ -644,7 +503,7 @@ const scrollToBottom = () => {
         </button>
         <div class="header-info">
           <span class="header-name" v-if="isBotMode && currentBot">{{ currentBot.name }}</span>
-          <span class="header-name" v-else-if="ConversationInfo.name">{{ ConversationInfo.name }}</span>
+          <span class="header-name" v-else-if="conversationInfo.name">{{ conversationInfo.name }}</span>
           <span class="header-name" v-else>新对话</span>
           <div class="header-tags">
             <span class="header-model-tag">{{ currentConfigName }}</span>
@@ -683,15 +542,6 @@ const scrollToBottom = () => {
           </div>
           <h1 class="intro-greeting">{{ greetingTime }}好，{{ userStore.user?.name }}</h1>
           <p class="intro-subtitle">有什么可以帮您的？</p>
-          <div class="intro-model-chips" v-if="allConfigs.length > 0 && !isConversationLocked">
-            <div
-              v-for="config in allConfigs"
-              :key="config.id"
-              class="model-chip"
-              :class="{ active: String(config.id) === modelConfigId }"
-              @click="handleConfigChange(config.id)"
-            >{{ config.name }}</div>
-          </div>
         </template>
       </div>
 
@@ -980,13 +830,13 @@ const scrollToBottom = () => {
           <label class="settings-label">上下文窗口</label>
           <div class="settings-slider-row">
             <el-slider
-              v-model="ConversationInfo.chat_history"
+              v-model="conversationInfo.chat_history"
               :min="1" :max="10" :step="1"
               :show-tooltip="true"
               class="settings-slider"
               @change="handleChatHistoryChange"
             />
-            <span class="settings-slider-val">{{ ConversationInfo.chat_history }}</span>
+            <span class="settings-slider-val">{{ conversationInfo.chat_history }}</span>
           </div>
           <p class="settings-hint">控制对话时发送给模型的历史消息数量</p>
         </div>
@@ -1022,10 +872,11 @@ const scrollToBottom = () => {
 .chat-page {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 56px - 2.5rem);
+  height: calc(100vh - 56px);
   overflow: hidden;
   margin: -1.25rem -1.5rem;
   padding: 0;
+  background: #f9fafb;
 }
 
 /* ===== Chat Header ===== */
@@ -1033,11 +884,11 @@ const scrollToBottom = () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
-  border-bottom: 1px solid #f1f5f9;
+  padding: 0 20px;
+  border-bottom: 1px solid #e8ecf2;
   background: #fff;
   flex-shrink: 0;
-  height: 52px;
+  height: 48px;
 }
 .chat-header-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .header-back-btn {
@@ -1065,7 +916,7 @@ const scrollToBottom = () => {
 .chat-messages.is-empty { overflow: hidden; }
 .chat-messages::-webkit-scrollbar { width: 5px; }
 .chat-messages::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 50vw; }
-.chat-messages-inner { max-width: 768px; margin: 0 auto; padding: 28px 24px; display: flex; flex-direction: column; gap: 24px; }
+.chat-messages-inner { max-width: 720px; margin: 0 auto; padding: 28px 24px; display: flex; flex-direction: column; gap: 28px; }
 
 /* ===== Empty State ===== */
 .chat-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 40px 20px; }
@@ -1074,25 +925,21 @@ const scrollToBottom = () => {
 .intro-bot-avatar { margin-bottom: 16px; font-size: 20px; font-weight: 600; }
 .intro-greeting { font-size: 24px; font-weight: 700; color: #1e293b; margin: 0 0 6px; }
 .intro-subtitle { font-size: 15px; color: #94a3b8; margin: 0 0 28px; }
-.intro-model-chips { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; max-width: 560px; }
-.model-chip { padding: 8px 18px; border-radius: 50vw; font-size: 13px; color: #475569; background: #fff; border: 1.5px solid #e2e8f0; cursor: pointer; transition: all 0.15s; user-select: none; }
-.model-chip:hover { border-color: #a5b4fc; color: #6366f1; background: #f5f3ff; }
-.model-chip.active { background: #6366f1; color: #fff; border-color: #6366f1; font-weight: 500; box-shadow: 0 2px 8px rgba(99,102,241,0.25); }
 
 /* ===== User Message ===== */
 .msg-user-row { display: flex; justify-content: flex-end; }
-.msg-user-wrap { display: flex; align-items: flex-end; gap: 6px; max-width: 72%; }
+.msg-user-wrap { display: flex; align-items: flex-end; gap: 6px; max-width: 70%; }
 .msg-user-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.15s; flex-shrink: 0; padding-bottom: 4px; }
 .msg-user-row:hover .msg-user-actions { opacity: 1; }
-.msg-user-bubble { width: max-content; max-width: 100%; padding: 12px 18px; background: #eef2ff; border: 1px solid #e0e7ff; border-radius: 18px 18px 4px 18px; font-size: 14px; line-height: 1.6; color: #1e293b; word-break: break-word; white-space: pre-wrap; }
+.msg-user-bubble { width: max-content; max-width: 100%; padding: 12px 18px; background: linear-gradient(135deg, #6366f1, #818cf8); border: none; border-radius: 20px 20px 4px 20px; font-size: 14px; line-height: 1.6; color: #fff; word-break: break-word; white-space: pre-wrap; box-shadow: 0 2px 8px rgba(99,102,241,0.2); }
 
 /* ===== AI Message ===== */
-.msg-ai-row { display: flex; gap: 10px; align-items: flex-start; }
+.msg-ai-row { display: flex; gap: 12px; align-items: flex-start; }
 .msg-ai-avatar { flex-shrink: 0; padding-top: 2px; }
-.ai-default-avatar { width: 30px; height: 30px; background: #eef2ff; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 1px solid #e0e7ff; }
-.ai-default-avatar img { width: 16px; height: 16px; object-fit: contain; }
+.ai-default-avatar { width: 32px; height: 32px; background: linear-gradient(135deg, #6366f1, #818cf8); border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(99,102,241,0.2); }
+.ai-default-avatar img { width: 18px; height: 18px; object-fit: contain; filter: brightness(0) invert(1); }
 .msg-ai-body { min-width: 0; max-width: 85%; }
-.msg-ai-bubble { width: fit-content; max-width: 100%; background: #f8fafc; border: 1px solid #e6ebf2; border-radius: 4px 16px 16px 16px; padding: 14px 18px; font-size: 14px; line-height: 1.7; color: #334155; }
+.msg-ai-bubble { width: fit-content; max-width: 100%; background: #fff; border: 1px solid #e8ecf2; border-radius: 4px 20px 20px 20px; padding: 16px 20px; font-size: 14px; line-height: 1.7; color: #334155; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
 .msg-forbidden-tip { padding: 8px 12px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; font-size: 12px; color: #92400e; margin-bottom: 10px; }
 .msg-ai-actions { display: flex; gap: 2px; margin-top: 6px; opacity: 0; transition: opacity 0.15s; }
 .msg-ai-row:hover .msg-ai-actions { opacity: 1; }
@@ -1210,7 +1057,7 @@ const scrollToBottom = () => {
 .ref-toggle:hover { opacity: 0.7; }
 
 /* ===== Quote ===== */
-.quote-card { display: flex; align-items: flex-start; gap: 6px; padding: 8px 10px; margin-bottom: 8px; background: rgba(99, 102, 241, 0.06); border-left: 3px solid #a5b4fc; border-radius: 0 8px 8px 0; font-size: 12px; line-height: 1.5; color: #64748b; }
+.quote-card { display: flex; align-items: flex-start; gap: 6px; padding: 8px 10px; margin-bottom: 8px; background: rgba(255, 255, 255, 0.15); border-left: 3px solid rgba(255,255,255,0.5); border-radius: 0 8px 8px 0; font-size: 12px; line-height: 1.5; color: rgba(255,255,255,0.85); }
 .quote-card--ai { border-left-color: #6366f1; }
 .quote-card-role { flex-shrink: 0; font-weight: 600; color: #6366f1; font-size: 11px; padding: 1px 6px; background: #eef2ff; border-radius: 4px; line-height: 1.4; }
 .quote-card-text { color: #64748b; word-break: break-word; }
@@ -1222,10 +1069,10 @@ const scrollToBottom = () => {
 .quote-preview-close:hover { background: #e2e8f0; color: #475569; }
 
 /* ===== Footer Input ===== */
-.chat-footer { flex-shrink: 0; padding: 12px 24px 16px; display: flex; justify-content: center; }
-.chat-input-container { max-width: 768px; width: 100%; }
-.chat-input-box { background: #fff; border: 1.5px solid #e2e8f0; border-radius: 16px; overflow: hidden; transition: border-color 0.2s, box-shadow 0.2s; }
-.chat-input-box:focus-within { border-color: #a5b4fc; box-shadow: 0 0 0 3px rgba(99,102,241,0.08); }
+.chat-footer { flex-shrink: 0; padding: 12px 24px 20px; display: flex; justify-content: center; background: linear-gradient(to top, #f9fafb 60%, transparent); }
+.chat-input-container { max-width: 720px; width: 100%; }
+.chat-input-box { background: #fff; border: 1.5px solid #d4d4d8; border-radius: 20px; overflow: hidden; transition: border-color 0.2s, box-shadow 0.2s; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+.chat-input-box:focus-within { border-color: #818cf8; box-shadow: 0 0 0 3px rgba(99,102,241,0.1), 0 2px 12px rgba(0,0,0,0.06); }
 .sr-only { display: none; }
 .file-chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 14px 0; }
 .file-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; background: #f5f3ff; border: 1px solid #e9e5ff; border-radius: 6px; font-size: 12px; color: #4338ca; max-width: 200px; }
@@ -1240,9 +1087,9 @@ const scrollToBottom = () => {
 .toolbar-right { display: flex; align-items: center; }
 .toolbar-btn { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: none; background: transparent; border-radius: 8px; cursor: pointer; color: #94a3b8; transition: all 0.12s; }
 .toolbar-btn:hover { background: #f1f5f9; color: #6366f1; }
-.send-btn { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: none; background: #e2e8f0; border-radius: 10px; cursor: pointer; color: #94a3b8; transition: all 0.15s; }
-.send-btn.active { background: #6366f1; color: #fff; box-shadow: 0 2px 8px rgba(99,102,241,0.25); }
-.send-btn.active:hover { background: #4f46e5; }
+.send-btn { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: none; background: #e2e8f0; border-radius: 50%; cursor: pointer; color: #94a3b8; transition: all 0.2s; }
+.send-btn.active { background: linear-gradient(135deg, #6366f1, #818cf8); color: #fff; box-shadow: 0 2px 10px rgba(99,102,241,0.3); transform: scale(1.05); }
+.send-btn.active:hover { background: linear-gradient(135deg, #4f46e5, #6366f1); box-shadow: 0 4px 14px rgba(99,102,241,0.4); }
 .stop-btn { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: none; background: #fee2e2; border-radius: 10px; cursor: pointer; transition: all 0.15s; }
 .stop-btn:hover { background: #fecaca; }
 .stop-icon { width: 12px; height: 12px; background: #ef4444; border-radius: 2px; }
@@ -1326,7 +1173,7 @@ const scrollToBottom = () => {
 
 /* ===== Responsive ===== */
 @media (max-width: 768px) {
-  .chat-page { margin: -1.25rem -1rem; height: calc(100vh - 56px - 2.5rem); }
+  .chat-page { margin: -1.25rem -1rem; height: calc(100vh - 56px); }
   .chat-header { padding: 0 10px; }
   .chat-messages-inner { padding: 16px 12px; gap: 20px; }
   .msg-user-wrap { max-width: 85%; }
