@@ -87,11 +87,10 @@ class KnowledgeSearchTool(BaseTool):
             if not sources:
                 return {"found": False, "message": "知识库中未找到相关信息", "sources": []}
 
-            top_sources = sources[:5]
-            per_source_budget = self.MAX_TOTAL_CONTENT_CHARS // max(len(top_sources), 1)
+            per_source_budget = self.MAX_TOTAL_CONTENT_CHARS // max(len(sources), 1)
 
             formatted = []
-            for i, s in enumerate(top_sources):
+            for i, s in enumerate(sources):
                 content = (s.get("content") or "").strip()
                 if len(content) > per_source_budget:
                     content = content[:per_source_budget] + "…"
@@ -107,10 +106,12 @@ class KnowledgeSearchTool(BaseTool):
             return {
                 "found": True,
                 "count": len(formatted),
+                "total_found": rag_result.get("total_found", len(formatted)),
                 "sources": formatted,
                 "avg_similarity": round(rag_result.get("avg_similarity", 0), 4),
                 "vector_db_ids": rag_result.get("vector_db_ids", []),
                 "queried_vector_db_ids": rag_result.get("queried_vector_db_ids", []),
+                "has_result_db_ids": rag_result.get("has_result_db_ids", []),
                 "_raw_rag_result": rag_result,
             }
         except Exception as e:

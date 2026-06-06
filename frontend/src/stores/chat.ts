@@ -110,12 +110,16 @@ export const useChatStore = defineStore('chat', () => {
       if (tool === 'knowledge_search' && result) {
         if (!messages.value[msgIndex].retrievalProcess) messages.value[msgIndex].retrievalProcess = []
         const r = result as Record<string, unknown>
+        const hasResultDbs = (r.has_result_db_ids ?? []) as number[]
+        const queriedDbs = (r.queried_vector_db_ids ?? r.vector_db_ids ?? []) as number[]
         messages.value[msgIndex].retrievalProcess!.push({
           step: 'retrieval_complete',
           total_results: (r.count ?? r.total_results ?? 0) as number,
+          total_found: (r.total_found ?? r.count ?? 0) as number,
           avg_similarity: (r.avg_similarity ?? 0) as number,
           used_knowledge_base: ((r.count ?? r.total_results ?? 0) as number) > 0,
-          vector_db_ids: (r.queried_vector_db_ids ?? r.vector_db_ids ?? []) as number[],
+          vector_db_ids: hasResultDbs.length > 0 ? hasResultDbs : queriedDbs,
+          queried_db_count: queriedDbs.length,
           retrieval_layers: (r.retrieval_layers ?? []) as string[],
           fallback_used: false,
         })

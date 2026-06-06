@@ -358,20 +358,13 @@ class AsyncVectorService:
                 else:
                     raise RuntimeError(f"OCR识别失败，无法提取图片文字: {file_path}")
 
-            from app.services.rag.document_parser import extract_text, clean_web_text, clean_document_text, is_worth_indexing
+            from app.services.rag.document_parser import extract_text, clean_web_text, is_worth_indexing
             text_content = extract_text(actual_file_path)
 
             if not text_content or not text_content.strip():
                 raise RuntimeError(f"文件内容为空，无法解析文件: {os.path.basename(file_path)}")
 
-            # 根据源文件类型选择清洗策略：
-            # .txt 文件多为爬虫输出 → 用网页清洗（去导航/元数据/版权）
-            # 其他格式为用户上传 → 用文档清洗（去页码/重复页眉/噪声符号）
-            source_ext = os.path.splitext(file_path)[1].lower()
-            if source_ext == '.txt':
-                text_content = clean_web_text(text_content)
-            else:
-                text_content = clean_document_text(text_content)
+            text_content = clean_web_text(text_content)
             if not is_worth_indexing(text_content):
                 raise RuntimeError(f"文件清洗后有效内容不足，跳过入库: {os.path.basename(file_path)}")
 
@@ -1760,6 +1753,13 @@ class AsyncVectorService:
             sum(float(source.get("similarity") or 0.0) for source in selected_sources) / len(selected_sources)
             if selected_sources else 0.0
         )
+
+        has_result_db_ids = []
+        for source in merged_sources:
+            vid = source.get("vector_db_id")
+            if vid is not None and vid not in has_result_db_ids:
+                has_result_db_ids.append(vid)
+
         return {
             "contexts": [source["content"] for source in selected_sources],
             "sources": selected_sources,
@@ -1767,8 +1767,10 @@ class AsyncVectorService:
             "vector_db_id": vector_db_ids[0] if vector_db_ids else None,
             "vector_db_ids": vector_db_ids,
             "queried_vector_db_ids": queried_vector_db_ids,
+            "has_result_db_ids": has_result_db_ids,
             "retrieval_layers": retrieval_layers,
             "total_results": len(selected_sources),
+            "total_found": len(merged_sources),
             "avg_similarity": avg_similarity,
             "fallback_used": any(layer != "primary" for layer in retrieval_layers),
         }

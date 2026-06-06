@@ -300,14 +300,18 @@ class StreamChatService:
                         extra_vector_db_ids=all_extra_ids if all_extra_ids else None,
                     )
 
+                _rr = rag_result or {}
+                _has_dbs = _rr.get("has_result_db_ids", [])
                 yield _sse_event("retrieval_info", {
                     "step": "retrieval_complete",
-                    "total_results": (rag_result or {}).get("total_results", 0),
-                    "avg_similarity": round((rag_result or {}).get("avg_similarity", 0), 4),
-                    "used_knowledge_base": (rag_result or {}).get("used_knowledge_base", False),
-                    "vector_db_ids": (rag_result or {}).get("queried_vector_db_ids", []),
-                    "retrieval_layers": (rag_result or {}).get("retrieval_layers", []),
-                    "fallback_used": (rag_result or {}).get("fallback_used", False),
+                    "total_results": _rr.get("total_results", 0),
+                    "total_found": _rr.get("total_found", _rr.get("total_results", 0)),
+                    "avg_similarity": round(_rr.get("avg_similarity", 0), 4),
+                    "used_knowledge_base": _rr.get("used_knowledge_base", False),
+                    "vector_db_ids": _has_dbs if _has_dbs else _rr.get("queried_vector_db_ids", []),
+                    "queried_db_count": len(_rr.get("queried_vector_db_ids", [])),
+                    "retrieval_layers": _rr.get("retrieval_layers", []),
+                    "fallback_used": _rr.get("fallback_used", False),
                 })
 
                 prompt_messages = []

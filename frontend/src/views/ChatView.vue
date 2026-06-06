@@ -734,8 +734,8 @@ const scrollToBottom = () => {
                               </span>
                             </div>
                             <span class="step-detail" v-if="step.used_knowledge_base">
-                              搜索了 {{ (step.vector_db_ids as number[] || []).length }} 个知识库，
-                              找到 {{ step.total_results }} 条相关内容，
+                              从 {{ (step.vector_db_ids as number[] || []).length }} 个知识库中检索到 {{ step.total_found || step.total_results }} 条内容，
+                              精选 {{ step.total_results }} 条，
                               平均相似度 {{ ((step.avg_similarity as number || 0) * 100).toFixed(0) }}%
                             </span>
                             <span class="step-detail" v-else>未匹配到相关知识库内容</span>
