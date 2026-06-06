@@ -454,7 +454,35 @@ const loadDate = async () => {
     const conversaton = (await getMessages(formData));
     conversationInfo.value = conversaton.conversation_info;
     const ori_messages = conversaton.history;
-    messages.value = ori_messages.messages.sort((a: ChatMessage, b: ChatMessage) => new Date(a.create_at).getTime() - new Date(b.create_at).getTime());
+    messages.value = ori_messages.messages
+      .sort((a: ChatMessage, b: ChatMessage) => new Date(a.create_at).getTime() - new Date(b.create_at).getTime())
+      .map((msg: ChatMessage) => {
+        // 从历史 metadata 中恢复检索思考过程
+        if (msg.role === 'assistant' && msg.toolCalls && !msg.retrievalProcess) {
+          const ksTool = (msg.toolCalls as any[]).find((t: any) => t.tool === 'knowledge_search');
+          if (ksTool) {
+            msg.retrievalProcess = [];
+            msg.retrievalProcess.push({
+              step: 'query_rewrite',
+              original_query: String(ksTool.args?.query || ''),
+              retrieval_query: String(ksTool.args?.query || ''),
+              is_reformulated: false,
+            });
+            if (ksTool.result) {
+              msg.retrievalProcess.push({
+                step: 'retrieval_complete',
+                total_results: ksTool.result.count ?? 0,
+                avg_similarity: ksTool.result.avg_similarity ?? 0,
+                used_knowledge_base: (ksTool.result.count ?? 0) > 0,
+                vector_db_ids: ksTool.result.queried_vector_db_ids ?? ksTool.result.vector_db_ids ?? [],
+                retrieval_layers: [],
+                fallback_used: false,
+              });
+            }
+          }
+        }
+        return msg;
+      });
     if (isBotMode.value) botConversationId.value = conversationId.value;
   }
   scrollToBottom();

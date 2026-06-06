@@ -242,6 +242,8 @@ class StreamChatService:
                 accumulated_content = ""
                 rag_result = None
                 trace_data = None
+                agent_tool_calls = []
+                agent_thinking = ""
 
                 async for event in engine.run(compressed, model, system_msgs):
                     yield _sse_event(event.type, event.data)
@@ -251,6 +253,19 @@ class StreamChatService:
                         rag_result = event.data.get("rag_result")
                     elif event.type == "trace":
                         trace_data = event.data
+                    elif event.type == "tool_call":
+                        agent_tool_calls.append({
+                            "tool": event.data.get("tool"),
+                            "args": event.data.get("args"),
+                            "call_id": event.data.get("call_id"),
+                        })
+                    elif event.type == "tool_result":
+                        tc = next((t for t in agent_tool_calls if t.get("call_id") == event.data.get("call_id")), None)
+                        if tc:
+                            tc["result"] = event.data.get("result")
+                            tc["latency_ms"] = event.data.get("latency_ms")
+                    elif event.type == "thinking":
+                        agent_thinking += event.data.get("content", "")
 
             else:
                 # === 简单流式模式 ===
@@ -359,6 +374,10 @@ class StreamChatService:
                 }
             if trace_data:
                 assistant_metadata["trace"] = trace_data
+            if agent_tool_calls:
+                assistant_metadata["toolCalls"] = agent_tool_calls
+            if agent_thinking:
+                assistant_metadata["thinkingContent"] = agent_thinking
             if attachment_info and attachment_info.get("document_ids"):
                 assistant_metadata["attachment_info"] = attachment_info
 
@@ -458,6 +477,8 @@ class StreamChatService:
                 accumulated_content = ""
                 rag_result = None
                 trace_data = None
+                agent_tool_calls = []
+                agent_thinking = ""
 
                 async for event in engine.run(compressed, model, system_msgs):
                     yield _sse_event(event.type, event.data)
@@ -466,6 +487,19 @@ class StreamChatService:
                         rag_result = event.data.get("rag_result")
                     elif event.type == "trace":
                         trace_data = event.data
+                    elif event.type == "tool_call":
+                        agent_tool_calls.append({
+                            "tool": event.data.get("tool"),
+                            "args": event.data.get("args"),
+                            "call_id": event.data.get("call_id"),
+                        })
+                    elif event.type == "tool_result":
+                        tc = next((t for t in agent_tool_calls if t.get("call_id") == event.data.get("call_id")), None)
+                        if tc:
+                            tc["result"] = event.data.get("result")
+                            tc["latency_ms"] = event.data.get("latency_ms")
+                    elif event.type == "thinking":
+                        agent_thinking += event.data.get("content", "")
             else:
                 # 简单流式
                 rag_result = {"sources": [], "used_knowledge_base": False, "avg_similarity": 0.0}
@@ -549,6 +583,10 @@ class StreamChatService:
                 }
             if trace_data:
                 bot_metadata["trace"] = trace_data
+            if agent_tool_calls:
+                bot_metadata["toolCalls"] = agent_tool_calls
+            if agent_thinking:
+                bot_metadata["thinkingContent"] = agent_thinking
 
             # 先发 sources 事件给前端（不受数据库保存影响）
             yield _sse_event("sources", source_citations)
