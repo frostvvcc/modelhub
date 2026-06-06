@@ -266,12 +266,29 @@ class StreamChatService:
                     message, history_dicts,
                 )
 
+                yield _sse_event("retrieval_info", {
+                    "step": "query_rewrite",
+                    "original_query": message,
+                    "retrieval_query": retrieval_query,
+                    "is_reformulated": retrieval_query != message,
+                })
+
                 if model_config:
                     rag_result = await AsyncVectorService.query_vector_by_model(
                         session, model_config_id, retrieval_query,
                         user_id=user_id,
                         extra_vector_db_ids=all_extra_ids if all_extra_ids else None,
                     )
+
+                yield _sse_event("retrieval_info", {
+                    "step": "retrieval_complete",
+                    "total_results": (rag_result or {}).get("total_results", 0),
+                    "avg_similarity": round((rag_result or {}).get("avg_similarity", 0), 4),
+                    "used_knowledge_base": (rag_result or {}).get("used_knowledge_base", False),
+                    "vector_db_ids": (rag_result or {}).get("queried_vector_db_ids", []),
+                    "retrieval_layers": (rag_result or {}).get("retrieval_layers", []),
+                    "fallback_used": (rag_result or {}).get("fallback_used", False),
+                })
 
                 prompt_messages = []
                 enriched_sources = []

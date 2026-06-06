@@ -73,6 +73,11 @@ export function useStreamChat() {
         opts.onConversationUpdate?.(String(info.conversation_id), info.conversation_name)
       }
     },
+    onRetrievalInfo(info) {
+      if (!messages[msgIndex].retrievalProcess) messages[msgIndex].retrievalProcess = []
+      messages[msgIndex].retrievalProcess!.push(info as any)
+      opts.triggerRender()
+    },
     onTrace(trace) {
       messages[msgIndex].trace = trace
     },

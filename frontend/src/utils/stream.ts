@@ -38,6 +38,7 @@ export interface StreamCallbacks {
   onMetadata?: (metadata: Record<string, unknown>) => void
   onMemory?: (stats: MemoryStats) => void
   onConversation?: (info: { conversation_id: number | string; conversation_name?: string }) => void
+  onRetrievalInfo?: (info: Record<string, unknown>) => void
   onTrace?: (trace: TraceInfo) => void
   onError?: (message: string) => void
   onDone?: (data: DonePayload) => void
@@ -207,6 +208,9 @@ function dispatchEvent(event: SSEEvent, callbacks: StreamCallbacks): void {
       break
     case 'conversation':
       callbacks.onConversation?.(d as unknown as { conversation_id: number | string; conversation_name?: string })
+      break
+    case 'retrieval_info':
+      callbacks.onRetrievalInfo?.(d)
       break
     case 'trace':
       callbacks.onTrace?.(d as unknown as TraceInfo)

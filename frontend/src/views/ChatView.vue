@@ -3,7 +3,7 @@
 import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElInput, ElIcon, ElSlider, ElDrawer } from 'element-plus';
-import { Promotion, DocumentCopy, ArrowDown, UploadFilled, Close, Plus, Setting, CopyDocument, ChatRound, ArrowLeft } from '@element-plus/icons-vue';
+import { Promotion, DocumentCopy, ArrowDown, ArrowUp, UploadFilled, Close, Plus, Setting, CopyDocument, ChatRound, ArrowLeft } from '@element-plus/icons-vue';
 import type { ChatMessage, QuoteInfo } from '../types/chat';
 import { getMessages, rechat, setChatHistory } from '../api/chat';
 import { getCurrentTime, getCurrentStatus } from '../utils/common';
@@ -117,6 +117,10 @@ const fileInputRef = ref<HTMLInputElement | null>(null);
 const hasInput = computed(() => userInput.value.trim() !== '' || selectedFiles.value.length > 0);
 const messageAreaRef = ref<HTMLElement | null>(null);
 
+const expandedRetrieval = ref<Record<number, boolean>>({});
+const toggleRetrieval = (index: number) => {
+  expandedRetrieval.value[index] = !expandedRetrieval.value[index];
+};
 const expandedSources = ref<number[]>([]);
 const expandedSourceContents = ref<string[]>([]);
 const toggleSources = (index: number) => {
@@ -618,8 +622,62 @@ const scrollToBottom = () => {
                     </div>
                   </div>
 
+                  <!-- 检索思考过程 -->
+                  <div class="retrieval-process" v-if="message.retrievalProcess && message.retrievalProcess.length > 0">
+                    <div class="retrieval-process-header" @click="toggleRetrieval(index)">
+                      <span class="retrieval-process-icon">🔍</span>
+                      <span class="retrieval-process-label">检索思考过程</span>
+                      <el-icon :size="12" class="retrieval-toggle">
+                        <ArrowDown v-if="!expandedRetrieval[index]" />
+                        <ArrowUp v-else />
+                      </el-icon>
+                    </div>
+                    <div class="retrieval-steps" v-show="expandedRetrieval[index] ?? true">
+                      <template v-for="(step, si) in message.retrievalProcess" :key="si">
+                        <div class="retrieval-step" v-if="step.step === 'query_rewrite'">
+                          <span class="step-icon">💬</span>
+                          <div class="step-body">
+                            <span class="step-title">理解问题</span>
+                            <span class="step-detail" v-if="step.is_reformulated">
+                              追问补全为：「{{ step.retrieval_query }}」
+                            </span>
+                            <span class="step-detail" v-else>
+                              「{{ step.original_query }}」
+                            </span>
+                          </div>
+                        </div>
+                        <div class="retrieval-step" v-if="step.step === 'retrieval_complete'">
+                          <span class="step-icon">{{ step.used_knowledge_base ? '📚' : '📭' }}</span>
+                          <div class="step-body">
+                            <span class="step-title">知识库检索</span>
+                            <span class="step-detail" v-if="step.used_knowledge_base">
+                              搜索了 {{ (step.vector_db_ids as number[] || []).length }} 个知识库，
+                              找到 {{ step.total_results }} 条相关内容，
+                              平均相似度 {{ ((step.avg_similarity as number || 0) * 100).toFixed(0) }}%
+                            </span>
+                            <span class="step-detail" v-else>未匹配到相关知识库内容</span>
+                          </div>
+                        </div>
+                      </template>
+                      <div class="retrieval-step" v-if="message.sources && message.sources.length > 0 && message.sources.some(s => s.retrieval_method?.includes('cross_encoder'))">
+                        <span class="step-icon">🎯</span>
+                        <div class="step-body">
+                          <span class="step-title">精排筛选</span>
+                          <span class="step-detail">Cross-Encoder 深度语义精排，筛选出 {{ message.sources.length }} 条最相关结果</span>
+                        </div>
+                      </div>
+                      <div class="retrieval-step" v-if="message.content || message.isStreaming">
+                        <span class="step-icon">✍️</span>
+                        <div class="step-body">
+                          <span class="step-title">{{ message.isStreaming ? '正在生成回答...' : '生成回答' }}</span>
+                          <span class="step-detail" v-if="message.grounded_level">可信度：{{ message.grounded_level }}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
                   <!-- 流式打字指示器 -->
-                  <div class="streaming-indicator" v-if="message.isStreaming && !message.content && (!message.toolCalls || message.toolCalls.length === 0)">
+                  <div class="streaming-indicator" v-if="message.isStreaming && !message.content && (!message.toolCalls || message.toolCalls.length === 0) && (!message.retrievalProcess || message.retrievalProcess.length === 0)">
                     <span class="dot-typing">
                       <span></span><span></span><span></span>
                     </span>
@@ -947,6 +1005,37 @@ const scrollToBottom = () => {
 .action-btn:hover { background: #f1f5f9; color: #6366f1; }
 .action-tip { font-size: 11px; color: #10b981; font-weight: 500; }
 .msg-system { text-align: center; font-size: 12px; color: #94a3b8; padding: 8px 0; }
+
+/* ===== Retrieval Process Thinking ===== */
+.retrieval-process {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  background: linear-gradient(135deg, #eff6ff 0%, #f0f4ff 100%);
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+}
+.retrieval-process-header {
+  display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+}
+.retrieval-process-icon { font-size: 14px; }
+.retrieval-process-label { font-size: 12px; font-weight: 600; color: #1e40af; flex: 1; }
+.retrieval-toggle { color: #93a3b8; transition: transform 0.2s; }
+.retrieval-steps {
+  display: flex; flex-direction: column; gap: 2px; margin-top: 10px;
+  padding-left: 4px; border-left: 2px solid #bfdbfe;
+}
+.retrieval-step {
+  display: flex; align-items: flex-start; gap: 8px; padding: 4px 0 4px 10px;
+  animation: fadeSlideIn 0.3s ease;
+}
+.retrieval-step .step-icon { font-size: 13px; flex-shrink: 0; margin-top: 1px; }
+.retrieval-step .step-body { display: flex; flex-direction: column; gap: 2px; }
+.retrieval-step .step-title { font-size: 12px; font-weight: 600; color: #334155; }
+.retrieval-step .step-detail { font-size: 11px; color: #64748b; line-height: 1.4; }
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateX(-6px); }
+  to { opacity: 1; transform: translateX(0); }
+}
 
 /* ===== Agent Process Visualization ===== */
 .agent-process {
