@@ -362,16 +362,18 @@ class StreamChatService:
             if attachment_info and attachment_info.get("document_ids"):
                 assistant_metadata["attachment_info"] = attachment_info
 
-            await AsyncChatMapper.save_message(
-                session, conversation_id, "assistant", content,
-                metadata=assistant_metadata if assistant_metadata else None,
-            )
-
-            # 发送最终元数据
-            logger.info(f"📎 [sources] rag_result is None: {rag_result is None}, raw_sources count: {len(raw_sources)}, source_citations count: {len(source_citations)}")
-            if source_citations:
-                logger.info(f"📎 [sources] 第一条: content长度={len(source_citations[0].get('content',''))}, source={source_citations[0].get('source','')}")
+            # 先发 sources 事件给前端（不受数据库保存影响）
             yield _sse_event("sources", source_citations)
+
+            # 保存消息到数据库（float32 → float 防止 JSON 序列化失败）
+            safe_metadata = json.loads(json.dumps(assistant_metadata, ensure_ascii=False, default=str)) if assistant_metadata else None
+            try:
+                await AsyncChatMapper.save_message(
+                    session, conversation_id, "assistant", content,
+                    metadata=safe_metadata,
+                )
+            except Exception as save_err:
+                logger.warning(f"消息保存失败（不影响前端展示）: {save_err}")
             yield _sse_event("metadata", {
                 "grounded_ratio": round(grounded_ratio, 4),
                 "grounded_level": grounded_level,
