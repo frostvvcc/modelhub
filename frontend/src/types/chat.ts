@@ -97,6 +97,9 @@ export class ChatMessage {
   } | null;
   /** 检索过程（展示给用户的思考步骤） */
   retrievalProcess?: RetrievalStep[];
+  /** 流式计时与 token 统计 */
+  streamStartTime?: number;
+  streamTokenCount?: number;
   /** Agent 相关字段 */
   isStreaming?: boolean;
   agentState?: string;

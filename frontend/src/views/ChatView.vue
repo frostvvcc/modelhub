@@ -151,6 +151,32 @@ const toggleTrace = (index: number) => {
   else expandedTraces.value.push(index);
 };
 
+// 实时计时器
+const elapsedNow = ref(Date.now());
+let _elapsedTimer: ReturnType<typeof setInterval> | null = null;
+const startElapsedTimer = () => {
+  if (_elapsedTimer) return;
+  _elapsedTimer = setInterval(() => { elapsedNow.value = Date.now(); }, 1000);
+};
+const stopElapsedTimer = () => {
+  if (_elapsedTimer) { clearInterval(_elapsedTimer); _elapsedTimer = null; }
+};
+watch(isGenerating, (v) => { if (v) startElapsedTimer(); else stopElapsedTimer(); }, { immediate: true });
+const formatElapsed = (startTime: number | undefined, isDone: boolean, trace?: { total_latency_ms?: number }) => {
+  if (isDone && trace?.total_latency_ms) {
+    const s = Math.round(trace.total_latency_ms / 1000);
+    return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+  }
+  if (!startTime) return '';
+  const s = Math.max(0, Math.round((elapsedNow.value - startTime) / 1000));
+  return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+};
+const formatTokens = (msg: ChatMessage) => {
+  if (msg.trace?.total_tokens) return `${msg.trace.total_tokens} tokens`;
+  if (msg.streamTokenCount) return `~${msg.streamTokenCount} tokens`;
+  return '';
+};
+
 const noModelConfigMessage = '当前没有可用的模型配置，请先到"模型配置"页面创建配置，或运行后端初始化脚本生成默认配置。';
 
 const getRequestErrorMessage = (error: unknown) => {
@@ -521,6 +547,7 @@ onMounted(() => {
 });
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutsideKb);
+  stopElapsedTimer();
 });
 
 watch(renderKey, () => { scrollToBottom(); });
@@ -633,6 +660,14 @@ const scrollToBottom = () => {
                     <div class="agent-process-header">
                       <span class="agent-process-icon">{{ getStateIcon(message.agentState) }}</span>
                       <span class="agent-process-label">{{ message.agentStateLabel || 'Agent 推理过程' }}</span>
+                      <span class="thinking-stats">
+                        <span class="thinking-stat-item thinking-timer" :class="{ 'is-live': message.isStreaming }">
+                          ⏱ {{ formatElapsed(message.streamStartTime, !message.isStreaming, message.trace) }}
+                        </span>
+                        <span class="thinking-stat-item thinking-tokens" v-if="formatTokens(message as ChatMessage)">
+                          · {{ formatTokens(message as ChatMessage) }}
+                        </span>
+                      </span>
                     </div>
                     <div class="agent-steps">
                       <div class="agent-step" v-for="(tc, ti) in message.toolCalls" :key="ti"
@@ -660,7 +695,14 @@ const scrollToBottom = () => {
                     <div class="retrieval-process-header" @click="toggleRetrieval(index)">
                       <span class="retrieval-process-icon">🔍</span>
                       <span class="retrieval-process-label">思考过程</span>
-                      <span class="retrieval-process-time" v-if="message.trace">{{ message.trace.total_ms ? Math.round(message.trace.total_ms / 1000) + 's' : '' }}</span>
+                      <span class="thinking-stats">
+                        <span class="thinking-stat-item thinking-timer" :class="{ 'is-live': message.isStreaming }">
+                          ⏱ {{ formatElapsed(message.streamStartTime, !message.isStreaming, message.trace) }}
+                        </span>
+                        <span class="thinking-stat-item thinking-tokens" v-if="formatTokens(message as ChatMessage)">
+                          · {{ formatTokens(message as ChatMessage) }}
+                        </span>
+                      </span>
                       <el-icon :size="12" class="retrieval-toggle">
                         <ArrowDown v-if="!expandedRetrieval[index]" />
                         <ArrowUp v-else />
@@ -736,8 +778,8 @@ const scrollToBottom = () => {
                               可信度：{{ message.grounded_level }}
                             </span>
                           </div>
-                          <span class="step-detail" v-if="message.trace && !message.isStreaming">
-                            {{ message.trace.tokens ? message.trace.tokens + ' tokens' : '' }}
+                          <span class="step-detail" v-if="formatTokens(message as ChatMessage)">
+                            {{ formatTokens(message as ChatMessage) }}
                           </span>
                         </div>
                       </div>
@@ -750,6 +792,7 @@ const scrollToBottom = () => {
                       <span></span><span></span><span></span>
                     </span>
                     <span class="streaming-label">{{ message.agentStateLabel || '思考中...' }}</span>
+                    <span class="streaming-timer" v-if="message.streamStartTime">{{ formatElapsed(message.streamStartTime, false) }}</span>
                   </div>
 
                   <!-- Markdown 内容（流式渲染） -->
@@ -1086,7 +1129,16 @@ const scrollToBottom = () => {
   display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
 }
 .retrieval-process-icon { font-size: 14px; }
-.retrieval-process-label { font-size: 12px; font-weight: 600; color: #1e40af; flex: 1; }
+.retrieval-process-label { font-size: 12px; font-weight: 600; color: #1e40af; }
+.thinking-stats {
+  display: flex; align-items: center; gap: 2px; margin-left: auto; margin-right: 4px;
+}
+.thinking-stat-item {
+  font-size: 11px; color: #64748b; font-variant-numeric: tabular-nums;
+}
+.thinking-timer.is-live { color: #2563eb; font-weight: 500; }
+.thinking-tokens { color: #8b5cf6; }
+.streaming-timer { font-size: 12px; color: #94a3b8; margin-left: auto; font-variant-numeric: tabular-nums; }
 .retrieval-toggle { color: #93a3b8; transition: transform 0.2s; }
 .retrieval-steps {
   display: flex; flex-direction: column; gap: 2px; margin-top: 10px;

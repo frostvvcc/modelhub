@@ -63,6 +63,8 @@ export const useChatStore = defineStore('chat', () => {
       role: 'assistant',
       create_at: getCurrentTime(),
       isStreaming: true,
+      streamStartTime: Date.now(),
+      streamTokenCount: 0,
       agentState: 'planning',
       agentStateLabel: '分析问题中...',
       toolCalls: [],
@@ -74,6 +76,7 @@ export const useChatStore = defineStore('chat', () => {
   const buildCallbacks = (msgIndex: number, routerReplace?: (query: Record<string, string>) => void): StreamCallbacks => ({
     onToken(content) {
       messages.value[msgIndex].content += content
+      messages.value[msgIndex].streamTokenCount = (messages.value[msgIndex].streamTokenCount || 0) + Math.ceil(content.length / 1.5)
       triggerRender()
     },
     onStateChange(state, label) {
