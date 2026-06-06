@@ -801,59 +801,7 @@ const scrollToBottom = () => {
                   <!-- 流式光标 -->
                   <span v-if="message.isStreaming && message.content" class="typing-cursor"></span>
 
-                  <!-- 引用来源 -->
-                  <div class="ref-panel" v-if="message.sources && message.sources.length > 0">
-                    <div class="ref-header" @click="toggleSources(index)">
-                      <el-icon :size="13"><DocumentCopy /></el-icon>
-                      <span>参考来源 ({{ message.sources.length }})</span>
-                      <el-icon :size="11" class="ref-arrow" :class="{ open: expandedSources.includes(index) }"><ArrowDown /></el-icon>
-                    </div>
-                    <div class="ref-list" v-show="expandedSources.includes(index)">
-                      <div class="ref-item" v-for="(src, si) in message.sources" :key="si">
-                        <div class="ref-item-main">
-                          <span class="ref-label">{{ src.citation_label || `[${si + 1}]` }}</span>
-                          <span class="ref-file">{{ src.source }}</span>
-                          <span class="ref-tag" :class="getConfidenceClass(src.confidence_label)">{{ src.confidence_label || '中' }}</span>
-                          <button v-if="src.document_id" class="ref-download" @click="handleDownloadSource(src)" title="下载文档">
-                            <el-icon :size="12"><Download /></el-icon>
-                          </button>
-                        </div>
-                        <template v-if="isSourceContentExpanded(index, si)">
-                          <div class="ref-detail">
-                            <span v-if="src.vector_db_name" class="ref-tag-plain">{{ src.vector_db_name }}</span>
-                            <span class="ref-tag-plain">{{ getRetrievalMethodLabel(src.retrieval_method) }}</span>
-                            <span class="ref-tag-plain">向量 {{ formatPercent(src.vector_score || src.similarity) }}</span>
-                            <span class="ref-tag-plain">BM25 {{ formatPercent(src.bm25_score) }}</span>
-                          </div>
-                          <div class="ref-text">{{ src.content }}</div>
-                        </template>
-                        <button class="ref-toggle" @click="toggleSourceContent(index, si)">
-                          {{ isSourceContentExpanded(index, si) ? '收起' : '展开' }}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- Trace 追踪面板 -->
-                  <div class="trace-panel" v-if="message.trace">
-                    <div class="trace-header" @click="toggleTrace(index)">
-                      <span class="trace-icon">📊</span>
-                      <span>调用链追踪</span>
-                      <span class="trace-stats">
-                        {{ message.trace.total_latency_ms }}ms · {{ message.trace.total_tokens }} tokens · {{ message.trace.tool_calls }} 次工具调用
-                      </span>
-                      <el-icon :size="11" class="ref-arrow" :class="{ open: expandedTraces.includes(index) }"><ArrowDown /></el-icon>
-                    </div>
-                    <div class="trace-list" v-show="expandedTraces.includes(index)">
-                      <div class="trace-span" v-for="span in message.trace.spans" :key="span.span_id"
-                           :class="{ 'is-error': span.status === 'error' }">
-                        <span class="trace-span-type" :class="`type-${span.type}`">{{ span.type === 'llm_call' ? 'LLM' : span.type === 'tool_call' ? '工具' : span.type === 'llm_stream' ? '流式' : span.type }}</span>
-                        <span class="trace-span-name">{{ span.name }}</span>
-                        <span class="trace-span-time">{{ span.latency_ms }}ms</span>
-                        <span v-if="span.tokens_used" class="trace-span-tokens">{{ span.tokens_used }}t</span>
-                      </div>
-                    </div>
-                  </div>
+                  <!-- 来源和追踪信息已整合到思考过程面板中 -->
                 </div>
                 <!-- 消息操作 -->
                 <div class="msg-ai-actions" v-if="!message.isStreaming">

@@ -264,6 +264,11 @@ class StreamChatService:
                         if tc:
                             tc["result"] = event.data.get("result")
                             tc["latency_ms"] = event.data.get("latency_ms")
+                        if event.data.get("tool") == "knowledge_search":
+                            _early_src = (event.data.get("result") or {}).get("sources", [])
+                            if _early_src:
+                                _ct = getattr(model_config, "citation_template", None) if model_config else None
+                                yield _sse_event("sources", _build_source_citations(_early_src, _ct))
                     elif event.type == "thinking":
                         agent_thinking += event.data.get("content", "")
 
@@ -313,6 +318,8 @@ class StreamChatService:
                     )
                     if enriched_sources:
                         rag_result["sources"] = enriched_sources
+                        _ct = getattr(model_config, "citation_template", None) if model_config else None
+                        yield _sse_event("sources", _build_source_citations(enriched_sources, _ct))
 
                 system_msgs = [{"role": m.role if isinstance(m.role, str) else m.role.value, "content": m.content} for m in prompt_messages]
                 engine = SimpleStreamEngine()
@@ -498,6 +505,11 @@ class StreamChatService:
                         if tc:
                             tc["result"] = event.data.get("result")
                             tc["latency_ms"] = event.data.get("latency_ms")
+                        if event.data.get("tool") == "knowledge_search":
+                            _early_src = (event.data.get("result") or {}).get("sources", [])
+                            if _early_src:
+                                _ct = getattr(model_config, "citation_template", None) if model_config else None
+                                yield _sse_event("sources", _build_source_citations(_early_src, _ct))
                     elif event.type == "thinking":
                         agent_thinking += event.data.get("content", "")
             else:
@@ -526,6 +538,8 @@ class StreamChatService:
                     )
                     if enriched:
                         rag_result["sources"] = enriched
+                        _ct = getattr(model_config, "citation_template", None) if model_config else None
+                        yield _sse_event("sources", _build_source_citations(enriched, _ct))
 
                 system_msgs_list = []
                 if system_prompt:
