@@ -138,6 +138,11 @@ class AgentEngine:
                     llm_span.tokens_used = response.usage.total_tokens
                     llm_span.prompt_tokens = response.usage.prompt_tokens
                     llm_span.completion_tokens = response.usage.completion_tokens
+                    yield AgentEvent(type="token_usage", data={
+                        "total_tokens": self.trace.total_tokens,
+                        "prompt_tokens": self.trace.total_prompt_tokens,
+                        "completion_tokens": self.trace.total_completion_tokens,
+                    })
                     try:
                         self.token_budget.consume(
                             prompt_tokens=response.usage.prompt_tokens,
@@ -479,5 +484,10 @@ class SimpleStreamEngine:
             return
 
         self.trace.finish()
+        yield AgentEvent(type="token_usage", data={
+            "total_tokens": self.trace.total_tokens,
+            "prompt_tokens": self.trace.total_prompt_tokens,
+            "completion_tokens": self.trace.total_completion_tokens,
+        })
         yield AgentEvent(type="done", data={"content": accumulated})
         yield AgentEvent(type="trace", data=self.trace.to_dict())

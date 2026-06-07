@@ -171,6 +171,10 @@ export const useChatStore = defineStore('chat', () => {
     onTrace(trace) {
       messages.value[msgIndex].trace = trace
     },
+    onTokenUsage(usage) {
+      messages.value[msgIndex].streamTokenCount = usage.total_tokens
+      triggerRender()
+    },
     onDone() {
       messages.value[msgIndex].isStreaming = false
       messages.value[msgIndex].agentState = 'done'

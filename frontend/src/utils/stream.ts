@@ -40,6 +40,7 @@ export interface StreamCallbacks {
   onConversation?: (info: { conversation_id: number | string; conversation_name?: string }) => void
   onRetrievalInfo?: (info: Record<string, unknown>) => void
   onTrace?: (trace: TraceInfo) => void
+  onTokenUsage?: (usage: { total_tokens: number; prompt_tokens: number; completion_tokens: number }) => void
   onError?: (message: string) => void
   onDone?: (data: DonePayload) => void
 }
@@ -177,6 +178,9 @@ function dispatchEvent(event: SSEEvent, callbacks: StreamCallbacks): void {
       break
     case 'trace':
       callbacks.onTrace?.(d as unknown as TraceInfo)
+      break
+    case 'token_usage':
+      callbacks.onTokenUsage?.(d as unknown as { total_tokens: number; prompt_tokens: number; completion_tokens: number })
       break
     case 'done':
       callbacks.onDone?.(d as unknown as DonePayload)
