@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { ChatMessage, Conversation, ToolCallRecord, SourceCitation, TraceInfo, MemoryStats } from '../types/chat'
-import { streamChat, streamBotChat, type StreamCallbacks } from '../utils/stream'
+import { streamBotChat, type StreamCallbacks } from '../utils/stream'
 import { getCurrentTime } from '../utils/common'
 import type { BotResponse } from '../api/bot'
 
@@ -187,8 +187,6 @@ export const useChatStore = defineStore('chat', () => {
   const sendMessage = async (
     query: string,
     files: File[],
-    selectedKbIds: number[],
-    organizationId?: number,
     quote?: { content: string; role: string },
     routerReplace?: (query: Record<string, string>) => void,
   ) => {
@@ -205,31 +203,25 @@ export const useChatStore = defineStore('chat', () => {
     const callbacks = buildCallbacks(msgIndex, routerReplace)
 
     try {
-      if (isBotMode.value && currentBot.value) {
-        await streamBotChat(
-          currentBot.value.id,
-          query,
-          botConversationId.value,
-          useAgentMode.value,
-          callbacks,
-          abortController.value.signal,
-        )
-        if (conversationId.value) botConversationId.value = conversationId.value
-      } else {
-        const formData = new FormData()
-        if (conversationId.value) formData.append('conversation_id', conversationId.value)
-        formData.append('message', query)
-        formData.append('model_config_id', modelConfigId.value)
-        formData.append('use_agent', String(useAgentMode.value))
-        files.forEach(file => formData.append('files', file))
-        if (organizationId) formData.append('organization_id', organizationId.toString())
-        if (selectedKbIds.length > 0) formData.append('vector_db_ids', JSON.stringify(selectedKbIds))
-        if (quote) {
-          formData.append('quoted_content', quote.content)
-          formData.append('quoted_role', quote.role)
-        }
-        await streamChat(formData, callbacks, abortController.value.signal)
+      if (!currentBot.value) {
+        callbacks.onError?.('未选择数字助理，请先选择一个 Bot')
+        isGenerating.value = false
+        return
       }
+
+      const formData = new FormData()
+      formData.append('message', query)
+      formData.append('use_agent', String(useAgentMode.value))
+      if (botConversationId.value) formData.append('conversation_id', botConversationId.value)
+      files.forEach(file => formData.append('files', file))
+
+      await streamBotChat(
+        currentBot.value.id,
+        formData,
+        callbacks,
+        abortController.value.signal,
+      )
+      if (conversationId.value) botConversationId.value = conversationId.value
     } catch (e: unknown) {
       if ((e as Error).name === 'AbortError') return
       const errMsg = typeof e === 'string' ? e : (e as Error)?.message || '请求失败，请稍后再试'

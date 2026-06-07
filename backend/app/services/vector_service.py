@@ -1461,7 +1461,7 @@ class AsyncVectorService:
         school_id = None
         if model_config:
             organization_id = model_config.organization_id
-            school_id = model_config.school_id
+            school_id = getattr(model_config, 'school_id', None)
 
         if not embedding_id:
             result = await session.execute(

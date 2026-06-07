@@ -8,10 +8,9 @@ import type { ChatMessage, QuoteInfo } from '../types/chat';
 import { getMessages, rechat, setChatHistory } from '../api/chat';
 import { getCurrentTime, getCurrentStatus } from '../utils/common';
 import { fetchOwnConfigs, getModelConfig, getModelConfigs } from '../api/model';
-import { fetchOwnVectors, DownloadFile } from '../api/vectorDb';
+import { DownloadFile } from '../api/vectorDb';
 import { Refresh, FolderOpened, Download } from '@element-plus/icons-vue';
 import { useUserStore } from '../stores/user';
-import type { VectorDbBase } from '../types/vectorDb';
 import { getBot } from '../api/bot';
 import { useChatStore } from '../stores/chat';
 import { storeToRefs } from 'pinia';
@@ -57,59 +56,11 @@ const loadAllConfigs = async () => {
   );
 };
 
-const handleConfigChange = (id: number) => {
-  if (isConversationLocked.value) return;
-  modelConfigId.value = String(id);
-  const selected = allConfigs.value.find(c => c.id === id);
-  if (selected) configName.value = selected.name;
-};
-
 const currentConfigName = computed(() => {
   if (configName.value) return configName.value;
   const found = allConfigs.value.find(c => String(c.id) === modelConfigId.value);
   return found?.name || '未选择模型';
 });
-
-// 知识库选择
-const allKnowledgeBases = ref<VectorDbBase[]>([]);
-const selectedKbIds = ref<number[]>([]);
-const kbPanelOpen = ref(false);
-const expandedScope = ref<string | null>(null);
-
-const scopeGroupLabels: Record<string, string> = { shared: '组织共享', private: '私有' };
-const getKbVisibilityLabel = (kb: VectorDbBase) => {
-  if (!kb.organization_id) return '私有';
-  if (kb.org_name) return kb.org_name;
-  return '组织';
-};
-const kbGrouped = computed(() => {
-  const groups: Record<string, VectorDbBase[]> = {};
-  for (const kb of allKnowledgeBases.value) {
-    const key = kb.organization_id ? 'shared' : 'private';
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(kb);
-  }
-  return groups;
-});
-const toggleScope = (scope: string) => {
-  expandedScope.value = expandedScope.value === scope ? null : scope;
-};
-const toggleKb = (id: number) => {
-  const idx = selectedKbIds.value.indexOf(id);
-  if (idx !== -1) selectedKbIds.value.splice(idx, 1);
-  else selectedKbIds.value.push(id);
-};
-const selectedKbNames = computed(() =>
-  allKnowledgeBases.value.filter(kb => selectedKbIds.value.includes(kb.id)).map(kb => kb.name)
-);
-
-const loadKnowledgeBases = async () => {
-  try {
-    allKnowledgeBases.value = await fetchOwnVectors();
-  } catch (e) {
-    console.error('加载知识库列表失败:', e);
-  }
-};
 
 const userInput = ref('');
 const selectedFiles = ref<File[]>([]);
@@ -176,8 +127,6 @@ const formatTokens = (msg: ChatMessage) => {
   if (msg.streamTokenCount) return `~${msg.streamTokenCount} tokens`;
   return '';
 };
-
-const noModelConfigMessage = '当前没有可用的模型配置，请先到"模型配置"页面创建配置，或运行后端初始化脚本生成默认配置。';
 
 const getRequestErrorMessage = (error: unknown) => {
   if (typeof error === 'string') return error;
@@ -246,31 +195,9 @@ const getStateIcon = (state?: string) => {
   return icons[state || ''] || '⏳';
 };
 
-const findAvailableModelConfig = async () => {
-  const configs: Record<string, unknown>[] = [];
-  try { configs.push(...await fetchOwnConfigs()); } catch {}
-  try { configs.push(...await getModelConfigs()); } catch {}
-  const uniqueConfigs = configs.filter((config, index, all) =>
-    config?.id && all.findIndex(item => item?.id === config.id) === index
-  );
-  return uniqueConfigs[0] || null;
-};
-
-const ensureModelConfig = async (showMessage = true) => {
-  if (modelConfigId.value && Number(modelConfigId.value) > 0) return true;
-  const config = await findAvailableModelConfig();
-  if (config) { modelConfigId.value = String(config.id); configName.value = config.name || configName.value; return true; }
-  if (showMessage) appendAssistantMessage(noModelConfigMessage);
-  return false;
-};
-
 const sendMessage = async (query: string) => {
   query = query.trim();
   if (!query && selectedFiles.value.length === 0) return;
-
-  if (!isBotMode.value) {
-    if (!(await ensureModelConfig())) return;
-  }
 
   const pendingQuote = quotedMessage.value ? { ...quotedMessage.value } : undefined;
   quotedMessage.value = null;
@@ -285,8 +212,6 @@ const sendMessage = async (query: string) => {
   await chatStore.sendMessage(
     query,
     filesToSend,
-    selectedKbIds.value,
-    userStore.currentOrganization?.id,
     pendingQuote,
     routerReplace,
   );
@@ -463,16 +388,13 @@ const loadDate = async () => {
       const bot = await getBot(botId.value);
       currentBot.value = bot;
       if (bot.model_config_id) modelConfigId.value = String(bot.model_config_id);
-      if (bot.vector_db_ids?.length > 0) selectedKbIds.value = [...bot.vector_db_ids];
       if (bot.greeting) messages.value.push({ content: bot.greeting, role: 'assistant', create_at: getCurrentTime() } as ChatMessage);
     } catch { currentBot.value = null; }
   }
-  await Promise.all([loadAllConfigs(), loadKnowledgeBases()]);
+  await loadAllConfigs();
   if (!configName.value && modelConfigId.value && Number(modelConfigId.value) > 0) {
     const config = await getModelConfig(Number(modelConfigId.value));
     if (config && config.name) configName.value = config.name;
-  } else if (!isBotMode.value) {
-    await ensureModelConfig(false);
   }
   if (conversationId.value) {
     const formData = new FormData();
@@ -528,12 +450,6 @@ const handleChatHistoryChange = (val: number) => {
   });
 };
 
-const handleClickOutsideKb = (e: MouseEvent) => {
-  const wrap = document.querySelector('.kb-trigger-wrap');
-  if (kbPanelOpen.value && wrap && !wrap.contains(e.target as Node)) {
-    kbPanelOpen.value = false;
-  }
-};
 onMounted(() => {
   const routeConvId = route.query.conversation_id as string || '';
   const routeBotId = route.query.bot_id ? Number(route.query.bot_id) : 0;
@@ -547,13 +463,10 @@ onMounted(() => {
     loadDate();
   } else {
     loadAllConfigs();
-    loadKnowledgeBases();
     scrollToBottom();
   }
-  document.addEventListener('click', handleClickOutsideKb);
 });
 onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutsideKb);
   stopElapsedTimer();
 });
 
@@ -910,40 +823,6 @@ const scrollToBottom = () => {
             </div>
           </div>
           <p class="settings-hint">启用后 AI 会自动判断并调用工具（知识库检索、计算器等），展示推理过程</p>
-        </div>
-
-        <!-- 模型选择 -->
-        <div class="settings-section" v-if="!isBotMode">
-          <label class="settings-label">模型配置</label>
-          <div class="settings-model-list">
-            <div
-              v-for="config in allConfigs"
-              :key="config.id"
-              class="settings-model-item"
-              :class="{ active: String(config.id) === modelConfigId, disabled: isConversationLocked }"
-              @click="handleConfigChange(config.id)"
-            >
-              <span class="settings-model-name">{{ config.name }}</span>
-            </div>
-          </div>
-          <p v-if="isConversationLocked" class="settings-hint">对话进行中无法切换模型</p>
-        </div>
-
-        <!-- 知识库选择 -->
-        <div class="settings-section" v-if="!isBotMode && allKnowledgeBases.length > 0">
-          <label class="settings-label">知识库 ({{ selectedKbIds.length }})</label>
-          <div class="settings-kb-list">
-            <div
-              v-for="kb in allKnowledgeBases"
-              :key="kb.id"
-              class="settings-kb-item"
-              :class="{ active: selectedKbIds.includes(kb.id) }"
-              @click="toggleKb(kb.id)"
-            >
-              <span class="settings-kb-name">{{ kb.name }}</span>
-              <span class="settings-kb-scope">{{ getKbVisibilityLabel(kb) }}</span>
-            </div>
-          </div>
         </div>
 
         <!-- 上下文窗口 -->

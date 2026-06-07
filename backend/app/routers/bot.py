@@ -1,7 +1,8 @@
 """
 Bot（数字助理）路由
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import List, Optional
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,10 +10,29 @@ from app.database_async import get_async_db
 from app.utils.auth import get_current_user
 from app.services.bot_service import AsyncBotService
 from app.services.stream_chat_service import StreamChatService
-from app.schemas.bot import BotCreate, BotUpdate, BotResponse, BotChatRequest, BotChatResponse, BotStreamChatRequest
+from app.schemas.bot import BotCreate, BotUpdate, BotResponse, BotChatRequest, BotChatResponse
 from app.utils.logger_config import get_logger
 
 logger = get_logger(__name__)
+
+
+class BufferedUploadFile:
+    """UploadFile-compatible wrapper backed by in-memory bytes."""
+
+    def __init__(self, data: bytes, filename: str, content_type: str = "application/octet-stream"):
+        from io import BytesIO
+        self._buf = BytesIO(data)
+        self.filename = filename
+        self.content_type = content_type
+        self.size = len(data)
+
+    async def read(self, size: int = -1) -> bytes:
+        return self._buf.read(size)
+
+    async def seek(self, offset: int) -> None:
+        self._buf.seek(offset)
+
+
 router = APIRouter()
 
 
@@ -131,19 +151,21 @@ async def bot_chat(
 @router.post("/{bot_id}/chat/stream")
 async def bot_chat_stream(
     bot_id: int,
-    payload: BotStreamChatRequest,
+    message: str = Form(...),
+    conversation_id: Optional[str] = Form(None),
+    use_agent: bool = Form(True),
+    files: Optional[List[UploadFile]] = File(None),
     db: AsyncSession = Depends(get_async_db),
     current_user=Depends(get_current_user),
 ):
-    """Bot 流式对话（SSE）"""
+    """Bot 流式对话（SSE），支持文件上传"""
     try:
         from app.services.bot_service import check_forbidden_topics
-        from app.mappers.bot_mapper import AsyncBotMapper
         import json
 
         bot = await AsyncBotService.get_bot(db, bot_id, current_user)
 
-        hit = check_forbidden_topics(payload.message, bot.forbidden_topics or [])
+        hit = check_forbidden_topics(message, bot.forbidden_topics or [])
         if hit:
             async def forbidden_stream():
                 yield f"event: error\ndata: {json.dumps({'message': f'该话题（{hit}）不在本助理的服务范围内', 'forbidden_topic_hit': hit}, ensure_ascii=False)}\n\n"
@@ -152,17 +174,25 @@ async def bot_chat_stream(
         if not bot.model_config_id:
             raise ValueError("数字助理未关联模型配置")
 
+        buffered_files = None
+        if files:
+            buffered_files = []
+            for f in files:
+                data = await f.read()
+                buffered_files.append(BufferedUploadFile(data, f.filename, f.content_type))
+
         return StreamingResponse(
             StreamChatService.bot_chat_stream(
                 db=db,
                 user=current_user,
-                message=payload.message,
-                conversation_id=payload.conversation_id,
+                message=message,
+                conversation_id=conversation_id,
                 system_prompt=bot.system_prompt or "",
                 vector_db_ids=bot.vector_db_ids or [],
                 model_config_id=bot.model_config_id,
-                use_agent=payload.use_agent,
+                use_agent=use_agent,
                 bot_id=bot_id,
+                files=buffered_files,
             ),
             media_type="text/event-stream",
             headers={

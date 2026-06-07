@@ -427,6 +427,7 @@ class StreamChatService:
         model_config_id: Optional[int],
         use_agent: bool = True,
         bot_id: Optional[int] = None,
+        files: Optional[List[Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """Bot 流式对话"""
         try:
@@ -451,7 +452,22 @@ class StreamChatService:
                 "conversation_name": _conv_info.get("name", ""),
             })
 
-            await AsyncChatMapper.save_message(db, conv_id_int, "user", message)
+            attachment_info = await AsyncVectorService.upload_conversation_attachments(
+                db, user_id=user.id, conversation_id=conv_id_int,
+                model_config_id=model_config_id, files=files,
+            )
+            attachment_vector_db_ids = (
+                [attachment_info["vector_db_id"]]
+                if attachment_info.get("vector_db_id") and attachment_info.get("document_ids")
+                else []
+            )
+
+            message_for_history = message
+            if attachment_info.get("filenames"):
+                attachment_names = "、".join(attachment_info["filenames"])
+                message_for_history = f"{message}\n\n[已上传附件：{attachment_names}]"
+
+            await AsyncChatMapper.save_message(db, conv_id_int, "user", message_for_history)
 
             conversation = await AsyncChatMapper.get_conversation(db, conv_id_int)
             history_messages = conversation["history"]["messages"] if conversation else []
@@ -471,9 +487,11 @@ class StreamChatService:
                 use_agent = False
                 yield _sse_event("warning", {"type": "prompt_injection_detected", "message": "检测到异常指令，已切换为安全模式"})
 
+            all_vector_db_ids = (vector_db_ids or []) + attachment_vector_db_ids
+
             if use_agent:
                 # Agent 模式
-                tools = get_default_tools(db, model_config_id, user.id, vector_db_ids if vector_db_ids else None)
+                tools = get_default_tools(db, model_config_id, user.id, all_vector_db_ids if all_vector_db_ids else None)
                 engine = AgentEngine(tools=tools, max_iterations=5, user_id=user.id, session=db)
 
                 system_msgs = []
@@ -530,10 +548,10 @@ class StreamChatService:
                     message, history_dicts,
                 )
 
-                if vector_db_ids:
+                if all_vector_db_ids:
                     rag_result = await AsyncVectorService.query_vector_by_model(
                         db, model_config_id, retrieval_query, user_id=user.id,
-                        extra_vector_db_ids=vector_db_ids,
+                        extra_vector_db_ids=all_vector_db_ids,
                     )
                 elif model_config:
                     rag_result = await AsyncVectorService.query_vector_by_model(

@@ -49,9 +49,10 @@ function getBaseUrl(): string {
 }
 
 /**
- * 发起流式对话请求
+ * 发起 Bot 流式对话请求（FormData，支持文件上传）
  */
-export async function streamChat(
+export async function streamBotChat(
+  botId: number,
   formData: FormData,
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
@@ -60,7 +61,7 @@ export async function streamChat(
   const token = userStore.getToken()
   const baseUrl = getBaseUrl()
 
-  const response = await fetch(`${baseUrl}/chat/stream`, {
+  const response = await fetch(`${baseUrl}/bots/${botId}/chat/stream`, {
     method: 'POST',
     headers: {
       Authorization: token ? `Bearer ${token}` : '',
@@ -76,44 +77,6 @@ export async function streamChat(
   }
 
   await processSSEStream(response, callbacks)
-}
-
-/**
- * 发起 Bot 流式对话请求
- */
-export async function streamBotChat(
-  botId: number,
-  message: string,
-  conversationId?: string,
-  useAgent: boolean = true,
-  callbacks?: StreamCallbacks,
-  signal?: AbortSignal,
-): Promise<void> {
-  const userStore = useUserStore()
-  const token = userStore.getToken()
-  const baseUrl = getBaseUrl()
-
-  const response = await fetch(`${baseUrl}/bots/${botId}/chat/stream`, {
-    method: 'POST',
-    headers: {
-      Authorization: token ? `Bearer ${token}` : '',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      message,
-      conversation_id: conversationId,
-      use_agent: useAgent,
-    }),
-    signal,
-  })
-
-  if (!response.ok) {
-    const text = await response.text()
-    callbacks?.onError?.(text || `HTTP ${response.status}`)
-    return
-  }
-
-  await processSSEStream(response, callbacks || {})
 }
 
 /**
