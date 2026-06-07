@@ -168,6 +168,7 @@ class VectorRetriever:
         n_results: int = 5,
         folder_path: Optional[str] = None,
         parent_id: Optional[int] = None,
+        metadata_filter: Optional[Dict] = None,
     ) -> List[RetrievalResult]:
         """
         向量相似度检索。
@@ -178,6 +179,7 @@ class VectorRetriever:
             n_results: 返回结果数量
             folder_path: 可选的文件夹路径过滤
             parent_id: 可选的父文件夹 ID 过滤
+            metadata_filter: 结构化约束过滤（年份、院系等），直接传给 ChromaDB where
 
         Returns:
             RetrievalResult 列表
@@ -199,14 +201,25 @@ class VectorRetriever:
         try:
             query_embedding = await get_query_embedding_async(query_text)
 
-            where: Optional[Dict] = None
-            if folder_path or parent_id:
-                where = {}
-                if folder_path:
-                    where['folder_hierarchy'] = folder_path
-                if parent_id:
-                    where['parent_id'] = str(parent_id)
+            # 合并文件夹过滤和结构化约束过滤
+            where_conditions = []
+            if folder_path:
+                where_conditions.append({'folder_hierarchy': folder_path})
+            if parent_id:
+                where_conditions.append({'parent_id': str(parent_id)})
+            if metadata_filter:
+                if "$and" in metadata_filter:
+                    where_conditions.extend(metadata_filter["$and"])
+                else:
+                    where_conditions.append(metadata_filter)
 
+            where: Optional[Dict] = None
+            if len(where_conditions) == 1:
+                where = where_conditions[0]
+            elif len(where_conditions) > 1:
+                where = {"$and": where_conditions}
+
+            # 带约束过滤的检索：如果过滤后结果太少，回退到无约束检索
             kwargs: Dict[str, Any] = {
                 'query_embeddings': [query_embedding],
                 'n_results': n_results,
@@ -215,6 +228,18 @@ class VectorRetriever:
                 kwargs['where'] = where
 
             results = await asyncio.to_thread(collection.query, **kwargs)
+
+            # 如果有约束但结果不足，放宽约束重试
+            doc_count = len(results.get('documents', [[]])[0]) if results.get('documents') else 0
+            if where and metadata_filter and doc_count < 2:
+                logger.info(f"约束过滤后结果不足({doc_count}条)，放宽约束重试")
+                fallback_kwargs = {
+                    'query_embeddings': [query_embedding],
+                    'n_results': n_results,
+                }
+                fallback_results = await asyncio.to_thread(collection.query, **fallback_kwargs)
+                if len(fallback_results.get('documents', [[]])[0]) > doc_count:
+                    results = fallback_results
 
             dist_fn = _detect_distance_fn(collection)
 
@@ -254,6 +279,7 @@ class VectorRetriever:
         alpha: float = 0.7,
         folder_path: Optional[str] = None,
         parent_id: Optional[int] = None,
+        metadata_filter: Optional[Dict] = None,
     ) -> List[RetrievalResult]:
         """
         混合检索：向量检索 + BM25 关键词检索，RRF 算法融合。
@@ -265,16 +291,19 @@ class VectorRetriever:
             alpha: 向量分数权重（0-1），1-alpha 为 BM25 权重
             folder_path: 可选的文件夹路径过滤
             parent_id: 可选的父文件夹 ID 过滤
+            metadata_filter: 结构化约束过滤（年份、院系等）
 
         Returns:
             RetrievalResult 列表（按 RRF 融合分数降序）
         """
         # 并发执行向量检索 + BM25 检索
         vector_task = VectorRetriever.query(
-            vector_db_id, query_text, n_results * 2, folder_path, parent_id
+            vector_db_id, query_text, n_results * 2, folder_path, parent_id,
+            metadata_filter=metadata_filter,
         )
         bm25_task = VectorRetriever._bm25_query(
-            vector_db_id, query_text, n_results * 2
+            vector_db_id, query_text, n_results * 2,
+            metadata_filter=metadata_filter,
         )
         vector_results, bm25_results = await asyncio.gather(vector_task, bm25_task)
 
@@ -291,13 +320,17 @@ class VectorRetriever:
         vector_db_id: int,
         query_text: str,
         n_results: int,
+        metadata_filter: Optional[Dict] = None,
     ) -> List[RetrievalResult]:
         """BM25 关键词检索：优先 Elasticsearch，降级为内存 BM25"""
         # 优先使用 Elasticsearch（分布式、支持大规模知识库）
         try:
             from app.services.rag.es_retrieval import ES_ENABLED, search as es_search
             if ES_ENABLED:
-                es_results = await es_search(vector_db_id, query_text, n_results)
+                es_results = await es_search(
+                    vector_db_id, query_text, n_results,
+                    metadata_filter=metadata_filter,
+                )
                 if es_results:
                     return [
                         RetrievalResult(
@@ -495,21 +528,36 @@ class VectorRetriever:
         parent_id: Optional[int] = None,
     ) -> List[RetrievalResult]:
         """
-        增强检索管线（三路融合）：
-          Query 改写 → (可选)HyDE
-          → Vector + BM25 混合检索 + (可选)GraphRAG 三路召回
+        增强检索管线（三路融合 + 结构化约束过滤）：
+          约束提取 → Query 改写 → (可选)HyDE
+          → 带 metadata 过滤的 Vector + BM25 混合检索 + (可选)GraphRAG 三路召回
           → RRF 融合 → Reranker 精排 → MMR 去重
-        增强检索管线：Query 改写 → (可选)HyDE → 多路混合检索 → RRF 融合 → Reranker 精排
         集成 RAG Monitor 采集各阶段 latency 和质量指标。
         """
         from app.services.rag.monitor import RAGTimer, RAGQueryMetrics, get_rag_monitor
         timer = RAGTimer()
 
+        # ---- 结构化约束提取 ----
+        constraints = None
+        metadata_filter = None
+        try:
+            from app.services.rag.query_rewriter import extract_constraints_llm
+            constraints = await extract_constraints_llm(query_text)
+            if constraints and constraints.has_constraints():
+                metadata_filter = constraints.to_chromadb_where()
+                logger.info(
+                    f"🔎 [约束过滤] year={constraints.year}, "
+                    f"dept={constraints.department}, filter={metadata_filter}"
+                )
+        except Exception as e:
+            logger.warning(f"约束提取失败，使用无约束检索: {e}")
+
         queries = [query_text]
         if use_rewrite:
             try:
                 from app.services.rag.query_rewriter import rewrite_query
-                queries = await rewrite_query(query_text, n_rewrites=3)
+                rewrite_input = constraints.semantic_query if constraints and constraints.semantic_query != query_text else query_text
+                queries = await rewrite_query(rewrite_input, n_rewrites=3)
                 if not queries:
                     queries = [query_text]
             except Exception as e:
@@ -528,6 +576,7 @@ class VectorRetriever:
         retrieval_tasks = [
             VectorRetriever.hybrid_query(
                 vector_db_id, q, coarse_n, alpha, folder_path, parent_id,
+                metadata_filter=metadata_filter,
             )
             for q in queries
         ]
@@ -610,6 +659,16 @@ class VectorRetriever:
             final_results = coarse_results[:n_results]
 
         final_results = _mmr_diversify(final_results, n_results)
+
+        # 将约束信息附加到每个结果的 metadata 中，供后续 prompt 构建使用
+        if constraints and constraints.has_constraints():
+            for r in final_results:
+                r.metadata['_query_constraints'] = {
+                    'year': constraints.year,
+                    'department': constraints.department,
+                    'category': constraints.category,
+                    'constraint_hint': constraints.to_prompt_hint(),
+                }
 
         post_rerank_top1 = final_results[0].chunk_id if final_results else ""
         top1_sim = final_results[0].similarity if final_results else 0

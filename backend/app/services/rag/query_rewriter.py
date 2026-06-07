@@ -3,18 +3,244 @@ Query 改写模块
 
 解决用户口语化提问和知识库书面用词不匹配的问题。
 
-两种策略：
+三种能力：
 1. Multi-Query Rewriting：一个问题改写成多个检索 query，多路召回后合并
 2. HyDE（Hypothetical Document Embedding）：让 LLM 生成假设答案，用答案文本去检索
+3. 结构化约束提取：从用户查询中提取时间、院系等硬约束，用于 metadata 过滤
 """
 import asyncio
 import json
-from typing import List, Dict, Optional
+import re
+from typing import List, Dict, Optional, Any
+from dataclasses import dataclass, field
 from openai import AsyncOpenAI
 from app.config import settings
 from app.utils.logger_config import get_logger
 
 logger = get_logger(__name__)
+
+
+# ------------------------------------------------------------------
+# 结构化约束提取
+# ------------------------------------------------------------------
+
+@dataclass
+class QueryConstraints:
+    """从用户查询中提取的结构化约束"""
+    year: Optional[str] = None
+    department: Optional[str] = None
+    category: Optional[str] = None
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    semantic_query: str = ""
+    raw_query: str = ""
+
+    def has_constraints(self) -> bool:
+        return bool(self.year or self.department or self.category or self.date_from or self.date_to)
+
+    def to_chromadb_where(self) -> Optional[Dict]:
+        """转换为 ChromaDB where 过滤条件"""
+        conditions = []
+        if self.year:
+            conditions.append({"publish_year": self.year})
+        if self.department:
+            conditions.append({"department": self.department})
+        if self.category:
+            conditions.append({"category": self.category})
+        if not conditions:
+            return None
+        if len(conditions) == 1:
+            return conditions[0]
+        return {"$and": conditions}
+
+    def to_es_filter(self) -> List[Dict]:
+        """转换为 Elasticsearch filter 条件"""
+        filters = []
+        if self.year:
+            filters.append({"term": {"publish_year": self.year}})
+        if self.department:
+            filters.append({"term": {"department": self.department}})
+        if self.category:
+            filters.append({"term": {"category": self.category}})
+        if self.date_from or self.date_to:
+            date_range = {}
+            if self.date_from:
+                date_range["gte"] = self.date_from
+            if self.date_to:
+                date_range["lte"] = self.date_to
+            filters.append({"range": {"publish_date": date_range}})
+        return filters
+
+    def to_prompt_hint(self) -> str:
+        """生成给 LLM 的约束提示，用于生成阶段校验"""
+        parts = []
+        if self.year:
+            parts.append(f"年份={self.year}年")
+        if self.department:
+            parts.append(f"院系/部门={self.department}")
+        if self.category:
+            parts.append(f"分类={self.category}")
+        if self.date_from:
+            parts.append(f"起始日期={self.date_from}")
+        if self.date_to:
+            parts.append(f"截止日期={self.date_to}")
+        return "、".join(parts)
+
+
+# 院系名称的各种简称 → 全称映射（用于规则匹配）
+_DEPARTMENT_ALIASES = {
+    "计算机": "计算机科学与工程学院",
+    "计算机学院": "计算机科学与工程学院",
+    "计科": "计算机科学与工程学院",
+    "材料": "材料科学与工程学院",
+    "材料学院": "材料科学与工程学院",
+    "机电": "机械电子工程学院",
+    "机电学院": "机械电子工程学院",
+    "电气": "电气与自动化工程学院",
+    "电气学院": "电气与自动化工程学院",
+    "电子": "电子信息工程学院",
+    "电信": "电子信息工程学院",
+    "电信学院": "电子信息工程学院",
+    "测绘": "测绘与空间信息学院",
+    "测绘学院": "测绘与空间信息学院",
+    "地科": "地球科学与工程学院",
+    "地科学院": "地球科学与工程学院",
+    "安环": "安全与环境工程学院",
+    "安环学院": "安全与环境工程学院",
+    "化生": "化学与生物工程学院",
+    "化生学院": "化学与生物工程学院",
+    "交通": "交通学院",
+    "交通学院": "交通学院",
+    "海洋": "海洋科学与工程学院",
+    "海洋学院": "海洋科学与工程学院",
+    "经管": "经济管理学院",
+    "经管学院": "经济管理学院",
+    "财经": "财经学院",
+    "财经学院": "财经学院",
+    "数学": "数学与系统科学学院",
+    "数学学院": "数学与系统科学学院",
+    "文法": "文法学院",
+    "文法学院": "文法学院",
+    "外语": "外国语学院",
+    "外语学院": "外国语学院",
+    "艺术": "艺术学院",
+    "艺术学院": "艺术学院",
+    "马院": "马克思主义学院",
+    "马克思": "马克思主义学院",
+    "储能": "储能技术学院",
+    "储能学院": "储能技术学院",
+    "智能装备": "智能装备学院",
+    "智装": "智能装备学院",
+    "创新创业": "创新创业学院",
+    "土木": "土木工程与建筑学院",
+    "土建": "土木工程与建筑学院",
+    "教务处": "教务处",
+    "教务": "教务处",
+    "研究生院": "研究生院",
+    "学生处": "学生工作处",
+    "学工处": "学生工作处",
+    "图书馆": "图书馆",
+}
+
+_YEAR_RE = re.compile(r'(\d{4})\s*年')
+_DATE_RANGE_RE = re.compile(r'(\d{4})[年/-](\d{1,2})[月/-](?:(\d{1,2})[日号]?)?')
+
+
+def extract_constraints_rule(query: str) -> QueryConstraints:
+    """规则提取：从查询中用正则和关键词匹配提取约束（零 LLM 调用）"""
+    constraints = QueryConstraints(raw_query=query, semantic_query=query)
+
+    # 提取年份
+    year_match = _YEAR_RE.search(query)
+    if year_match:
+        year = year_match.group(1)
+        if 1990 <= int(year) <= 2030:
+            constraints.year = year
+
+    # 提取院系
+    for alias, full_name in sorted(_DEPARTMENT_ALIASES.items(), key=lambda x: -len(x[0])):
+        if alias in query:
+            constraints.department = full_name
+            break
+
+    return constraints
+
+
+async def extract_constraints_llm(
+    query: str,
+    model: str = None,
+) -> QueryConstraints:
+    """
+    LLM 约束提取：用 LLM 从自然语言查询中提取结构化约束。
+    先用规则快速匹配，匹配不到再调 LLM。
+    """
+    # 先尝试规则提取
+    rule_result = extract_constraints_rule(query)
+    if rule_result.has_constraints():
+        logger.info(f"约束提取(规则): year={rule_result.year}, dept={rule_result.department}")
+        return rule_result
+
+    # 规则提取不到，调 LLM
+    model = model or settings.rag_llm_model
+    client = _get_rewrite_client()
+
+    prompt = (
+        "你是一个查询解析器。从用户的问题中提取结构化约束条件。\n\n"
+        "需要提取的字段：\n"
+        "- year: 年份（如 2019、2020），如果未提及则为 null\n"
+        "- department: 院系或部门名称（如 计算机科学与工程学院、教务处），如果未提及则为 null\n"
+        "- category: 信息分类（如 通知公告、学院新闻、招聘信息），如果未提及则为 null\n"
+        "- semantic_query: 去掉时间和院系约束后的语义查询部分\n\n"
+        "只输出 JSON，格式：\n"
+        '{"year": "2019", "department": "计算机科学与工程学院", "category": null, "semantic_query": "活动"}\n\n'
+        f"用户问题：{query}"
+    )
+
+    try:
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200,
+            temperature=0.0,
+        )
+        text = resp.choices[0].message.content.strip()
+
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        if start >= 0 and end > start:
+            parsed = json.loads(text[start:end])
+        else:
+            logger.warning(f"约束提取输出格式异常: {text[:100]}")
+            return QueryConstraints(raw_query=query, semantic_query=query)
+
+        constraints = QueryConstraints(
+            year=parsed.get("year"),
+            department=parsed.get("department"),
+            category=parsed.get("category"),
+            semantic_query=parsed.get("semantic_query") or query,
+            raw_query=query,
+        )
+
+        # 对 LLM 输出的院系名做模糊匹配修正
+        if constraints.department:
+            dept = constraints.department
+            if dept in _DEPARTMENT_ALIASES:
+                constraints.department = _DEPARTMENT_ALIASES[dept]
+            elif dept not in _DEPARTMENT_ALIASES.values():
+                for alias, full in _DEPARTMENT_ALIASES.items():
+                    if alias in dept or dept in full:
+                        constraints.department = full
+                        break
+
+        logger.info(
+            f"约束提取(LLM): year={constraints.year}, "
+            f"dept={constraints.department}, cat={constraints.category}"
+        )
+        return constraints
+
+    except Exception as e:
+        logger.error(f"LLM 约束提取失败: {e}")
+        return extract_constraints_rule(query)
 
 _rewrite_client: AsyncOpenAI = None
 
