@@ -2012,13 +2012,13 @@ class AsyncVectorService:
                     if RAG_USE_ENHANCED:
                         from app.services.rag.retrieval import VectorRetriever
                         prepared = await VectorRetriever.prepare_query(
-                            message, n_results=3,
+                            message, n_results=LAYERED_RAG_MAX_CONTEXTS,
                             use_rewrite=RAG_USE_REWRITE,
                             use_rerank=RAG_USE_RERANK,
                             use_hyde=RAG_USE_HYDE,
                         )
                     return await AsyncVectorService._query_single_vector_db_layer(
-                        vdb, "user_selected", message, n_results=3,
+                        vdb, "user_selected", message, n_results=LAYERED_RAG_MAX_CONTEXTS,
                         prepared_query=prepared,
                     )
                 return AsyncVectorService._empty_rag_result()
@@ -2039,7 +2039,7 @@ class AsyncVectorService:
             if RAG_USE_ENHANCED:
                 from app.services.rag.retrieval import VectorRetriever
                 prepared = await VectorRetriever.prepare_query(
-                    message, n_results=3,
+                    message, n_results=LAYERED_RAG_MAX_CONTEXTS,
                     use_rewrite=RAG_USE_REWRITE,
                     use_rerank=RAG_USE_RERANK,
                     use_hyde=RAG_USE_HYDE,
@@ -2053,7 +2053,7 @@ class AsyncVectorService:
                     primary_vector_db,
                     primary_layer,
                     message,
-                    n_results=3,
+                    n_results=LAYERED_RAG_MAX_CONTEXTS,
                     prepared_query=prepared,
                 )
                 fallback_candidates = candidates[1:]
@@ -2070,7 +2070,7 @@ class AsyncVectorService:
             if fallback_candidates:
                 fallback_results = await asyncio.gather(*[
                     AsyncVectorService._query_single_vector_db_layer(
-                        vector_db, layer, message, n_results=3,
+                        vector_db, layer, message, n_results=LAYERED_RAG_MAX_CONTEXTS,
                         prepared_query=prepared,
                     )
                     for vector_db, layer in fallback_candidates
