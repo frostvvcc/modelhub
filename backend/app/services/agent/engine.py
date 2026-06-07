@@ -139,8 +139,6 @@ class AgentEngine:
                     llm_span.prompt_tokens = response.usage.prompt_tokens
                     llm_span.completion_tokens = response.usage.completion_tokens
                     yield AgentEvent(type="token_usage", data={
-                        "total_tokens": self.trace.total_tokens,
-                        "prompt_tokens": self.trace.total_prompt_tokens,
                         "completion_tokens": self.trace.total_completion_tokens,
                     })
                     try:
@@ -485,8 +483,6 @@ class SimpleStreamEngine:
 
         self.trace.finish()
         yield AgentEvent(type="token_usage", data={
-            "total_tokens": self.trace.total_tokens,
-            "prompt_tokens": self.trace.total_prompt_tokens,
             "completion_tokens": self.trace.total_completion_tokens,
         })
         yield AgentEvent(type="done", data={"content": accumulated})

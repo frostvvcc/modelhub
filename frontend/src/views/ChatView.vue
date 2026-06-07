@@ -123,8 +123,8 @@ const formatElapsed = (startTime: number | undefined, isDone: boolean, trace?: {
   return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
 };
 const formatTokens = (msg: ChatMessage) => {
-  if (msg.trace?.total_tokens) return `${msg.trace.total_tokens} tokens`;
-  if (msg.streamTokenCount != null) return `~${msg.streamTokenCount} tokens`;
+  if (msg.trace?.completion_tokens) return `${msg.trace.completion_tokens} tokens`;
+  if (msg.streamTokenCount) return `~${msg.streamTokenCount} tokens`;
   if (msg.isStreaming) return '~0 tokens';
   return '';
 };
