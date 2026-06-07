@@ -50,6 +50,52 @@ _CHITCHAT_PATTERNS = re.compile(
     re.IGNORECASE
 )
 
+def _compute_grounded_ratio(
+    rag_result: dict,
+    source_citations: list,
+) -> float:
+    """
+    综合可信度评估：语义相似度 × 约束匹配度。
+
+    纯 avg_similarity 只衡量"文本像不像"，不判断"内容对不对"。
+    加入约束匹配度后，检索结果的院系/年份与用户查询不匹配时自动降级。
+    """
+    if not rag_result:
+        return 0.0
+
+    avg_sim = float(rag_result.get("avg_similarity", 0.0))
+    total_results = int(rag_result.get("total_results", 0))
+
+    if total_results == 0:
+        return 0.0
+
+    # 从检索结果中提取约束匹配信息
+    constraint_ratio = 1.0
+    sources = rag_result.get("sources", [])
+    if sources:
+        first_meta = (sources[0].get("metadata") or {}) if isinstance(sources[0], dict) else {}
+        query_constraints = first_meta.get("_query_constraints")
+
+        if query_constraints and (query_constraints.get("year") or query_constraints.get("department")):
+            matched = 0
+            for s in sources:
+                meta = (s.get("metadata") or {}) if isinstance(s, dict) else {}
+                year_ok = True
+                dept_ok = True
+                if query_constraints.get("year"):
+                    year_ok = meta.get("publish_year") == query_constraints["year"]
+                if query_constraints.get("department"):
+                    dept = meta.get("department", "")
+                    target = query_constraints["department"]
+                    dept_ok = target in dept or dept in target
+                if year_ok and dept_ok:
+                    matched += 1
+            constraint_ratio = matched / max(len(sources), 1)
+
+    grounded = avg_sim * constraint_ratio
+    return max(0.0, min(1.0, grounded))
+
+
 def classify_intent(message: str) -> str:
     """
     意图分类器（纯规则，不消耗 token）。
@@ -353,7 +399,7 @@ class StreamChatService:
             content, source_citations = AsyncChatService._renumber_citations(content, source_citations, ct)
 
             used_kb = (rag_result or {}).get("used_knowledge_base", False)
-            grounded_ratio = max(0.0, min(1.0, (rag_result or {}).get("avg_similarity", 0.0))) if used_kb else 0.0
+            grounded_ratio = _compute_grounded_ratio(rag_result, source_citations) if used_kb else 0.0
             grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
 
             # 先构建基础 metadata 并立即返回给前端（不等 Grounding）
@@ -601,7 +647,7 @@ class StreamChatService:
             content, source_citations = AsyncChatService._renumber_citations(content, source_citations, ct)
 
             used_kb = (rag_result or {}).get("used_knowledge_base", False)
-            grounded_ratio = max(0.0, min(1.0, (rag_result or {}).get("avg_similarity", 0.0))) if used_kb else 0.0
+            grounded_ratio = _compute_grounded_ratio(rag_result, source_citations) if used_kb else 0.0
             grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
 
             bot_metadata = {}
