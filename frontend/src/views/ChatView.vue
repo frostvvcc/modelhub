@@ -125,7 +125,6 @@ const formatElapsed = (startTime: number | undefined, isDone: boolean, trace?: {
 const formatTokens = (msg: ChatMessage) => {
   if (msg.trace?.completion_tokens) return `${msg.trace.completion_tokens} tokens`;
   if (msg.streamTokenCount) return `~${msg.streamTokenCount} tokens`;
-  if (msg.isStreaming) return '~0 tokens';
   return '';
 };
 

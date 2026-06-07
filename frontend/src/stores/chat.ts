@@ -172,7 +172,11 @@ export const useChatStore = defineStore('chat', () => {
       messages.value[msgIndex].trace = trace
     },
     onTokenUsage(usage) {
-      messages.value[msgIndex].streamTokenCount = usage.completion_tokens
+      const apiCount = usage.completion_tokens || 0
+      const current = messages.value[msgIndex].streamTokenCount || 0
+      if (apiCount > current) {
+        messages.value[msgIndex].streamTokenCount = apiCount
+      }
       triggerRender()
     },
     onDone() {
