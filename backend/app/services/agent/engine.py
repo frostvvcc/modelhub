@@ -449,14 +449,26 @@ class SimpleStreamEngine:
             )
 
             token_count = 0
+            stream_usage = None
             async for chunk in stream:
+                if hasattr(chunk, 'usage') and chunk.usage:
+                    stream_usage = chunk.usage
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if delta and delta.content:
                     accumulated += delta.content
                     token_count += 1
                     yield AgentEvent(type="token", data={"content": delta.content})
 
-            span.completion_tokens = token_count
+            if stream_usage:
+                span.prompt_tokens = getattr(stream_usage, 'prompt_tokens', 0) or 0
+                span.completion_tokens = getattr(stream_usage, 'completion_tokens', 0) or token_count
+                span.tokens_used = getattr(stream_usage, 'total_tokens', 0) or (span.prompt_tokens + span.completion_tokens)
+            else:
+                from app.services.agent.memory import count_tokens
+                span.completion_tokens = count_tokens(accumulated)
+                prompt_text = " ".join(m.get("content", "") for m in messages if m.get("content"))
+                span.prompt_tokens = count_tokens(prompt_text)
+                span.tokens_used = span.prompt_tokens + span.completion_tokens
             span.finish(output={"content_length": len(accumulated)})
 
         except Exception as e:
