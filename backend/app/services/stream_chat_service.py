@@ -7,6 +7,7 @@
   2. 简单流式：直接流式输出 LLM 回答（无工具调用）
 """
 import json
+import os
 import re
 from typing import Optional, List, Dict, Any, AsyncGenerator
 from datetime import datetime
@@ -355,9 +356,10 @@ class StreamChatService:
             grounded_ratio = max(0.0, min(1.0, (rag_result or {}).get("avg_similarity", 0.0))) if used_kb else 0.0
             grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
 
-            # Claim-Level Grounding：NLI 验证 LLM 回答是否被来源支撑
+            # Claim-Level Grounding：仅在低置信度时才执行（省 2 次 LLM 调用）
             grounding_detail = None
-            if used_kb and source_citations and len(source_citations) >= 3:
+            _grounding_enabled = os.getenv("RAG_USE_GROUNDING", "false").lower() in ("true", "1", "yes")
+            if _grounding_enabled and used_kb and source_citations and len(source_citations) >= 3 and grounded_ratio < 0.55:
                 try:
                     from app.services.rag.grounding import verify_grounding
                     grounding_detail = await verify_grounding(content, source_citations)
@@ -607,9 +609,10 @@ class StreamChatService:
             grounded_ratio = max(0.0, min(1.0, (rag_result or {}).get("avg_similarity", 0.0))) if used_kb else 0.0
             grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
 
-            # Claim-Level Grounding
+            # Claim-Level Grounding：仅在低置信度时才执行
             grounding_detail = None
-            if used_kb and source_citations and len(source_citations) >= 3:
+            _bot_grounding_enabled = os.getenv("RAG_USE_GROUNDING", "false").lower() in ("true", "1", "yes")
+            if _bot_grounding_enabled and used_kb and source_citations and len(source_citations) >= 3 and grounded_ratio < 0.55:
                 try:
                     from app.services.rag.grounding import verify_grounding
                     grounding_detail = await verify_grounding(content, source_citations)

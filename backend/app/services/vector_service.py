@@ -1926,24 +1926,26 @@ class AsyncVectorService:
         vector_db: VectorDb,
         layer: str,
         message: str,
-        n_results: int = 5
+        n_results: int = 5,
+        lightweight: bool = False,
     ) -> Dict[str, Any]:
+        """查询单个知识库。lightweight=True 时跳过 LLM 改写和 rerank，用于 fallback 层。"""
         from app.services.rag.retrieval import VectorRetriever
 
         if not vector_db:
             return AsyncVectorService._empty_rag_result()
 
         try:
-            if RAG_USE_ENHANCED:
+            if lightweight or not RAG_USE_ENHANCED:
+                rag_results = await VectorRetriever.hybrid_query(
+                    vector_db.id, message, n_results=n_results,
+                )
+            else:
                 rag_results = await VectorRetriever.enhanced_query(
                     vector_db.id, message, n_results=n_results,
                     use_rewrite=RAG_USE_REWRITE,
                     use_rerank=RAG_USE_RERANK,
                     use_hyde=RAG_USE_HYDE,
-                )
-            else:
-                rag_results = await VectorRetriever.hybrid_query(
-                    vector_db.id, message, n_results=n_results,
                 )
             return AsyncVectorService._serialize_retrieval_results(vector_db, layer, rag_results)
         except Exception as exc:
@@ -2034,7 +2036,9 @@ class AsyncVectorService:
             fallback_results = []
             if fallback_candidates:
                 fallback_results = await asyncio.gather(*[
-                    AsyncVectorService._query_single_vector_db_layer(vector_db, layer, message, n_results=3)
+                    AsyncVectorService._query_single_vector_db_layer(
+                        vector_db, layer, message, n_results=3, lightweight=True,
+                    )
                     for vector_db, layer in fallback_candidates
                 ])
 

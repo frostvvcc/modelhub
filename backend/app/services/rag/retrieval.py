@@ -537,12 +537,12 @@ class VectorRetriever:
         from app.services.rag.monitor import RAGTimer, RAGQueryMetrics, get_rag_monitor
         timer = RAGTimer()
 
-        # ---- 结构化约束提取 ----
+        # ---- 结构化约束提取（规则优先，零延迟）----
         constraints = None
         metadata_filter = None
         try:
-            from app.services.rag.query_rewriter import extract_constraints_llm
-            constraints = await extract_constraints_llm(query_text)
+            from app.services.rag.query_rewriter import extract_constraints_rule
+            constraints = extract_constraints_rule(query_text)
             if constraints and constraints.has_constraints():
                 metadata_filter = constraints.to_chromadb_where()
                 logger.info(
@@ -552,22 +552,38 @@ class VectorRetriever:
         except Exception as e:
             logger.warning(f"约束提取失败，使用无约束检索: {e}")
 
+        # ---- Query 改写和 HyDE 并行执行（省掉串行等待）----
         queries = [query_text]
-        if use_rewrite:
-            try:
-                from app.services.rag.query_rewriter import rewrite_query
-                rewrite_input = constraints.semantic_query if constraints and constraints.semantic_query != query_text else query_text
-                queries = await rewrite_query(rewrite_input, n_rewrites=3)
-                if not queries:
-                    queries = [query_text]
-            except Exception as e:
-                logger.warning(f"Query 改写失败，使用原始 query: {e}")
-
         hyde_text = None
+
+        rewrite_coro = None
+        hyde_coro = None
+
+        if use_rewrite:
+            from app.services.rag.query_rewriter import rewrite_query
+            rewrite_input = constraints.semantic_query if constraints and constraints.semantic_query != query_text else query_text
+            rewrite_coro = rewrite_query(rewrite_input, n_rewrites=3)
+
         if use_hyde:
+            from app.services.rag.query_rewriter import hyde_rewrite
+            hyde_coro = hyde_rewrite(query_text)
+
+        if rewrite_coro and hyde_coro:
+            rewrite_result, hyde_result = await asyncio.gather(
+                rewrite_coro, hyde_coro, return_exceptions=True,
+            )
+            if not isinstance(rewrite_result, Exception) and rewrite_result:
+                queries = rewrite_result
+            if not isinstance(hyde_result, Exception) and hyde_result:
+                hyde_text = hyde_result
+        elif rewrite_coro:
             try:
-                from app.services.rag.query_rewriter import hyde_rewrite
-                hyde_text = await hyde_rewrite(query_text)
+                queries = await rewrite_coro or [query_text]
+            except Exception as e:
+                logger.warning(f"Query 改写失败: {e}")
+        elif hyde_coro:
+            try:
+                hyde_text = await hyde_coro
             except Exception as e:
                 logger.warning(f"HyDE 生成失败: {e}")
 
