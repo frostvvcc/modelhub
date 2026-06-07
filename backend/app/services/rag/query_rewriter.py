@@ -38,13 +38,29 @@ class QueryConstraints:
     def has_constraints(self) -> bool:
         return bool(self.year or self.department or self.category or self.date_from or self.date_to)
 
+    def _department_variants(self) -> list:
+        """生成院系名称的所有可能变体（全称、简称、新闻网前缀等）"""
+        if not self.department:
+            return []
+        dept = self.department
+        variants = [dept]
+        short = _DEPARTMENT_SHORT_NAMES.get(dept)
+        if short:
+            variants.append(f"新闻网-{short}")
+        variants.append(f"新闻网-{dept}")
+        return list(dict.fromkeys(variants))
+
     def to_chromadb_where(self) -> Optional[Dict]:
-        """转换为 ChromaDB where 过滤条件"""
+        """转换为 ChromaDB where 过滤条件，院系用 $in 匹配所有变体"""
         conditions = []
         if self.year:
             conditions.append({"publish_year": self.year})
         if self.department:
-            conditions.append({"department": self.department})
+            variants = self._department_variants()
+            if len(variants) == 1:
+                conditions.append({"department": variants[0]})
+            else:
+                conditions.append({"department": {"$in": variants}})
         if self.category:
             conditions.append({"category": self.category})
         if not conditions:
@@ -54,12 +70,16 @@ class QueryConstraints:
         return {"$and": conditions}
 
     def to_es_filter(self) -> List[Dict]:
-        """转换为 Elasticsearch filter 条件"""
+        """转换为 Elasticsearch filter 条件，院系用 terms 匹配所有变体"""
         filters = []
         if self.year:
             filters.append({"term": {"publish_year": self.year}})
         if self.department:
-            filters.append({"term": {"department": self.department}})
+            variants = self._department_variants()
+            if len(variants) == 1:
+                filters.append({"term": {"department": variants[0]}})
+            else:
+                filters.append({"terms": {"department": variants}})
         if self.category:
             filters.append({"term": {"category": self.category}})
         if self.date_from or self.date_to:
@@ -140,6 +160,41 @@ _DEPARTMENT_ALIASES = {
     "学生处": "学生工作处",
     "学工处": "学生工作处",
     "图书馆": "图书馆",
+    "经济管理学院": "经济管理学院",
+    "能源": "能源与矿业工程学院",
+    "能源学院": "能源与矿业工程学院",
+    "资源": "资源学院",
+    "资源学院": "资源学院",
+    "体育": "体育学院",
+    "体育学院": "体育学院",
+}
+
+# 全称 → 新闻网中使用的简称（用于生成 department 变体）
+_DEPARTMENT_SHORT_NAMES = {
+    "计算机科学与工程学院": "计算机学院",
+    "材料科学与工程学院": "材料学院",
+    "机械电子工程学院": "机电学院",
+    "电气与自动化工程学院": "自动化学院",
+    "电子信息工程学院": "电信学院",
+    "测绘与空间信息学院": "测绘学院",
+    "地球科学与工程学院": "地科学院",
+    "安全与环境工程学院": "安全学院",
+    "化学与生物工程学院": "化工学院",
+    "海洋科学与工程学院": "海洋学院",
+    "经济管理学院": "经管学院",
+    "土木工程与建筑学院": "土建学院",
+    "储能技术学院": "储能学院",
+    "能源与矿业工程学院": "能源学院",
+    "数学与系统科学学院": "数学学院",
+    "马克思主义学院": "马克思主义学院",
+    "智能装备学院": "智能装备学院",
+    "财经学院": "财经学院",
+    "交通学院": "交通学院",
+    "外国语学院": "外国语学院",
+    "文法学院": "文法学院",
+    "艺术学院": "艺术学院",
+    "资源学院": "资源学院",
+    "体育学院": "体育学院",
 }
 
 _YEAR_RE = re.compile(r'(\d{4})\s*年')

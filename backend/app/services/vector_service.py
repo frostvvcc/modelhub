@@ -2006,9 +2006,21 @@ class AsyncVectorService:
             if not user_id:
                 if extra_vector_db_ids:
                     vdb = await AsyncVectorMapper.get_vector_db(session, extra_vector_db_ids[0])
+                    if not vdb:
+                        return AsyncVectorService._empty_rag_result()
+                    prepared = None
+                    if RAG_USE_ENHANCED:
+                        from app.services.rag.retrieval import VectorRetriever
+                        prepared = await VectorRetriever.prepare_query(
+                            message, n_results=3,
+                            use_rewrite=RAG_USE_REWRITE,
+                            use_rerank=RAG_USE_RERANK,
+                            use_hyde=RAG_USE_HYDE,
+                        )
                     return await AsyncVectorService._query_single_vector_db_layer(
                         vdb, "user_selected", message, n_results=3,
-                    ) if vdb else AsyncVectorService._empty_rag_result()
+                        prepared_query=prepared,
+                    )
                 return AsyncVectorService._empty_rag_result()
 
             candidates = await AsyncVectorService._get_layered_vector_db_candidates(

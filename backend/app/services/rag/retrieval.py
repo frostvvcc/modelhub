@@ -219,7 +219,7 @@ class VectorRetriever:
             elif len(where_conditions) > 1:
                 where = {"$and": where_conditions}
 
-            # 带约束过滤的检索：如果过滤后结果太少，回退到无约束检索
+            # 带约束过滤的检索 + 渐进式放宽策略
             kwargs: Dict[str, Any] = {
                 'query_embeddings': [query_embedding],
                 'n_results': n_results,
@@ -229,17 +229,33 @@ class VectorRetriever:
 
             results = await asyncio.to_thread(collection.query, **kwargs)
 
-            # 如果有约束但结果不足，放宽约束重试
             doc_count = len(results.get('documents', [[]])[0]) if results.get('documents') else 0
             if where and metadata_filter and doc_count < 2:
-                logger.info(f"约束过滤后结果不足({doc_count}条)，放宽约束重试")
-                fallback_kwargs = {
-                    'query_embeddings': [query_embedding],
-                    'n_results': n_results,
-                }
-                fallback_results = await asyncio.to_thread(collection.query, **fallback_kwargs)
-                if len(fallback_results.get('documents', [[]])[0]) > doc_count:
-                    results = fallback_results
+                # 渐进式放宽：先去掉年份只保留院系，如果还不够再全放宽
+                # 每次放宽都标记结果为非精确匹配
+                relaxed = False
+                if "$and" in (metadata_filter or {}):
+                    conditions = metadata_filter["$and"]
+                    # 只保留 department 过滤，去掉 year
+                    dept_only = [c for c in conditions if "department" in c]
+                    if dept_only and len(dept_only) < len(conditions):
+                        logger.info(f"约束过滤后结果不足({doc_count}条)，放宽：去掉年份，保留院系")
+                        relaxed_kwargs = dict(kwargs)
+                        relaxed_kwargs['where'] = dept_only[0] if len(dept_only) == 1 else {"$and": dept_only}
+                        relaxed_results = await asyncio.to_thread(collection.query, **relaxed_kwargs)
+                        relaxed_count = len(relaxed_results.get('documents', [[]])[0])
+                        if relaxed_count > doc_count:
+                            results = relaxed_results
+                            doc_count = relaxed_count
+                            relaxed = True
+
+                if doc_count < 1 and not relaxed:
+                    logger.info(f"约束过滤后仍无结果，全部放宽")
+                    fallback_kwargs = {
+                        'query_embeddings': [query_embedding],
+                        'n_results': n_results,
+                    }
+                    results = await asyncio.to_thread(collection.query, **fallback_kwargs)
 
             dist_fn = _detect_distance_fn(collection)
 

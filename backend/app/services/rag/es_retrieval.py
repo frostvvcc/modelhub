@@ -250,30 +250,41 @@ async def search(
                 "document_id": hit["_source"].get("document_id", ""),
             })
 
-        # 如果有约束但结果太少，放宽约束重试
+        # 渐进式放宽：先去掉年份只保留院系，如果还不够再全放宽
         if es_filter and len(results) < 2:
-            logger.info(f"ES 约束过滤后结果不足({len(results)}条)，放宽约束重试")
-            fallback_resp = await client.search(
-                index=index,
-                body={
-                    "query": {"bool": {
+            dept_filter = [f for f in es_filter if "department" in str(f)]
+            if dept_filter and len(dept_filter) < len(es_filter):
+                logger.info(f"ES 约束过滤后结果不足({len(results)}条)，放宽：去掉年份，保留院系")
+                relaxed_query = dict(bool_query)
+                relaxed_query["filter"] = dept_filter
+                relaxed_resp = await client.search(
+                    index=index,
+                    body={"query": {"bool": relaxed_query}, "size": n_results},
+                )
+                relaxed_results = [
+                    {"chunk_id": h["_id"], "content": h["_source"].get("content", ""),
+                     "score": h["_score"], "source": h["_source"].get("source", ""),
+                     "document_id": h["_source"].get("document_id", "")}
+                    for h in relaxed_resp["hits"]["hits"]
+                ]
+                if len(relaxed_results) > len(results):
+                    results = relaxed_results
+
+            if len(results) < 1:
+                logger.info(f"ES 约束仍无结果，全部放宽")
+                fallback_resp = await client.search(
+                    index=index,
+                    body={"query": {"bool": {
                         "should": bool_query["should"],
                         "minimum_should_match": 1,
-                    }},
-                    "size": n_results,
-                },
-            )
-            fallback_results = []
-            for hit in fallback_resp["hits"]["hits"]:
-                fallback_results.append({
-                    "chunk_id": hit["_id"],
-                    "content": hit["_source"].get("content", ""),
-                    "score": hit["_score"],
-                    "source": hit["_source"].get("source", ""),
-                    "document_id": hit["_source"].get("document_id", ""),
-                })
-            if len(fallback_results) > len(results):
-                results = fallback_results
+                    }}, "size": n_results},
+                )
+                results = [
+                    {"chunk_id": h["_id"], "content": h["_source"].get("content", ""),
+                     "score": h["_score"], "source": h["_source"].get("source", ""),
+                     "document_id": h["_source"].get("document_id", "")}
+                    for h in fallback_resp["hits"]["hits"]
+                ]
 
         return results
     except Exception as e:
