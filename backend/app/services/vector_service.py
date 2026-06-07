@@ -27,6 +27,8 @@ from app.utils.error_handler import (
 import chromadb.errors
 import os
 import uuid
+import re
+import json
 import shutil
 import asyncio
 from pathlib import Path
@@ -35,6 +37,88 @@ from app.utils.archive_utils import is_archive_file, extract_archive, organize_f
 from app.utils.ocr_utils import process_image_with_ocr
 
 logger = get_logger(__name__)
+
+# ---- 元数据提取 ----
+
+_metadata_mapping_cache = None
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_METADATA_MAPPING_PATH = _PROJECT_ROOT / "scripts" / "metadata_mapping.json"
+if not _METADATA_MAPPING_PATH.exists() and ".claude/worktrees" in str(_PROJECT_ROOT):
+    _ORIGINAL_ROOT = Path(str(_PROJECT_ROOT).split(".claude/worktrees")[0].rstrip("/"))
+    _METADATA_MAPPING_PATH = _ORIGINAL_ROOT / "backend" / "scripts" / "metadata_mapping.json"
+
+_YEAR_IN_TEXT_RE = re.compile(r'(\d{4})\s*年\s*\d{1,2}\s*月')
+_DATE_IN_TEXT_RE = re.compile(r'(\d{4})[-年/.](\d{1,2})[-月/.](\d{1,2})')
+
+
+def _load_metadata_mapping() -> dict:
+    global _metadata_mapping_cache
+    if _metadata_mapping_cache is not None:
+        return _metadata_mapping_cache
+    if _METADATA_MAPPING_PATH.exists():
+        try:
+            _metadata_mapping_cache = json.loads(_METADATA_MAPPING_PATH.read_text(encoding="utf-8"))
+            logger.info(f"加载元数据映射: {_METADATA_MAPPING_PATH}")
+        except Exception as e:
+            logger.warning(f"元数据映射加载失败: {e}")
+            _metadata_mapping_cache = {}
+    else:
+        _metadata_mapping_cache = {}
+    return _metadata_mapping_cache
+
+
+def _extract_document_metadata(file_path: str, text_content: str = "") -> dict:
+    """
+    从文件路径和内容中提取结构化元数据（院系、分类、日期）。
+    优先使用 metadata_mapping.json，其次从文件路径和正文推断。
+    """
+    result = {}
+    filename = os.path.basename(file_path)
+
+    # 1. 尝试从 metadata_mapping.json 查找
+    mapping = _load_metadata_mapping()
+    file_meta = mapping.get("file_metadata", {})
+    for key, meta in file_meta.items():
+        if meta.get("filename") == filename:
+            result["department"] = meta.get("department", "")
+            result["category"] = meta.get("category", "")
+            break
+
+    # 2. 从文件路径推断（如果路径包含院系/分类目录结构）
+    if not result.get("department"):
+        path_parts = Path(file_path).parts
+        for i, part in enumerate(path_parts):
+            if part == "output" and i + 2 < len(path_parts):
+                result["department"] = path_parts[i + 1]
+                result["category"] = path_parts[i + 2]
+                break
+
+    # 3. 从 URL 元数据查找发布日期
+    url_meta = mapping.get("url_metadata", {})
+    for url, meta in url_meta.items():
+        dept_from_url = meta.get("department_from_url", "")
+        if dept_from_url and result.get("department") and dept_from_url == result["department"]:
+            if meta.get("publish_date"):
+                result["publish_date"] = meta["publish_date"]
+                result["publish_year"] = meta["publish_date"][:4]
+                break
+
+    # 4. 从正文内容提取年份（fallback）
+    if not result.get("publish_year") and text_content:
+        date_match = _DATE_IN_TEXT_RE.search(text_content[:500])
+        if date_match:
+            year = date_match.group(1)
+            if 1990 <= int(year) <= 2030:
+                result["publish_year"] = year
+                result["publish_date"] = f"{year}-{int(date_match.group(2)):02d}-{int(date_match.group(3)):02d}"
+        else:
+            year_match = _YEAR_IN_TEXT_RE.search(text_content[:500])
+            if year_match:
+                year = year_match.group(1)
+                if 1990 <= int(year) <= 2030:
+                    result["publish_year"] = year
+
+    return result
 
 MAX_RETRIES = 5
 RETRY_DELAY = 2
@@ -402,6 +486,17 @@ class AsyncVectorService:
                 base_meta['source_type'] = 'image_ocr'
                 base_meta['original_image'] = os.path.basename(file_path)
 
+            # 结构化元数据：从 metadata_mapping.json 或文件路径提取
+            doc_metadata = _extract_document_metadata(actual_file_path, text_content)
+            if doc_metadata.get('department'):
+                base_meta['department'] = doc_metadata['department']
+            if doc_metadata.get('category'):
+                base_meta['category'] = doc_metadata['category']
+            if doc_metadata.get('publish_date'):
+                base_meta['publish_date'] = doc_metadata['publish_date']
+            if doc_metadata.get('publish_year'):
+                base_meta['publish_year'] = doc_metadata['publish_year']
+
             chunks = []
             pc_chunks = []
 
@@ -491,6 +586,10 @@ class AsyncVectorService:
                             "content": (pc_chunks[i].child_content if pc_chunks else chunks[i]) if i < len(pc_chunks or chunks) else "",
                             "source": base_meta.get("source", ""),
                             "document_id": str(document_id),
+                            "department": base_meta.get("department", ""),
+                            "category": base_meta.get("category", ""),
+                            "publish_date": base_meta.get("publish_date", ""),
+                            "publish_year": base_meta.get("publish_year", ""),
                         }
                         for i in range(len(pc_chunks) if pc_chunks else len(chunks))
                     ]

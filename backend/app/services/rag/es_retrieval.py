@@ -107,6 +107,10 @@ async def ensure_index(vector_db_id: int) -> bool:
                         "chunk_id": {"type": "keyword"},
                         "source": {"type": "keyword"},
                         "document_id": {"type": "keyword"},
+                        "department": {"type": "keyword"},
+                        "category": {"type": "keyword"},
+                        "publish_date": {"type": "date", "format": "yyyy-MM-dd||yyyy-MM||yyyy", "ignore_malformed": True},
+                        "publish_year": {"type": "keyword"},
                     }
                 },
             })
@@ -134,12 +138,21 @@ async def index_chunks(
     for chunk in chunks:
         chunk_id = chunk.get("chunk_id", "")
         operations.append({"index": {"_index": index, "_id": chunk_id}})
-        operations.append({
+        doc = {
             "content": chunk.get("content", ""),
             "chunk_id": chunk_id,
             "source": chunk.get("source", ""),
             "document_id": str(chunk.get("document_id", "")),
-        })
+        }
+        if chunk.get("department"):
+            doc["department"] = chunk["department"]
+        if chunk.get("category"):
+            doc["category"] = chunk["category"]
+        if chunk.get("publish_date"):
+            doc["publish_date"] = chunk["publish_date"]
+        if chunk.get("publish_year"):
+            doc["publish_year"] = chunk["publish_year"]
+        operations.append(doc)
 
     if not operations:
         return 0
@@ -161,8 +174,9 @@ async def search(
     vector_db_id: int,
     query: str,
     n_results: int = 10,
+    metadata_filter: Optional[Dict] = None,
 ) -> List[Dict]:
-    """Elasticsearch BM25 全文检索"""
+    """Elasticsearch BM25 全文检索，支持结构化约束过滤"""
     client = await get_es_client()
     if not client:
         return []
@@ -172,43 +186,56 @@ async def search(
         if not await client.indices.exists(index=index):
             return []
 
+        # 构建带约束过滤的查询
+        es_filter = []
+        if metadata_filter:
+            # 从 ChromaDB where 格式转换为 ES filter 格式
+            filter_items = metadata_filter.get("$and", [metadata_filter]) if "$and" in metadata_filter else [metadata_filter]
+            for item in filter_items:
+                for key, value in item.items():
+                    if key.startswith("$"):
+                        continue
+                    es_filter.append({"term": {key: value}})
+
+        bool_query = {
+            "should": [
+                {
+                    "match": {
+                        "content": {
+                            "query": query,
+                            "analyzer": "ik_smart",
+                            "operator": "and",
+                            "boost": 3.0,
+                        }
+                    }
+                },
+                {
+                    "match_phrase": {
+                        "content": {
+                            "query": query,
+                            "analyzer": "ik_smart",
+                            "boost": 5.0,
+                        }
+                    }
+                },
+                {
+                    "match": {
+                        "content": {
+                            "query": query,
+                            "analyzer": "ik_smart",
+                        }
+                    }
+                },
+            ],
+            "minimum_should_match": 1,
+        }
+        if es_filter:
+            bool_query["filter"] = es_filter
+
         resp = await client.search(
             index=index,
             body={
-                "query": {
-                    "bool": {
-                        "should": [
-                            {
-                                "match": {
-                                    "content": {
-                                        "query": query,
-                                        "analyzer": "ik_smart",
-                                        "operator": "and",
-                                        "boost": 3.0,
-                                    }
-                                }
-                            },
-                            {
-                                "match_phrase": {
-                                    "content": {
-                                        "query": query,
-                                        "analyzer": "ik_smart",
-                                        "boost": 5.0,
-                                    }
-                                }
-                            },
-                            {
-                                "match": {
-                                    "content": {
-                                        "query": query,
-                                        "analyzer": "ik_smart",
-                                    }
-                                }
-                            },
-                        ],
-                        "minimum_should_match": 1,
-                    }
-                },
+                "query": {"bool": bool_query},
                 "size": n_results,
             },
         )
@@ -222,6 +249,32 @@ async def search(
                 "source": hit["_source"].get("source", ""),
                 "document_id": hit["_source"].get("document_id", ""),
             })
+
+        # 如果有约束但结果太少，放宽约束重试
+        if es_filter and len(results) < 2:
+            logger.info(f"ES 约束过滤后结果不足({len(results)}条)，放宽约束重试")
+            fallback_resp = await client.search(
+                index=index,
+                body={
+                    "query": {"bool": {
+                        "should": bool_query["should"],
+                        "minimum_should_match": 1,
+                    }},
+                    "size": n_results,
+                },
+            )
+            fallback_results = []
+            for hit in fallback_resp["hits"]["hits"]:
+                fallback_results.append({
+                    "chunk_id": hit["_id"],
+                    "content": hit["_source"].get("content", ""),
+                    "score": hit["_score"],
+                    "source": hit["_source"].get("source", ""),
+                    "document_id": hit["_source"].get("document_id", ""),
+                })
+            if len(fallback_results) > len(results):
+                results = fallback_results
+
         return results
     except Exception as e:
         logger.warning(f"ES 检索失败: {e}")
