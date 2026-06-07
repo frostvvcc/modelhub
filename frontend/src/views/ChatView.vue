@@ -124,7 +124,8 @@ const formatElapsed = (startTime: number | undefined, isDone: boolean, trace?: {
 };
 const formatTokens = (msg: ChatMessage) => {
   if (msg.trace?.total_tokens) return `${msg.trace.total_tokens} tokens`;
-  if (msg.streamTokenCount) return `~${msg.streamTokenCount} tokens`;
+  if (msg.streamTokenCount != null) return `~${msg.streamTokenCount} tokens`;
+  if (msg.isStreaming) return '~0 tokens';
   return '';
 };
 
@@ -581,7 +582,7 @@ const scrollToBottom = () => {
                         <span class="thinking-stat-item thinking-timer" :class="{ 'is-live': message.isStreaming }">
                           ⏱ {{ formatElapsed(message.streamStartTime, !message.isStreaming, message.trace) }}
                         </span>
-                        <span class="thinking-stat-item thinking-tokens" v-if="formatTokens(message as ChatMessage)">
+                        <span class="thinking-stat-item thinking-tokens">
                           · {{ formatTokens(message as ChatMessage) }}
                         </span>
                       </span>
@@ -616,7 +617,7 @@ const scrollToBottom = () => {
                         <span class="thinking-stat-item thinking-timer" :class="{ 'is-live': message.isStreaming }">
                           ⏱ {{ formatElapsed(message.streamStartTime, !message.isStreaming, message.trace) }}
                         </span>
-                        <span class="thinking-stat-item thinking-tokens" v-if="formatTokens(message as ChatMessage)">
+                        <span class="thinking-stat-item thinking-tokens">
                           · {{ formatTokens(message as ChatMessage) }}
                         </span>
                       </span>
@@ -718,7 +719,6 @@ const scrollToBottom = () => {
                   <!-- 流式光标 -->
                   <span v-if="message.isStreaming && message.content" class="typing-cursor"></span>
 
-                  <!-- 来源和追踪信息已整合到思考过程面板中 -->
                 </div>
                 <!-- 消息操作 -->
                 <div class="msg-ai-actions" v-if="!message.isStreaming">
