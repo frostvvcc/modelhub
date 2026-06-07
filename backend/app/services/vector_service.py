@@ -1927,25 +1927,33 @@ class AsyncVectorService:
         layer: str,
         message: str,
         n_results: int = 5,
-        lightweight: bool = False,
+        prepared_query=None,
     ) -> Dict[str, Any]:
-        """查询单个知识库。lightweight=True 时跳过 LLM 改写和 rerank，用于 fallback 层。"""
+        """
+        查询单个知识库。
+        如果传入 prepared_query（PreparedQuery 对象），则复用已有的 LLM 结果，
+        不再重复调用 LLM 做改写/约束提取，只执行 DB 检索 + Rerank。
+        """
         from app.services.rag.retrieval import VectorRetriever
 
         if not vector_db:
             return AsyncVectorService._empty_rag_result()
 
         try:
-            if lightweight or not RAG_USE_ENHANCED:
-                rag_results = await VectorRetriever.hybrid_query(
-                    vector_db.id, message, n_results=n_results,
+            if prepared_query:
+                rag_results = await VectorRetriever.execute_prepared_query(
+                    vector_db.id, prepared_query, n_results=n_results,
                 )
-            else:
+            elif RAG_USE_ENHANCED:
                 rag_results = await VectorRetriever.enhanced_query(
                     vector_db.id, message, n_results=n_results,
                     use_rewrite=RAG_USE_REWRITE,
                     use_rerank=RAG_USE_RERANK,
                     use_hyde=RAG_USE_HYDE,
+                )
+            else:
+                rag_results = await VectorRetriever.hybrid_query(
+                    vector_db.id, message, n_results=n_results,
                 )
             return AsyncVectorService._serialize_retrieval_results(vector_db, layer, rag_results)
         except Exception as exc:
@@ -2014,6 +2022,17 @@ class AsyncVectorService:
                 logger.debug("根据模型查询向量: 没有可访问的分层知识库 - model_config_id=%s", model_config_id)
                 return AsyncVectorService._empty_rag_result()
 
+            # 查询准备：所有 LLM 调用只执行一次（约束提取 + 改写 + HyDE 并行）
+            prepared = None
+            if RAG_USE_ENHANCED:
+                from app.services.rag.retrieval import VectorRetriever
+                prepared = await VectorRetriever.prepare_query(
+                    message, n_results=3,
+                    use_rewrite=RAG_USE_REWRITE,
+                    use_rerank=RAG_USE_RERANK,
+                    use_hyde=RAG_USE_HYDE,
+                )
+
             primary_result = None
             fallback_candidates = candidates
             if candidates[0][1] == "primary":
@@ -2023,6 +2042,7 @@ class AsyncVectorService:
                     primary_layer,
                     message,
                     n_results=3,
+                    prepared_query=prepared,
                 )
                 fallback_candidates = candidates[1:]
                 if primary_result["used_knowledge_base"] and primary_result["avg_similarity"] >= LAYERED_RAG_FALLBACK_THRESHOLD:
@@ -2033,11 +2053,13 @@ class AsyncVectorService:
                     )
                     return primary_result
 
+            # Fallback 知识库并行检索，复用同一个 PreparedQuery（不再重复调 LLM）
             fallback_results = []
             if fallback_candidates:
                 fallback_results = await asyncio.gather(*[
                     AsyncVectorService._query_single_vector_db_layer(
-                        vector_db, layer, message, n_results=3, lightweight=True,
+                        vector_db, layer, message, n_results=3,
+                        prepared_query=prepared,
                     )
                     for vector_db, layer in fallback_candidates
                 ])

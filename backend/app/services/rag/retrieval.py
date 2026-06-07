@@ -512,104 +512,135 @@ class VectorRetriever:
         filtered = [r for r in fused if r.bm25_score > 0.5 or r.vector_score >= 0.35]
         return filtered[:n_results] if filtered else fused[:1]
 
-    # ---- 增强检索：Query 改写 + HyDE + 混合检索 + Reranker 精排 ----
+    # ---- 查询准备（LLM 调用，只需执行一次）----
+
+    @dataclass
+    class PreparedQuery:
+        """查询准备结果：所有 LLM 调用的产物，可跨多个知识库复用。"""
+        original_query: str
+        queries: list
+        hyde_text: Optional[str]
+        constraints: Any
+        metadata_filter: Optional[dict]
+        use_rerank: bool
+        use_graph: bool
+        coarse_n: int
 
     @staticmethod
-    async def enhanced_query(
-        vector_db_id: int,
+    async def prepare_query(
         query_text: str,
         n_results: int = 5,
-        alpha: float = 0.7,
         use_rewrite: bool = True,
         use_rerank: bool = True,
         use_hyde: bool = False,
         use_graph: bool = True,
-        folder_path: Optional[str] = None,
-        parent_id: Optional[int] = None,
-    ) -> List[RetrievalResult]:
+    ) -> "VectorRetriever.PreparedQuery":
         """
-        增强检索管线（三路融合 + 结构化约束过滤）：
-          约束提取 → Query 改写 → (可选)HyDE
-          → 带 metadata 过滤的 Vector + BM25 混合检索 + (可选)GraphRAG 三路召回
-          → RRF 融合 → Reranker 精排 → MMR 去重
-        集成 RAG Monitor 采集各阶段 latency 和质量指标。
+        查询准备阶段：并行执行所有 LLM 调用（约束提取 + 改写 + HyDE）。
+        结果可复用于多个知识库，避免每个知识库重复调用 LLM。
         """
-        from app.services.rag.monitor import RAGTimer, RAGQueryMetrics, get_rag_monitor
-        timer = RAGTimer()
+        coarse_n = n_results * 4 if use_rerank else n_results
 
-        # ---- 结构化约束提取（规则优先，零延迟）----
+        # 所有 LLM 调用并行启动
+        from app.services.rag.query_rewriter import (
+            extract_constraints_llm, rewrite_query, hyde_rewrite,
+        )
+
+        coros = {}
+        coros['constraints'] = extract_constraints_llm(query_text)
+        if use_rewrite:
+            coros['rewrite'] = rewrite_query(query_text, n_rewrites=3)
+        if use_hyde:
+            coros['hyde'] = hyde_rewrite(query_text)
+
+        # 一次 asyncio.gather 并行执行所有 LLM 调用
+        keys = list(coros.keys())
+        results = await asyncio.gather(
+            *coros.values(), return_exceptions=True,
+        )
+        result_map = dict(zip(keys, results))
+
+        # 解析约束
         constraints = None
         metadata_filter = None
-        try:
-            from app.services.rag.query_rewriter import extract_constraints_rule
-            constraints = extract_constraints_rule(query_text)
-            if constraints and constraints.has_constraints():
+        c_result = result_map.get('constraints')
+        if c_result and not isinstance(c_result, Exception):
+            constraints = c_result
+            if constraints.has_constraints():
                 metadata_filter = constraints.to_chromadb_where()
                 logger.info(
                     f"🔎 [约束过滤] year={constraints.year}, "
                     f"dept={constraints.department}, filter={metadata_filter}"
                 )
-        except Exception as e:
-            logger.warning(f"约束提取失败，使用无约束检索: {e}")
 
-        # ---- Query 改写和 HyDE 并行执行（省掉串行等待）----
+        # 解析改写结果（如果约束提取成功且有 semantic_query，用它替换改写输入）
         queries = [query_text]
+        rw_result = result_map.get('rewrite')
+        if rw_result and not isinstance(rw_result, Exception) and rw_result:
+            queries = rw_result
+
+        # 解析 HyDE
         hyde_text = None
+        h_result = result_map.get('hyde')
+        if h_result and not isinstance(h_result, Exception) and h_result:
+            hyde_text = h_result
 
-        rewrite_coro = None
-        hyde_coro = None
+        logger.info(
+            f"🚀 [查询准备完成] queries={len(queries)}, "
+            f"hyde={'✓' if hyde_text else '✗'}, "
+            f"constraints={'✓' if constraints and constraints.has_constraints() else '✗'}"
+        )
 
-        if use_rewrite:
-            from app.services.rag.query_rewriter import rewrite_query
-            rewrite_input = constraints.semantic_query if constraints and constraints.semantic_query != query_text else query_text
-            rewrite_coro = rewrite_query(rewrite_input, n_rewrites=3)
+        return VectorRetriever.PreparedQuery(
+            original_query=query_text,
+            queries=queries,
+            hyde_text=hyde_text,
+            constraints=constraints,
+            metadata_filter=metadata_filter,
+            use_rerank=use_rerank,
+            use_graph=use_graph,
+            coarse_n=coarse_n,
+        )
 
-        if use_hyde:
-            from app.services.rag.query_rewriter import hyde_rewrite
-            hyde_coro = hyde_rewrite(query_text)
+    # ---- 检索执行（纯 DB 操作 + Rerank，复用 PreparedQuery）----
 
-        if rewrite_coro and hyde_coro:
-            rewrite_result, hyde_result = await asyncio.gather(
-                rewrite_coro, hyde_coro, return_exceptions=True,
-            )
-            if not isinstance(rewrite_result, Exception) and rewrite_result:
-                queries = rewrite_result
-            if not isinstance(hyde_result, Exception) and hyde_result:
-                hyde_text = hyde_result
-        elif rewrite_coro:
-            try:
-                queries = await rewrite_coro or [query_text]
-            except Exception as e:
-                logger.warning(f"Query 改写失败: {e}")
-        elif hyde_coro:
-            try:
-                hyde_text = await hyde_coro
-            except Exception as e:
-                logger.warning(f"HyDE 生成失败: {e}")
-
-        coarse_n = n_results * 4 if use_rerank else n_results
+    @staticmethod
+    async def execute_prepared_query(
+        vector_db_id: int,
+        prepared: "VectorRetriever.PreparedQuery",
+        n_results: int = 5,
+        alpha: float = 0.7,
+        folder_path: Optional[str] = None,
+        parent_id: Optional[int] = None,
+    ) -> List[RetrievalResult]:
+        """
+        检索执行阶段：使用已准备好的查询（改写结果、约束条件等），
+        只做 DB 检索 + Rerank，不再调用 LLM。
+        """
+        from app.services.rag.monitor import RAGTimer, RAGQueryMetrics, get_rag_monitor
+        timer = RAGTimer()
 
         retrieval_tasks = [
             VectorRetriever.hybrid_query(
-                vector_db_id, q, coarse_n, alpha, folder_path, parent_id,
-                metadata_filter=metadata_filter,
+                vector_db_id, q, prepared.coarse_n, alpha, folder_path, parent_id,
+                metadata_filter=prepared.metadata_filter,
             )
-            for q in queries
+            for q in prepared.queries
         ]
-        if hyde_text:
+        if prepared.hyde_text:
             retrieval_tasks.append(
                 VectorRetriever.query(
-                    vector_db_id, hyde_text, coarse_n, folder_path, parent_id,
+                    vector_db_id, prepared.hyde_text, prepared.coarse_n,
+                    folder_path, parent_id,
                 )
             )
 
-        # GraphRAG 第三路召回：图谱三元组转为伪检索结果参与 RRF 融合
         graph_task = None
-        if use_graph:
+        if prepared.use_graph:
             try:
                 from app.services.rag.graph_rag import graph_augmented_retrieval, NEO4J_ENABLED
                 if NEO4J_ENABLED:
-                    graph_task = graph_augmented_retrieval(query_text, vector_db_id)
+                    graph_task = graph_augmented_retrieval(prepared.original_query, vector_db_id)
             except ImportError:
                 pass
 
@@ -637,9 +668,7 @@ class VectorRetriever:
                         all_results.append(r)
                         seen_chunks.add(r.chunk_id)
 
-        # 图谱三元组转为伪检索结果，按排名位置赋 RRF 兼容分数（不再硬编码高分）
         from app.services.rag.graph_rag import format_triples_for_context
-        graph_n = len(graph_triples[:10])
         for i, triple in enumerate(graph_triples[:10]):
             content = f"{triple['subject']} {triple['relation']} {triple['object']}"
             chunk_id = f"graph_triple_{i}"
@@ -658,15 +687,15 @@ class VectorRetriever:
                 seen_chunks.add(chunk_id)
 
         all_results.sort(key=lambda r: r.score, reverse=True)
-        coarse_results = all_results[:coarse_n]
+        coarse_results = all_results[:prepared.coarse_n]
 
         pre_rerank_top1 = coarse_results[0].chunk_id if coarse_results else ""
 
-        if use_rerank and len(coarse_results) > 1:
+        if prepared.use_rerank and len(coarse_results) > 1:
             try:
                 from app.services.rag.reranker import rerank
                 timer.start("rerank")
-                final_results = await rerank(query_text, coarse_results, top_k=n_results)
+                final_results = await rerank(prepared.original_query, coarse_results, top_k=n_results)
                 timer.stop()
             except Exception as e:
                 logger.warning(f"Reranker 失败，降级为粗排: {e}")
@@ -676,14 +705,13 @@ class VectorRetriever:
 
         final_results = _mmr_diversify(final_results, n_results)
 
-        # 将约束信息附加到每个结果的 metadata 中，供后续 prompt 构建使用
-        if constraints and constraints.has_constraints():
+        if prepared.constraints and prepared.constraints.has_constraints():
             for r in final_results:
                 r.metadata['_query_constraints'] = {
-                    'year': constraints.year,
-                    'department': constraints.department,
-                    'category': constraints.category,
-                    'constraint_hint': constraints.to_prompt_hint(),
+                    'year': prepared.constraints.year,
+                    'department': prepared.constraints.department,
+                    'category': prepared.constraints.category,
+                    'constraint_hint': prepared.constraints.to_prompt_hint(),
                 }
 
         post_rerank_top1 = final_results[0].chunk_id if final_results else ""
@@ -691,20 +719,43 @@ class VectorRetriever:
         avg_sim = sum(r.similarity for r in final_results) / len(final_results) if final_results else 0
 
         metrics = RAGQueryMetrics(
-            query_id=query_text[:40],
+            query_id=prepared.original_query[:40],
             vector_search_ms=timer.get("retrieval"),
             rerank_ms=timer.get("rerank"),
             total_ms=timer.total,
             result_count=len(final_results),
             top1_similarity=top1_sim,
             avg_similarity=avg_sim,
-            rerank_changed_top1=(pre_rerank_top1 != post_rerank_top1 and use_rerank),
+            rerank_changed_top1=(pre_rerank_top1 != post_rerank_top1 and prepared.use_rerank),
             retrieval_method=final_results[0].retrieval_method if final_results else "none",
             low_confidence=(top1_sim < 0.4),
         )
         get_rag_monitor().record(metrics)
 
         return final_results
+
+    # ---- 兼容接口：单知识库场景直接调用 ----
+
+    @staticmethod
+    async def enhanced_query(
+        vector_db_id: int,
+        query_text: str,
+        n_results: int = 5,
+        alpha: float = 0.7,
+        use_rewrite: bool = True,
+        use_rerank: bool = True,
+        use_hyde: bool = False,
+        use_graph: bool = True,
+        folder_path: Optional[str] = None,
+        parent_id: Optional[int] = None,
+    ) -> List[RetrievalResult]:
+        """兼容接口：prepare + execute 合并调用。"""
+        prepared = await VectorRetriever.prepare_query(
+            query_text, n_results, use_rewrite, use_rerank, use_hyde, use_graph,
+        )
+        return await VectorRetriever.execute_prepared_query(
+            vector_db_id, prepared, n_results, alpha, folder_path, parent_id,
+        )
 
 
 # ------------------------------------------------------------------

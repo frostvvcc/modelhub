@@ -356,33 +356,13 @@ class StreamChatService:
             grounded_ratio = max(0.0, min(1.0, (rag_result or {}).get("avg_similarity", 0.0))) if used_kb else 0.0
             grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
 
-            # Claim-Level Grounding：仅在低置信度时才执行（省 2 次 LLM 调用）
-            grounding_detail = None
-            _grounding_enabled = os.getenv("RAG_USE_GROUNDING", "false").lower() in ("true", "1", "yes")
-            if _grounding_enabled and used_kb and source_citations and len(source_citations) >= 3 and grounded_ratio < 0.55:
-                try:
-                    from app.services.rag.grounding import verify_grounding
-                    grounding_detail = await verify_grounding(content, source_citations)
-                    if grounding_detail.get("grounded_ratio") is not None:
-                        grounded_ratio = grounding_detail["grounded_ratio"]
-                        grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
-                except Exception as grounding_err:
-                    logger.warning(f"Grounding 验证失败，使用相似度近似值: {grounding_err}")
-
-            # 保存到数据库
+            # 先构建基础 metadata 并立即返回给前端（不等 Grounding）
             assistant_metadata = {}
             if source_citations:
                 assistant_metadata["sources"] = source_citations
             if grounded_ratio:
                 assistant_metadata["grounded_ratio"] = round(grounded_ratio, 4)
                 assistant_metadata["grounded_level"] = grounded_level
-            if grounding_detail:
-                assistant_metadata["grounding_detail"] = {
-                    "total_claims": grounding_detail.get("total_claims", 0),
-                    "supported_count": grounding_detail.get("supported_count", 0),
-                    "unsupported_claims": grounding_detail.get("unsupported_claims", []),
-                    "contradicted_claims": grounding_detail.get("contradicted_claims", []),
-                }
             if used_kb:
                 assistant_metadata["rag_info"] = {
                     "used_knowledge_base": True,
@@ -399,10 +379,45 @@ class StreamChatService:
             if attachment_info and attachment_info.get("document_ids"):
                 assistant_metadata["attachment_info"] = attachment_info
 
-            # 先发 sources 事件给前端（不受数据库保存影响）
             yield _sse_event("sources", source_citations)
 
-            # 保存消息到数据库（float32 → float 防止 JSON 序列化失败）
+            # 先发初步 metadata（用相似度近似值），让前端立即拿到结果
+            yield _sse_event("metadata", {
+                "grounded_ratio": round(grounded_ratio, 4),
+                "grounded_level": grounded_level,
+                "conversation_id": conversation_id,
+                "conversation_name": conversation_info['name'],
+                "used_knowledge_base": used_kb,
+            })
+
+            # Claim-Level Grounding：异步执行，完成后补发更新事件
+            grounding_detail = None
+            if used_kb and source_citations and len(source_citations) >= 3:
+                try:
+                    from app.services.rag.grounding import verify_grounding
+                    grounding_detail = await verify_grounding(content, source_citations)
+                    if grounding_detail.get("grounded_ratio") is not None:
+                        grounded_ratio = grounding_detail["grounded_ratio"]
+                        grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
+                        assistant_metadata["grounded_ratio"] = round(grounded_ratio, 4)
+                        assistant_metadata["grounded_level"] = grounded_level
+                        assistant_metadata["grounding_detail"] = {
+                            "total_claims": grounding_detail.get("total_claims", 0),
+                            "supported_count": grounding_detail.get("supported_count", 0),
+                            "unsupported_claims": grounding_detail.get("unsupported_claims", []),
+                            "contradicted_claims": grounding_detail.get("contradicted_claims", []),
+                        }
+                        # 补发精确 Grounding 结果
+                        yield _sse_event("grounding_update", {
+                            "grounded_ratio": round(grounded_ratio, 4),
+                            "grounded_level": grounded_level,
+                            "total_claims": grounding_detail.get("total_claims", 0),
+                            "supported_count": grounding_detail.get("supported_count", 0),
+                        })
+                except Exception as grounding_err:
+                    logger.warning(f"Grounding 验证失败，使用相似度近似值: {grounding_err}")
+
+            # 保存消息到数据库（含 Grounding 结果）
             safe_metadata = json.loads(json.dumps(assistant_metadata, ensure_ascii=False, default=str)) if assistant_metadata else None
             try:
                 await AsyncChatMapper.save_message(
@@ -411,13 +426,6 @@ class StreamChatService:
                 )
             except Exception as save_err:
                 logger.warning(f"消息保存失败（不影响前端展示）: {save_err}")
-            yield _sse_event("metadata", {
-                "grounded_ratio": round(grounded_ratio, 4),
-                "grounded_level": grounded_level,
-                "conversation_id": conversation_id,
-                "conversation_name": conversation_info['name'],
-                "used_knowledge_base": used_kb,
-            })
 
         except Exception as e:
             logger.error(f"流式对话失败: {e}", exc_info=True)
@@ -609,32 +617,12 @@ class StreamChatService:
             grounded_ratio = max(0.0, min(1.0, (rag_result or {}).get("avg_similarity", 0.0))) if used_kb else 0.0
             grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
 
-            # Claim-Level Grounding：仅在低置信度时才执行
-            grounding_detail = None
-            _bot_grounding_enabled = os.getenv("RAG_USE_GROUNDING", "false").lower() in ("true", "1", "yes")
-            if _bot_grounding_enabled and used_kb and source_citations and len(source_citations) >= 3 and grounded_ratio < 0.55:
-                try:
-                    from app.services.rag.grounding import verify_grounding
-                    grounding_detail = await verify_grounding(content, source_citations)
-                    if grounding_detail.get("grounded_ratio") is not None:
-                        grounded_ratio = grounding_detail["grounded_ratio"]
-                        grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
-                except Exception as grounding_err:
-                    logger.warning(f"Bot Grounding 验证失败: {grounding_err}")
-
             bot_metadata = {}
             if source_citations:
                 bot_metadata["sources"] = source_citations
             if grounded_ratio:
                 bot_metadata["grounded_ratio"] = round(grounded_ratio, 4)
                 bot_metadata["grounded_level"] = grounded_level
-            if grounding_detail:
-                bot_metadata["grounding_detail"] = {
-                    "total_claims": grounding_detail.get("total_claims", 0),
-                    "supported_count": grounding_detail.get("supported_count", 0),
-                    "unsupported_claims": grounding_detail.get("unsupported_claims", []),
-                    "contradicted_claims": grounding_detail.get("contradicted_claims", []),
-                }
             if trace_data:
                 bot_metadata["trace"] = trace_data
             if agent_tool_calls:
@@ -642,10 +630,45 @@ class StreamChatService:
             if agent_thinking:
                 bot_metadata["thinkingContent"] = agent_thinking
 
-            # 先发 sources 事件给前端（不受数据库保存影响）
             yield _sse_event("sources", source_citations)
 
-            # 保存消息到数据库（float32 → 原生类型）
+            model_name = None
+            if model_config:
+                await db.refresh(model_config, ["base_model"])
+                if model_config.base_model:
+                    model_name = model_config.base_model.model_name
+
+            yield _sse_event("metadata", {
+                "grounded_ratio": round(grounded_ratio, 4),
+                "grounded_level": grounded_level,
+                "conversation_id": str(conv_id_int),
+                "model_name": model_name,
+                "used_knowledge_base": used_kb,
+            })
+
+            # Claim-Level Grounding：异步执行，完成后补发更新
+            if used_kb and source_citations and len(source_citations) >= 3:
+                try:
+                    from app.services.rag.grounding import verify_grounding
+                    grounding_detail = await verify_grounding(content, source_citations)
+                    if grounding_detail.get("grounded_ratio") is not None:
+                        grounded_ratio = grounding_detail["grounded_ratio"]
+                        grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
+                        bot_metadata["grounded_ratio"] = round(grounded_ratio, 4)
+                        bot_metadata["grounded_level"] = grounded_level
+                        bot_metadata["grounding_detail"] = {
+                            "total_claims": grounding_detail.get("total_claims", 0),
+                            "supported_count": grounding_detail.get("supported_count", 0),
+                            "unsupported_claims": grounding_detail.get("unsupported_claims", []),
+                            "contradicted_claims": grounding_detail.get("contradicted_claims", []),
+                        }
+                        yield _sse_event("grounding_update", {
+                            "grounded_ratio": round(grounded_ratio, 4),
+                            "grounded_level": grounded_level,
+                        })
+                except Exception as grounding_err:
+                    logger.warning(f"Bot Grounding 验证失败: {grounding_err}")
+
             safe_bot_metadata = json.loads(json.dumps(bot_metadata, ensure_ascii=False, default=str)) if bot_metadata else None
             try:
                 await AsyncChatMapper.save_message(
@@ -654,19 +677,6 @@ class StreamChatService:
                 )
             except Exception as save_err:
                 logger.warning(f"Bot 消息保存失败（不影响前端展示）: {save_err}")
-
-            model_name = None
-            if model_config:
-                await db.refresh(model_config, ["base_model"])
-                if model_config.base_model:
-                    model_name = model_config.base_model.model_name
-            yield _sse_event("metadata", {
-                "grounded_ratio": round(grounded_ratio, 4),
-                "grounded_level": grounded_level,
-                "conversation_id": str(conv_id_int),
-                "model_name": model_name,
-                "used_knowledge_base": used_kb,
-            })
 
         except Exception as e:
             logger.error(f"Bot 流式对话失败: {e}", exc_info=True)
