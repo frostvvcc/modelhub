@@ -696,7 +696,7 @@ const scrollToBottom = () => {
                               可信度：{{ message.grounded_level }}
                             </span>
                           </div>
-                          <span class="step-detail" v-if="formatTokens(message as ChatMessage)">
+                          <span class="step-detail">
                             {{ formatTokens(message as ChatMessage) }}
                           </span>
                         </div>

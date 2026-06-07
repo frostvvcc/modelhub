@@ -85,6 +85,8 @@ export const useChatStore = defineStore('chat', () => {
     },
     onThinking(content) {
       messages.value[msgIndex].thinkingContent = (messages.value[msgIndex].thinkingContent || '') + content
+      messages.value[msgIndex].streamTokenCount = (messages.value[msgIndex].streamTokenCount || 0) + Math.ceil(content.length / 1.5)
+      triggerRender()
     },
     onToolCall(tool, args, callId) {
       if (!messages.value[msgIndex].toolCalls) messages.value[msgIndex].toolCalls = []
@@ -107,6 +109,8 @@ export const useChatStore = defineStore('chat', () => {
         tc.latencyMs = latencyMs
         tc.status = result?.error ? 'error' : 'done'
       }
+      const resultStr = JSON.stringify(result || '')
+      messages.value[msgIndex].streamTokenCount = (messages.value[msgIndex].streamTokenCount || 0) + Math.ceil(resultStr.length / 1.5)
       if (tool === 'knowledge_search' && result) {
         if (!messages.value[msgIndex].retrievalProcess) messages.value[msgIndex].retrievalProcess = []
         const r = result as Record<string, unknown>
