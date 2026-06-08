@@ -96,30 +96,44 @@ def extract_archive(archive_path: str, extract_to: str) -> List[Dict[str, any]]:
         raise
 
 
+MAX_EXTRACT_SIZE = 500 * 1024 * 1024
+MAX_COMPRESS_RATIO = 100
+MAX_TOTAL_EXTRACT_SIZE = 1024 * 1024 * 1024
+
+
 def _extract_zip(zip_path: str, extract_to: str) -> List[Dict[str, any]]:
-    """解压 ZIP 文件 (支持中文文件名编码检测)"""
+    """解压 ZIP 文件 (含路径穿越和 ZIP Bomb 防护)"""
     files = []
+    real_extract = os.path.realpath(extract_to)
+    total_size = 0
 
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        # 获取所有文件信息
         for info in zip_ref.infolist():
-            # ⭐ 修复中文文件名乱码问题
-            # 尝试检测并修正文件名编码
             filename = _decode_zip_filename(info.filename)
 
-            # 跳过 macOS 的 __MACOSX 目录
             if '__MACOSX' in filename or '.DS_Store' in filename:
                 continue
 
-            # 解压文件到修正后的路径
-            try:
-                # 使用修正后的文件名
-                extracted_path = os.path.join(extract_to, filename)
+            if info.file_size > MAX_EXTRACT_SIZE:
+                logger.warning(f"跳过过大文件: {filename} ({info.file_size} bytes)")
+                continue
+            if info.compress_size > 0 and info.file_size / info.compress_size > MAX_COMPRESS_RATIO:
+                logger.warning(f"跳过可疑压缩比: {filename}")
+                continue
+            total_size += info.file_size
+            if total_size > MAX_TOTAL_EXTRACT_SIZE:
+                logger.warning(f"总解压大小超限，停止解压")
+                break
 
-                # 确保父目录存在
+            try:
+                extracted_path = os.path.join(extract_to, filename)
+                real_target = os.path.realpath(extracted_path)
+                if not real_target.startswith(real_extract + os.sep) and real_target != real_extract:
+                    logger.warning(f"跳过路径穿越: {filename}")
+                    continue
+
                 os.makedirs(os.path.dirname(extracted_path), exist_ok=True)
 
-                # 提取文件内容
                 with zip_ref.open(info) as source:
                     with open(extracted_path, 'wb') as target:
                         target.write(source.read())
@@ -252,10 +266,16 @@ def _extract_tar(tar_path: str, extract_to: str) -> List[Dict[str, any]]:
             if os.path.isabs(member.name) or '..' in member.name:
                 logger.warning(f"跳过不安全的路径: {member.name}")
                 continue
-            
-            # 解压文件
+
+            if member.issym() or member.islnk():
+                logger.warning(f"跳过符号链接: {member.name}")
+                continue
+
             try:
-                tar_ref.extract(member, extract_to)
+                if hasattr(tarfile, 'data_filter'):
+                    tar_ref.extract(member, extract_to, filter='data')
+                else:
+                    tar_ref.extract(member, extract_to)
             except Exception as e:
                 logger.warning(f"解压文件失败: {member.name}, 错误: {str(e)}")
                 continue

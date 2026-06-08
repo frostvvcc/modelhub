@@ -94,7 +94,7 @@ async def _verify_claims(
                     "source_idx": r.get("source_idx"),
                     "reason": r.get("reason", ""),
                 }
-                for i, r in enumerate(results)
+                for i, r in enumerate(results[:len(claims)])
             ]
     except Exception as e:
         logger.error(f"Claim 验证失败: {e}", exc_info=True)

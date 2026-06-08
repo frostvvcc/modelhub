@@ -231,6 +231,7 @@ class StreamChatService:
             # 5. 记忆管理 — token 压缩
             memory = ConversationMemory(max_tokens=3500)
             history_dicts = [{"role": msg['role'], "content": msg['content']} for msg in reversed(history)]
+            history_dicts_desc = [{"role": msg['role'], "content": msg['content']} for msg in history]
             model = await AsyncLLMPool.get_client(model_config_id, session)
             compressed = await memory.compress(history_dicts, model)
             token_stats = memory.get_token_stats(compressed)
@@ -335,7 +336,7 @@ class StreamChatService:
 
                 # Multi-turn Query Reformulation：追问补全为独立查询
                 retrieval_query = await AsyncChatService._reformulate_for_retrieval(
-                    message, history_dicts,
+                    message, history_dicts_desc,
                 )
 
                 yield _sse_event("retrieval_info", {

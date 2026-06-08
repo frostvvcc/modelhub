@@ -195,7 +195,13 @@ async def search(
                 for key, value in item.items():
                     if key.startswith("$"):
                         continue
-                    es_filter.append({"term": {key: value}})
+                    if isinstance(value, dict):
+                        if "$in" in value:
+                            es_filter.append({"terms": {key: value["$in"]}})
+                        elif "$eq" in value:
+                            es_filter.append({"term": {key: value["$eq"]}})
+                    else:
+                        es_filter.append({"term": {key: value}})
 
         bool_query = {
             "should": [
@@ -289,6 +295,8 @@ async def search(
         return results
     except Exception as e:
         logger.warning(f"ES 检索失败: {e}")
+        _es_client = None
+        _es_last_failure = _time.monotonic()
         return []
 
 

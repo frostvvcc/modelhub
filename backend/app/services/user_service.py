@@ -118,37 +118,42 @@ class AsyncUserService:
             logger.warning(f"登录失败: 用户不存在 - {account}")
             raise NotFoundError("用户不存在")
 
-        if authenticate_user(user, account, password):
-            token = generate_jwt(user.id, user.name, user.email or "")
-            logger.info(f"用户登录成功: user_id={user.id}, account={account}")
-
-            from app.mappers.permission_mapper import AsyncPermissionMapper
-            user_roles = await AsyncPermissionMapper.get_user_roles(session, user.id)
-
-            user_role = 'student'
-            if user_roles:
-                system_admin_role = next((ur for ur in user_roles
-                                 if ur.role and ur.role.code == 'system_admin'), None)
-                teacher_role = next((ur for ur in user_roles
-                                   if ur.role and ur.role.code == 'teacher'), None)
-                if system_admin_role:
-                    user_role = 'admin'
-                elif teacher_role:
-                    user_role = 'teacher'
-            elif user.role in {'admin', 'teacher', 'student'}:
-                user_role = user.role
-
-            return {
-                "id": user.id,
-                "name": user.name,
-                "avatar": user.avatar,
-                "email": user.email,
-                "role": user_role,
-                "token": token
-            }
-        else:
+        if not authenticate_user(user, account, password):
             logger.warning(f"登录失败: 密码错误 - {account}")
             raise UnauthorizedError("密码错误")
+
+        if hasattr(user, 'status') and user.status and user.status != 'active':
+            logger.warning(f"登录失败: 账号已被禁用 - {account}, status={user.status}")
+            raise UnauthorizedError("账号已被禁用")
+
+        token = generate_jwt(user.id, user.name, user.email or "")
+        logger.info(f"用户登录成功: user_id={user.id}, account={account}")
+
+        from app.mappers.permission_mapper import AsyncPermissionMapper
+        user_roles = await AsyncPermissionMapper.get_user_roles(session, user.id)
+
+        user_role = 'student'
+        if user_roles:
+            system_admin_role = next((ur for ur in user_roles
+                             if ur.role and ur.role.code == 'system_admin'), None)
+            teacher_role = next((ur for ur in user_roles
+                               if ur.role and ur.role.code == 'teacher'), None)
+            if system_admin_role:
+                user_role = 'admin'
+            elif teacher_role:
+                user_role = 'teacher'
+        elif user.role in {'admin', 'teacher', 'student'}:
+            user_role = user.role
+
+        return {
+            "id": user.id,
+            "name": user.name,
+            "avatar": user.avatar,
+            "email": user.email,
+            "role": user_role,
+            "token": token
+        }
+
     
     @staticmethod
     async def get_user_detail(session: AsyncSession, user_id: int) -> dict:

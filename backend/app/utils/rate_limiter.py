@@ -39,10 +39,11 @@ def rate_limit(requests_per_minute: int = 60):
                 redis_pool = get_redis_pool()
                 redis_client = redis.Redis(connection_pool=redis_pool)
                 
-                # 使用滑动窗口算法
-                current = redis_client.incr(rate_limit_key)
-                if current == 1:
-                    redis_client.expire(rate_limit_key, 60)  # 设置过期时间
+                pipe = redis_client.pipeline(True)
+                pipe.incr(rate_limit_key)
+                pipe.expire(rate_limit_key, 60)
+                results = pipe.execute()
+                current = results[0]
                 
                 if current > requests_per_minute:
                     logger.warning(f"限流触发: {client_id} 超过 {requests_per_minute} 次/分钟")

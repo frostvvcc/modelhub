@@ -29,7 +29,7 @@ const handleLogin = async () => {
     if (success) {
       // 检查是否有重定向路径
       const redirect = router.currentRoute.value.query.redirect
-      if (typeof redirect === 'string') {
+      if (typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//')) {
         router.push(redirect)
       } else {
         router.push('/')

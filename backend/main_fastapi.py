@@ -12,7 +12,7 @@ app = create_app()
 
 if __name__ == "__main__":
     port = int(os.getenv("APP_PORT", "5000"))
-    debug = os.getenv("APP_DEBUG", "true").lower() == "true"
+    debug = os.getenv("APP_DEBUG", "false").lower() == "true"
     uvicorn.run(
         "main_fastapi:app",
         host="0.0.0.0",

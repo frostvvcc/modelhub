@@ -441,7 +441,7 @@ class VectorRetriever:
             return None
 
         docs = data.get('documents') or []
-        metas = data.get('metadatas') or [{}] * len(docs)
+        metas = data.get('metadatas') or [{} for _ in range(len(docs))]
         ids = data.get('ids') or [str(i) for i in range(len(docs))]
 
         if not docs:

@@ -153,9 +153,10 @@ async def change_password(
     description="获取所有企业用户"
 )
 async def get_enterprise_users(
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db)
 ):
-    """获取企业用户列表（无需登录）"""
+    """获取企业用户列表"""
     # 异常由中间件统一处理
     users = await AsyncUserService.get_enterprise_users(db)
     return SuccessResponse(message="获取配置商成功", data=users)

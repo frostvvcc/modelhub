@@ -402,6 +402,12 @@ class AgentEngine:
             accumulated_content = "抱歉，经过多次尝试仍未能得到满意的结果，请尝试更具体的问题。"
             yield AgentEvent(type="token", data={"content": accumulated_content})
 
+        if not self.state_machine.can_transition(AgentState.DONE):
+            if self.state_machine.can_transition(AgentState.RESPONDING):
+                self.state_machine.transition(AgentState.RESPONDING, "循环结束，进入回答阶段")
+            elif self.state_machine.can_transition(AgentState.ERROR):
+                self.state_machine.transition(AgentState.ERROR, "非正常退出循环")
+                self.state_machine.transition(AgentState.DONE, "错误后完成")
         if self.state_machine.can_transition(AgentState.DONE):
             self.state_machine.transition(AgentState.DONE, "回答完成")
 

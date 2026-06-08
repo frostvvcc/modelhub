@@ -118,7 +118,7 @@ async def error_handler_middleware(request: Request, call_next):
             exc_info=True
         )
 
-        app_exception = InternalServerError(f"服务器内部错误: {str(e)}")
+        app_exception = InternalServerError("服务器内部错误，请稍后重试")
 
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

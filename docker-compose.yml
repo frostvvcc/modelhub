@@ -11,7 +11,7 @@ services:
       MYSQL_USER: ${DB_USERNAME:-modelhub}
       MYSQL_PASSWORD: ${DB_PASSWORD:-modelhub123}
     ports:
-      - "${MYSQL_PORT:-3306}:3306"
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
     volumes:
       - modelhub_mysql_data:/var/lib/mysql
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
@@ -26,7 +26,7 @@ services:
     container_name: modelhub-redis
     restart: unless-stopped
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - modelhub_redis_data:/data
     healthcheck:
@@ -40,7 +40,7 @@ services:
     container_name: modelhub-chromadb
     restart: unless-stopped
     ports:
-      - "${CHROMA_PORT:-8002}:8000"
+      - "127.0.0.1:${CHROMA_PORT:-8002}:8000"
     volumes:
       - modelhub_chroma_data:/chroma/chroma
     environment:
@@ -55,7 +55,7 @@ services:
       - xpack.security.enabled=false
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
     ports:
-      - "${ES_PORT:-9200}:9200"
+      - "127.0.0.1:${ES_PORT:-9200}:9200"
     volumes:
       - modelhub_es_data:/usr/share/elasticsearch/data
     deploy:
@@ -199,8 +199,8 @@ services:
     container_name: modelhub-neo4j
     restart: unless-stopped
     ports:
-      - "${NEO4J_HTTP_PORT:-7474}:7474"
-      - "${NEO4J_BOLT_PORT:-7687}:7687"
+      - "127.0.0.1:${NEO4J_HTTP_PORT:-7474}:7474"
+      - "127.0.0.1:${NEO4J_BOLT_PORT:-7687}:7687"
     environment:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-modelhub123}
     volumes:

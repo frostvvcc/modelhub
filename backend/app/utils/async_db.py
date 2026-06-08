@@ -28,12 +28,8 @@ class AsyncDB:
         Returns:
             模型实例或 None
         """
-        try:
-            result = await session.get(model, id)
-            return result
-        except Exception as e:
-            logger.error(f"查询失败: {e}")
-            return None
+        result = await session.get(model, id)
+        return result
     
     @staticmethod
     async def get_by_field(
@@ -54,14 +50,10 @@ class AsyncDB:
         Returns:
             模型实例或 None
         """
-        try:
-            field = getattr(model, field_name)
-            stmt = select(model).where(field == field_value)
-            result = await session.execute(stmt)
-            return result.scalar_one_or_none()
-        except Exception as e:
-            logger.error(f"查询失败: {e}")
-            return None
+        field = getattr(model, field_name)
+        stmt = select(model).where(field == field_value)
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
     
     @staticmethod
     async def get_all(session: AsyncSession, model: Type[T]) -> List[T]:
@@ -75,13 +67,9 @@ class AsyncDB:
         Returns:
             记录列表
         """
-        try:
-            stmt = select(model)
-            result = await session.execute(stmt)
-            return list(result.scalars().all())
-        except Exception as e:
-            logger.error(f"查询失败: {e}")
-            return []
+        stmt = select(model)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
     
     @staticmethod
     async def filter_by(
@@ -100,16 +88,12 @@ class AsyncDB:
         Returns:
             记录列表
         """
-        try:
-            stmt = select(model)
-            for field_name, field_value in filters.items():
-                field = getattr(model, field_name)
-                stmt = stmt.where(field == field_value)
-            result = await session.execute(stmt)
-            return list(result.scalars().all())
-        except Exception as e:
-            logger.error(f"查询失败: {e}")
-            return []
+        stmt = select(model)
+        for field_name, field_value in filters.items():
+            field = getattr(model, field_name)
+            stmt = stmt.where(field == field_value)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
     
     @staticmethod
     async def create(session: AsyncSession, instance: T) -> T:

@@ -5,6 +5,7 @@ RAG 运行时质量监控
 支持双写：内存滑动窗口（实时聚合）+ 数据库持久化（历史分析）。
 """
 import time
+import math
 import logging
 import json
 from collections import deque
@@ -105,7 +106,7 @@ class RAGMonitor:
         rerank_change_rate = sum(1 for m in metrics_list if m.rerank_changed_top1) / n
         low_confidence_rate = sum(1 for m in metrics_list if m.low_confidence) / n
 
-        p95_total = sorted(m.total_ms for m in metrics_list)[int(n * 0.95)] if n >= 20 else max(m.total_ms for m in metrics_list)
+        p95_total = sorted(m.total_ms for m in metrics_list)[min(int(math.ceil(n * 0.95)) - 1, n - 1)] if n >= 20 else max(m.total_ms for m in metrics_list)
 
         return {
             "count": n,

@@ -98,11 +98,15 @@ async function processSSEStream(
 
   let eventType = ''
   let eventData = ''
+  let normallyDone = false
 
   try {
     while (true) {
       const { done, value } = await reader.read()
-      if (done) break
+      if (done) {
+        normallyDone = true
+        break
+      }
 
       buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
@@ -125,8 +129,13 @@ async function processSSEStream(
         }
       }
     }
+  } catch (err) {
+    callbacks.onError?.(err instanceof Error ? err.message : '连接异常断开')
   } finally {
     reader.releaseLock()
+    if (!normallyDone) {
+      callbacks.onError?.('连接异常断开')
+    }
   }
 }
 

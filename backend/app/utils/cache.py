@@ -47,17 +47,17 @@ def cache_result(ttl: int = 3600, key_prefix: str = ""):
             cache_key = _stable_cache_key(key_prefix, func.__name__, args, kwargs)
 
             try:
-                redis_pool = get_redis_pool()
-                redis_client = redis.Redis(connection_pool=redis_pool)
+                from app.utils.optimized_redis import get_async_redis_client
+                redis_client = get_async_redis_client()
 
-                cached = redis_client.get(cache_key)
+                cached = await redis_client.get(cache_key)
                 if cached:
                     logger.debug(f"缓存命中: {cache_key}")
                     return json.loads(cached)
 
                 result = await func(*args, **kwargs)
 
-                redis_client.setex(cache_key, ttl, json.dumps(result, default=str, ensure_ascii=False))
+                await redis_client.setex(cache_key, ttl, json.dumps(result, default=str, ensure_ascii=False))
                 logger.debug(f"缓存写入: {cache_key}")
 
                 return result

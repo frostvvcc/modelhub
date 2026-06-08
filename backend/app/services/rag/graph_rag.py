@@ -128,9 +128,13 @@ def store_triples(triples: List[Triple], vector_db_id: int) -> int:
                     MERGE (s:Entity {name: $subject, kb_id: $kb_id})
                     MERGE (o:Entity {name: $object, kb_id: $kb_id})
                     MERGE (s)-[r:RELATION {type: $relation}]->(o)
-                    SET r.source_chunk_id = $chunk_id,
-                        r.document_id = $doc_id,
-                        r.kb_id = $kb_id
+                    ON CREATE SET r.source_chunk_ids = [$chunk_id],
+                                  r.document_id = $doc_id,
+                                  r.kb_id = $kb_id
+                    ON MATCH SET r.source_chunk_ids = CASE
+                        WHEN NOT $chunk_id IN coalesce(r.source_chunk_ids, [])
+                        THEN coalesce(r.source_chunk_ids, []) + $chunk_id
+                        ELSE r.source_chunk_ids END
                     """,
                     subject=t.subject,
                     object=t.obj,

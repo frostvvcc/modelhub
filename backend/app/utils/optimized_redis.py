@@ -78,3 +78,31 @@ class OptimizedConversationStore:
         except Exception as e:
             logger.error(f"Redis健康检查失败: {e}")
             return False
+
+
+# 异步 Redis 客户端（供 async 代码路径使用，避免阻塞事件循环）
+_async_redis_client = None
+_async_lock = __import__('asyncio').Lock() if hasattr(__import__('asyncio'), 'Lock') else None
+
+
+def get_async_redis_client():
+    """获取异步 Redis 客户端（懒初始化，非协程版本，线程安全）"""
+    global _async_redis_client
+    if _async_redis_client is None:
+        try:
+            import redis.asyncio as aioredis
+            _async_redis_client = aioredis.Redis(
+                host=os.getenv("REDIS_HOST", "127.0.0.1"),
+                port=int(os.getenv("REDIS_PORT", "6379")),
+                db=int(os.getenv("REDIS_DB", "0")),
+                password=os.getenv("REDIS_PASSWORD", None),
+                decode_responses=True,
+                socket_connect_timeout=5,
+                socket_timeout=5,
+            )
+            logger.info("异步 Redis 客户端已创建")
+        except ImportError:
+            logger.warning("redis.asyncio 不可用，异步缓存将降级为同步调用")
+            pool = get_redis_pool()
+            _async_redis_client = redis.Redis(connection_pool=pool)
+    return _async_redis_client
