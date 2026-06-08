@@ -1954,25 +1954,35 @@ class AsyncVectorService:
         candidates: List[tuple],
         max_count: int = 3,
     ) -> List[tuple]:
-        """Query-Aware Knowledge Router: 按 query 与库描述的语义相似度选择 top-N 库"""
-        if len(candidates) <= max_count:
-            return candidates
+        """Query-Aware Knowledge Router: 按 query 与库描述的语义相似度选择 top-N 库。
+        附件库（会话附件库）强制入选，不参与竞争淘汰。"""
+        pinned = [(vdb, layer) for vdb, layer in candidates
+                  if (vdb.name or "").startswith(CHAT_ATTACHMENT_VECTOR_DB_PREFIX)]
+        competitive = [(vdb, layer) for vdb, layer in candidates
+                       if not (vdb.name or "").startswith(CHAT_ATTACHMENT_VECTOR_DB_PREFIX)]
 
-        from app.utils.async_embedding import get_query_embedding_async
-        query_emb = await get_query_embedding_async(query)
+        remaining_slots = max(1, max_count - len(pinned))
 
-        scored = []
-        for vdb, layer in candidates:
-            kb_emb = await AsyncVectorService._get_kb_embedding(vdb)
-            sim = AsyncVectorService._cosine_similarity(query_emb, kb_emb)
-            scored.append((sim, vdb, layer))
+        if len(competitive) <= remaining_slots:
+            selected = pinned + competitive
+        else:
+            from app.utils.async_embedding import get_query_embedding_async
+            query_emb = await get_query_embedding_async(query)
 
-        scored.sort(key=lambda x: x[0], reverse=True)
-        selected = [(vdb, layer) for _, vdb, layer in scored[:max_count]]
+            scored = []
+            for vdb, layer in competitive:
+                kb_emb = await AsyncVectorService._get_kb_embedding(vdb)
+                sim = AsyncVectorService._cosine_similarity(query_emb, kb_emb)
+                scored.append((sim, vdb, layer))
 
+            scored.sort(key=lambda x: x[0], reverse=True)
+            selected = pinned + [(vdb, layer) for _, vdb, layer in scored[:remaining_slots]]
+
+        pinned_names = [v.name for v, _ in pinned]
+        routed_names = [f"{v.name}({s:.3f})" for s, v, _ in scored[:remaining_slots]] if len(competitive) > remaining_slots else [v.name for v, _ in competitive]
         logger.info(
             f"🔀 [Knowledge Router] {len(candidates)} 库 → {len(selected)} 库 | "
-            f"top: {', '.join(f'{s[1].name}({s[0]:.3f})' for s in scored[:max_count])}"
+            f"固定: {pinned_names or '无'} | 竞选: {routed_names}"
         )
         return selected
 
