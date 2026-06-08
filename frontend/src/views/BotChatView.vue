@@ -398,8 +398,6 @@ onMounted(loadBot);
                 <div v-if="message.model_name || message.rag_info" class="ds-meta-card">
                   <div class="ds-meta-tags">
                     <span v-if="message.model_name" class="ds-meta-tag ds-meta-tag--model">{{ message.model_name }}</span>
-                    <span v-if="message.grounded_level" class="ds-meta-tag" :class="getLevelClass(message.grounded_level)">依据{{ message.grounded_level }}</span>
-                    <span v-if="message.grounded_ratio" class="ds-meta-tag ds-meta-tag--plain">匹配 {{ formatPercent(message.grounded_ratio) }}</span>
                     <span v-if="message.rag_info?.total_results" class="ds-meta-tag ds-meta-tag--plain">{{ message.rag_info.total_results }} 条片段</span>
                     <span v-if="message.sources?.length" class="ds-meta-tag ds-meta-tag--plain">{{ getRetrievalLabel(message.sources[0]?.retrieval_method) }}</span>
                   </div>

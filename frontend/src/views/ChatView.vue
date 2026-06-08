@@ -691,9 +691,6 @@ const scrollToBottom = () => {
                         <div class="step-body">
                           <div class="step-title-row">
                             <span class="step-title">{{ message.isStreaming ? '正在生成回答...' : '生成回答' }}</span>
-                            <span class="step-badge" v-if="message.grounded_level" :class="'confidence-' + ({高:'high',中:'medium',低:'low',不足:'weak'}[message.grounded_level] || 'low')">
-                              可信度：{{ message.grounded_level }}
-                            </span>
                           </div>
                           <span class="step-detail"></span>
                         </div>
