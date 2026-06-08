@@ -89,7 +89,8 @@ class AsyncChatService:
         return AsyncChatService._render_template(template, {"index": index})
 
     @staticmethod
-    def _confidence_from_source(source: Dict[str, Any]) -> tuple[float, str]:
+    def _relevance_from_source(source: Dict[str, Any]) -> tuple[float, str]:
+        """计算单条检索结果的相关度（基于向量相似度），不是回答的可信度。"""
         similarity = float(source.get("similarity") or source.get("vector_score") or 0.0)
         score = max(0.0, min(1.0, similarity))
         if score >= 0.75:
@@ -123,7 +124,7 @@ class AsyncChatService:
         label_counter = 0
 
         for source in raw_sources:
-            confidence_score, confidence_label = AsyncChatService._confidence_from_source(source)
+            confidence_score, confidence_label = AsyncChatService._relevance_from_source(source)
             content = (source.get("content") or "").strip()
             if not content:
                 continue
@@ -395,293 +396,6 @@ class AsyncChatService:
         return str(response)
     
     @staticmethod
-    async def chat(
-        session: AsyncSession,
-        user_id: int,
-        conversation_id: Optional[int],
-        model_config_id: Optional[int],
-        message: str,
-        files: Optional[List[Any]] = None,
-        vector_db_ids: Optional[List[int]] = None,
-        quoted_content: Optional[str] = None,
-        quoted_role: Optional[str] = None,
-    ) -> dict:
-        """
-        获取回答并保存
-        
-        Raises:
-            ValidationError: 模型配置不存在或对话创建失败
-            NotFoundError: 对话不存在
-            InternalServerError: 处理失败
-        """
-        logger.info(f"处理聊天请求: user_id={user_id}, conversation_id={conversation_id}")
-        try:
-            if not conversation_id:
-                if not model_config_id:
-                    model_config_id = await AsyncChatService.resolve_default_model_config_id(
-                        session,
-                        user_id
-                    )
-                if not model_config_id:
-                    logger.warning(f"聊天失败: 没有可用模型配置 - user_id={user_id}")
-                    raise ValidationError("当前没有可用的模型配置，请先在“模型配置”中创建配置")
-                # 先校验 LLM 配置，避免 API Key 缺失时创建失败会话。
-                await AsyncLLMPool.get_client(model_config_id, session)
-                conversation_id = await AsyncChatService.create_conversation(
-                    session, user_id, model_config_id, message
-                )
-            
-            if not conversation_id:
-                logger.error(f"聊天失败: 对话创建失败 - user_id={user_id}")
-                raise ValidationError("对话创建失败")
-
-            await AsyncChatService._assert_conversation_owner(session, conversation_id, user_id)
-
-            # 获取对话信息
-            conversation = await AsyncChatMapper.get_conversation(session, conversation_id)
-            if not conversation:
-                logger.warning(f"聊天失败: 对话不存在 - conversation_id={conversation_id}")
-                raise NotFoundError("对话不存在")
-            
-            conversation_info = conversation['conversation_info']
-            model_config_id = conversation_info['model_config_id']
-            model = await AsyncLLMPool.get_client(model_config_id, session)
-
-            attachment_info = await AsyncVectorService.upload_conversation_attachments(
-                session,
-                user_id=user_id,
-                conversation_id=conversation_id,
-                model_config_id=model_config_id,
-                files=files,
-            )
-            attachment_vector_db_ids = (
-                [attachment_info["vector_db_id"]]
-                if attachment_info.get("vector_db_id") and attachment_info.get("document_ids")
-                else []
-            )
-
-            message_for_history = message
-            if attachment_info.get("filenames"):
-                attachment_names = "、".join(attachment_info["filenames"])
-                message_for_history = f"{message}\n\n[已上传附件：{attachment_names}]"
-
-            # 保存用户消息
-            user_metadata = None
-            if quoted_content:
-                user_metadata = {"quote": {"content": quoted_content, "role": quoted_role or "assistant"}}
-            await AsyncChatMapper.save_message(session, conversation_id, "user", message_for_history, metadata=user_metadata)
-
-            conversation = await AsyncChatMapper.get_conversation(session, conversation_id)
-            if not conversation:
-                logger.warning(f"聊天失败: 对话不存在 - conversation_id={conversation_id}")
-                raise NotFoundError("对话不存在")
-
-            conversation_info = conversation['conversation_info']
-            history = conversation['history']["messages"]
-            
-            # 构建消息列表
-            chat_messages_list = []
-            for msg in reversed(history):
-                chat_messages_list.append(ChatMessage(role=msg['role'], content=msg['content']))
-
-            if quoted_content and chat_messages_list:
-                last_msg = chat_messages_list[-1]
-                if last_msg.role == "user":
-                    chat_messages_list[-1] = ChatMessage(
-                        role="user",
-                        content=f"[用户引用了之前的对话内容: \"{quoted_content[:500]}\"]\n\n{last_msg.content}",
-                    )
-            
-            # 查询上下文（向量数据库）- 异步（带权限检查）
-            # 获取模型配置以检查向量数据库权限
-            model_config = await AsyncModelMapper.get_model_config_by_id(session, model_config_id)
-            rag_result = {
-                "contexts": [],
-                "sources": [],
-                "used_knowledge_base": False,
-                "vector_db_id": None,
-                "vector_db_ids": [],
-                "queried_vector_db_ids": [],
-                "retrieval_layers": [],
-                "total_results": 0,
-                "avg_similarity": 0.0,
-                "fallback_used": False,
-            }
-
-            # Multi-turn Query Reformulation：用对话历史将追问补全为独立查询
-            retrieval_query = await AsyncChatService._reformulate_for_retrieval(message, history)
-
-            all_extra_ids = (vector_db_ids or []) + attachment_vector_db_ids
-            if model_config:
-                rag_result = await AsyncVectorService.query_vector_by_model(
-                    session,
-                    model_config_id,
-                    retrieval_query,
-                    user_id=user_id,
-                    extra_vector_db_ids=all_extra_ids if all_extra_ids else None,
-                )
-
-            prompt_messages: List[ChatMessage] = []
-            enriched_sources: List[Dict[str, Any]] = []
-            citation_labels: List[str] = []
-            if model_config:
-                prompt_messages, enriched_sources, citation_labels = AsyncChatService._build_prompt_orchestration(
-                    model_config,
-                    message,
-                    rag_result,
-                )
-                if enriched_sources:
-                    rag_result["sources"] = enriched_sources
-                    rag_result["contexts"] = [source["content"] for source in enriched_sources]
-
-            # 构建提示词（根据是否使用知识库）
-            # GraphRAG：注入知识图谱子图上下文
-            try:
-                from app.services.rag.graph_rag import NEO4J_ENABLED, graph_augmented_context
-                if NEO4J_ENABLED and rag_result.get("vector_db_ids"):
-                    graph_ctx = await graph_augmented_context(
-                        retrieval_query, rag_result["vector_db_ids"][0]
-                    )
-                    if graph_ctx:
-                        prompt_messages.append(ChatMessage(role="system", content=graph_ctx))
-            except Exception as graph_err:
-                logger.warning(f"GraphRAG 上下文注入失败: {graph_err}")
-
-            if rag_result["used_knowledge_base"]:
-                chat_messages_list = prompt_messages + chat_messages_list
-                logger.info(
-                    "✅ [RAG] 使用知识库生成答案: vector_db_ids=%s, layers=%s, 片段数=%s",
-                    rag_result.get("vector_db_ids") or [rag_result.get("vector_db_id")],
-                    rag_result.get("retrieval_layers", []),
-                    rag_result["total_results"],
-                )
-            else:
-                # 未使用知识库：提示LLM说明情况
-                no_kb_prompt = (
-                    prompt_messages
-                    or [ChatMessage(role="system", content="【通用回答】\n\n知识库中未找到与用户问题相关的信息。回答时请明确说明这不是基于知识库的内容。")]
-                )
-                chat_messages_list = no_kb_prompt + chat_messages_list
-                logger.info(f"ℹ️  [RAG] 未使用知识库，使用通用知识回答")
-
-            # 异步调用 LLM
-            response = await model.chat(chat_messages_list)
-
-            # 提取内容
-            content = AsyncChatService.extract_response_content(response)
-
-            # 根据是否使用知识库，在答案前添加标注
-            if rag_result["used_knowledge_base"]:
-                grounded_level = AsyncChatService._grounding_summary(rag_result["avg_similarity"])
-                source_prefix = f"【平均匹配度 {rag_result['avg_similarity']:.2%}】\n\n"
-                content = source_prefix + content
-                logger.info(f"✅ [RAG] 答案已添加知识库来源标注")
-
-            # 幻觉溯源：构建 source_citations 列表（在保存前构建，以便一起持久化）
-            raw_sources = rag_result.get("sources", [])
-            source_citations = [
-                {
-                    "content": s.get("content", ""),
-                    "source": s.get("source", ""),
-                    "chunk_id": s.get("id", ""),
-                    "similarity": round(s.get("similarity", 0.0), 4),
-                    "vector_score": round(s.get("vector_score", 0.0), 4),
-                    "bm25_score": round(s.get("bm25_score", 0.0), 4),
-                    "final_score": round(s.get("final_score", 0.0), 4),
-                    "retrieval_method": s.get("retrieval_method", "vector"),
-                    "document_id": s.get("document_id", ""),
-                    "vector_db_id": s.get("vector_db_id"),
-                    "vector_db_name": s.get("vector_db_name", ""),
-                    "retrieval_layer": s.get("retrieval_layer", ""),
-                    "citation_label": s.get("citation_label", ""),
-                    "confidence_score": round(s.get("confidence_score", 0.0), 4),
-                    "confidence_label": s.get("confidence_label", ""),
-                }
-                for s in raw_sources
-            ]
-            # 后处理：重新编号，确保引用从 [来源1] 开始连续
-            ct = getattr(model_config, "citation_template", None) if model_config else None
-            content, source_citations = AsyncChatService._renumber_citations(content, source_citations, ct)
-
-            grounded_ratio = max(0.0, min(1.0, rag_result["avg_similarity"])) if rag_result["used_knowledge_base"] else 0.0
-            grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
-
-            # Claim-Level Grounding 验证（检测 LLM 回复中的幻觉）
-            # 来源 >= 3 条时执行完整 NLI 验证；来源不足时 NLI 上下文缺失会产生假阴性
-            grounding_detail = None
-            if rag_result["used_knowledge_base"] and source_citations and len(source_citations) >= 3:
-                try:
-                    from app.services.rag.grounding import verify_grounding
-                    grounding_detail = await verify_grounding(content, source_citations)
-                    if grounding_detail.get("grounded_ratio") is not None:
-                        grounded_ratio = grounding_detail["grounded_ratio"]
-                        grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
-                    unsupported = grounding_detail.get("unsupported_claims", [])
-                    if unsupported:
-                        warning = "\n\n⚠️ 以下内容未在知识库中找到明确依据：\n"
-                        for uc in unsupported[:3]:
-                            warning += f"- {uc.get('text', '')}\n"
-                        content += warning
-                except Exception as grounding_err:
-                    logger.warning(f"Grounding 验证失败（不影响回答）: {grounding_err}")
-
-            # 保存助手回复（含富数据）
-            assistant_metadata = {}
-            if source_citations:
-                assistant_metadata["sources"] = source_citations
-            if grounded_ratio:
-                assistant_metadata["grounded_ratio"] = round(grounded_ratio, 4)
-                assistant_metadata["grounded_level"] = grounded_level
-            if grounding_detail:
-                assistant_metadata["grounding_detail"] = grounding_detail
-            if rag_result["used_knowledge_base"]:
-                assistant_metadata["rag_info"] = {
-                    "used_knowledge_base": True,
-                    "vector_db_id": rag_result["vector_db_id"],
-                    "vector_db_ids": rag_result.get("vector_db_ids", []),
-                    "queried_vector_db_ids": rag_result.get("queried_vector_db_ids", []),
-                    "retrieval_layers": rag_result.get("retrieval_layers", []),
-                    "fallback_used": rag_result.get("fallback_used", False),
-                    "total_results": rag_result["total_results"],
-                    "avg_similarity": rag_result["avg_similarity"],
-                    "grounded_level": grounded_level,
-                }
-            if attachment_info and attachment_info.get("document_ids"):
-                assistant_metadata["attachment_info"] = attachment_info
-
-            res = await AsyncChatMapper.save_message(
-                session, conversation_id, "assistant", content,
-                metadata=assistant_metadata if assistant_metadata else None,
-            )
-
-            logger.info(f"成功处理聊天请求: conversation_id={conversation_id}")
-            return {
-                "response": res,
-                "conversation_id": conversation_id,
-                "conversation_name": conversation_info['name'],
-                "rag_info": {
-                    "used_knowledge_base": rag_result["used_knowledge_base"],
-                    "vector_db_id": rag_result["vector_db_id"],
-                    "vector_db_ids": rag_result.get("vector_db_ids", []),
-                    "queried_vector_db_ids": rag_result.get("queried_vector_db_ids", []),
-                    "retrieval_layers": rag_result.get("retrieval_layers", []),
-                    "fallback_used": rag_result.get("fallback_used", False),
-                    "total_results": rag_result["total_results"],
-                    "avg_similarity": rag_result["avg_similarity"],
-                    "grounded_level": grounded_level,
-                },
-                "attachment_info": attachment_info,
-                "sources": source_citations,
-                "grounded_ratio": round(grounded_ratio, 4),
-                "grounded_level": grounded_level,
-            }
-        except (ValidationError, NotFoundError, ForbiddenError):
-            raise
-        except Exception as e:
-            logger.error(f"处理聊天请求失败: {str(e)}", exc_info=True)
-            raise InternalServerError(f"处理聊天请求失败: {str(e)}")
-    
-    @staticmethod
     async def rechat(session: AsyncSession, conversation_id: int, user_id: Optional[int] = None) -> dict:
         """
         重新回答
@@ -778,7 +492,7 @@ class AsyncChatService:
             content = AsyncChatService.extract_response_content(response)
 
             if rag_result["used_knowledge_base"]:
-                grounded_level = AsyncChatService._grounding_summary(rag_result["avg_similarity"])
+                logger.info(f"✅ [RAG] rechat 使用知识库回答")
                 content = (
                     f"【平均匹配度 {rag_result['avg_similarity']:.2%}】\n\n"
                     f"{content}"
@@ -808,8 +522,8 @@ class AsyncChatService:
             ct_rechat = getattr(model_config, "citation_template", None) if model_config else None
             content, source_citations = AsyncChatService._renumber_citations(content, source_citations, ct_rechat)
 
-            grounded_ratio = max(0.0, min(1.0, rag_result["avg_similarity"])) if rag_result["used_knowledge_base"] else 0.0
-            grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
+            grounded_ratio = 0.0
+            grounded_level = "验证中" if (rag_result["used_knowledge_base"] and source_citations) else ("AI回答" if not rag_result["used_knowledge_base"] else "未引用")
 
             # 保存回复（含富数据）
             rechat_metadata = {}
@@ -1073,16 +787,14 @@ class AsyncChatService:
         ct_bot = getattr(model_config, "citation_template", None) if model_config else None
         answer, source_citations = AsyncChatService._renumber_citations(answer, source_citations, ct_bot)
 
-        grounded_ratio = max(0.0, min(1.0, rag_result["avg_similarity"])) if rag_result["used_knowledge_base"] else 0.0
-        grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
+        grounded_ratio = 0.0
+        grounded_level = "验证中" if (rag_result["used_knowledge_base"] and source_citations) else ("AI回答" if not rag_result["used_knowledge_base"] else "未引用")
 
         # 保存助手回复（含富数据）
         bot_metadata = {}
         if source_citations:
             bot_metadata["sources"] = source_citations
-        if grounded_ratio:
-            bot_metadata["grounded_ratio"] = round(grounded_ratio, 4)
-            bot_metadata["grounded_level"] = grounded_level
+        bot_metadata["grounded_level"] = grounded_level
         await AsyncChatMapper.save_message(
             db, conv_id_int, "assistant", answer,
             metadata=bot_metadata if bot_metadata else None,

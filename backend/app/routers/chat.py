@@ -20,61 +20,6 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-@router.post(
-    "/",
-    response_model=SuccessResponse[dict],
-    summary="发送消息进行对话"
-)
-async def chat(
-    conversation_id: Optional[int] = Form(None),
-    model_config_id: Optional[int] = Form(None),
-    message: str = Form(""),
-    files: Optional[List[UploadFile]] = File(None),
-    organization_id: Optional[int] = Form(None),
-    vector_db_ids: Optional[str] = Form(None),
-    quoted_content: Optional[str] = Form(None),
-    quoted_role: Optional[str] = Form(None),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_db)
-):
-    """发送消息进行对话"""
-    file_count = len([file for file in (files or []) if file.filename])
-    logger.info(
-        "chat接口收到请求: user_id=%s, conversation_id=%s, model_config_id=%s, message长度=%s, 附件数=%s",
-        current_user.id,
-        conversation_id,
-        model_config_id,
-        len(message) if message else 0,
-        file_count,
-    )
-
-    if not message and file_count == 0:
-        logger.warning(f"[调试] message为空，抛出ValidationError")
-        raise ValidationError("用户消息和附件不能同时为空")
-    if not message and file_count > 0:
-        message = "请总结并回答我上传的附件内容。"
-
-    parsed_vector_db_ids: Optional[List[int]] = None
-    if vector_db_ids:
-        try:
-            parsed_vector_db_ids = json.loads(vector_db_ids)
-            if not isinstance(parsed_vector_db_ids, list):
-                parsed_vector_db_ids = None
-        except (json.JSONDecodeError, TypeError):
-            parsed_vector_db_ids = None
-
-    response = await AsyncChatService.chat(
-        db,
-        current_user.id,
-        conversation_id,
-        model_config_id,
-        message,
-        files=files,
-        vector_db_ids=parsed_vector_db_ids,
-        quoted_content=quoted_content,
-        quoted_role=quoted_role,
-    )
-    return SuccessResponse(message="对话成功！", data=response)
 
 
 @router.post(

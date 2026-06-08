@@ -131,7 +131,7 @@ def _build_source_citations(
         label = s.get("citation_label") or AsyncChatService._make_citation_label(citation_template, idx + 1)
         sim = float(s.get("similarity") or s.get("vector_score") or 0.0)
         conf_score = round(max(0.0, min(1.0, s.get("confidence_score") or sim)), 4)
-        conf_label = s.get("confidence_label") or (
+        conf_label = s.get("relevance_label") or s.get("confidence_label") or (
             "高" if conf_score >= 0.75 else "中" if conf_score >= 0.55 else "低" if conf_score > 0 else "不足"
         )
         citations.append({
@@ -147,8 +147,8 @@ def _build_source_citations(
             "vector_db_id": s.get("vector_db_id"),
             "vector_db_name": s.get("vector_db_name", ""),
             "citation_label": label,
-            "confidence_score": conf_score,
-            "confidence_label": conf_label,
+            "relevance_score": conf_score,
+            "relevance_label": conf_label,
         })
     return citations
 
@@ -406,16 +406,22 @@ class StreamChatService:
             content, source_citations = AsyncChatService._renumber_citations(content, source_citations, ct)
 
             used_kb = (rag_result or {}).get("used_knowledge_base", False)
-            grounded_ratio = _compute_grounded_ratio(rag_result, source_citations) if used_kb else 0.0
-            grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
+            # Phase 1 即时标签：只标记来源状态，真实可信度等 Grounding 验证后更新
+            if used_kb and source_citations:
+                grounded_level = "验证中"
+            elif used_kb:
+                grounded_level = "未引用"
+            else:
+                grounded_level = "AI回答"
+            grounded_ratio = 0.0  # 真实值由 Claim-Level Grounding 填充
+
+
 
             # 先构建基础 metadata 并立即返回给前端（不等 Grounding）
             assistant_metadata = {}
             if source_citations:
                 assistant_metadata["sources"] = source_citations
-            if grounded_ratio:
-                assistant_metadata["grounded_ratio"] = round(grounded_ratio, 4)
-                assistant_metadata["grounded_level"] = grounded_level
+            assistant_metadata["grounded_level"] = grounded_level
             if used_kb:
                 assistant_metadata["rag_info"] = {
                     "used_knowledge_base": True,
@@ -453,14 +459,16 @@ class StreamChatService:
             })
 
             # Grounding 在消息保存之后执行，即使连接断开也不影响消息持久化
-            if used_kb and source_citations and len(source_citations) >= 3:
+            if used_kb and source_citations:
                 try:
                     from app.services.rag.grounding import verify_grounding
                     grounding_detail = await verify_grounding(content, source_citations)
                     if grounding_detail and grounding_detail.get("grounded_ratio") is not None:
+                        real_ratio = round(grounding_detail["grounded_ratio"], 4)
+                        real_level = AsyncChatService._grounding_summary(real_ratio)
                         yield _sse_event("grounding_update", {
-                            "grounded_ratio": round(grounding_detail["grounded_ratio"], 4),
-                            "grounded_level": AsyncChatService._grounding_summary(grounding_detail["grounded_ratio"]),
+                            "grounded_ratio": real_ratio,
+                            "grounded_level": real_level,
                             "total_claims": grounding_detail.get("total_claims", 0),
                             "supported_count": grounding_detail.get("supported_count", 0),
                         })
@@ -664,15 +672,19 @@ class StreamChatService:
             content, source_citations = AsyncChatService._renumber_citations(content, source_citations, ct)
 
             used_kb = (rag_result or {}).get("used_knowledge_base", False)
-            grounded_ratio = _compute_grounded_ratio(rag_result, source_citations) if used_kb else 0.0
-            grounded_level = AsyncChatService._grounding_summary(grounded_ratio)
+            # Phase 1 即时标签
+            if used_kb and source_citations:
+                grounded_level = "验证中"
+            elif used_kb:
+                grounded_level = "未引用"
+            else:
+                grounded_level = "AI回答"
+            grounded_ratio = 0.0
 
             bot_metadata = {}
             if source_citations:
                 bot_metadata["sources"] = source_citations
-            if grounded_ratio:
-                bot_metadata["grounded_ratio"] = round(grounded_ratio, 4)
-                bot_metadata["grounded_level"] = grounded_level
+            bot_metadata["grounded_level"] = grounded_level
             if trace_data:
                 bot_metadata["trace"] = trace_data
             if agent_tool_calls:
@@ -707,14 +719,18 @@ class StreamChatService:
             })
 
             # Grounding 在消息保存之后执行
-            if used_kb and source_citations and len(source_citations) >= 3:
+            if used_kb and source_citations:
                 try:
                     from app.services.rag.grounding import verify_grounding
                     grounding_detail = await verify_grounding(content, source_citations)
                     if grounding_detail and grounding_detail.get("grounded_ratio") is not None:
+                        real_ratio = round(grounding_detail["grounded_ratio"], 4)
+                        real_level = AsyncChatService._grounding_summary(real_ratio)
                         yield _sse_event("grounding_update", {
-                            "grounded_ratio": round(grounding_detail["grounded_ratio"], 4),
-                            "grounded_level": AsyncChatService._grounding_summary(grounding_detail["grounded_ratio"]),
+                            "grounded_ratio": real_ratio,
+                            "grounded_level": real_level,
+                            "total_claims": grounding_detail.get("total_claims", 0),
+                            "supported_count": grounding_detail.get("supported_count", 0),
                         })
                 except Exception as grounding_err:
                     logger.warning(f"Bot Grounding 验证失败: {grounding_err}")
