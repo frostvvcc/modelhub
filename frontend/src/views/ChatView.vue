@@ -790,7 +790,7 @@ const scrollToBottom = () => {
               <el-icon :size="14"><Close /></el-icon>
             </button>
           </div>
-          <input ref="fileInputRef" type="file" class="sr-only" multiple
+          <input id="chat-file-input" ref="fileInputRef" type="file" class="sr-only" multiple
             accept=".pdf,.doc,.docx,.txt,.md,.csv,.xlsx,.xls,.pptx,.ppt,.png,.jpg,.jpeg,.gif,.bmp,.tiff,.tif,.webp,.zip,.tar,.gz,.tgz"
             @change="handleFileSelected" />
           <!-- 已选文件 -->
@@ -815,9 +815,9 @@ const scrollToBottom = () => {
           <!-- 底部工具栏 -->
           <div class="chat-input-toolbar">
             <div class="toolbar-left">
-              <button class="toolbar-btn" @click="openFilePicker" title="上传文件">
+              <label for="chat-file-input" class="toolbar-btn" title="上传文件">
                 <el-icon :size="16"><UploadFilled /></el-icon>
-              </button>
+              </label>
             </div>
             <div class="toolbar-right">
               <button v-if="isGenerating" class="stop-btn" @click="stopGenerating" title="停止生成">
