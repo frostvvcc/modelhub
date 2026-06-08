@@ -554,6 +554,23 @@ class StreamChatService:
 
             all_vector_db_ids = (vector_db_ids or []) + attachment_vector_db_ids
 
+            # 构建附件内容上下文，直接注入 system prompt 保证 LLM 能看到文件内容
+            _INLINE_CHAR_LIMIT = 6000
+            _TOTAL_CHAR_LIMIT = 12000
+            attachment_context = ""
+            _total_chars = 0
+            for _fname, _text in (attachment_info.get("file_contents") or {}).items():
+                if len(_text) <= _INLINE_CHAR_LIMIT and _total_chars + len(_text) <= _TOTAL_CHAR_LIMIT:
+                    attachment_context += f"\n\n【附件: {_fname}】\n{_text}"
+                    _total_chars += len(_text)
+                else:
+                    preview = _text[:800] + "..." if len(_text) > 800 else _text
+                    attachment_context += f"\n\n【附件: {_fname}】（文件较长，共 {len(_text)} 字，以下为摘要）\n{preview}\n（完整内容已索引到知识库，可通过检索获取更多细节）"
+                    _total_chars += len(preview)
+
+            if attachment_context:
+                system_prompt = system_prompt + f"\n\n## 用户上传的附件内容\n以下是用户本次上传的文件内容，请基于这些内容回答问题：{attachment_context}"
+
             agent_tool_calls = []
             agent_thinking = ""
 

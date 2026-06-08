@@ -1672,6 +1672,7 @@ class AsyncVectorService:
         document_ids = []
         filenames = []
         errors = []
+        file_contents: Dict[str, str] = {}
         for file in valid_files:
             try:
                 await file.seek(0)
@@ -1691,6 +1692,24 @@ class AsyncVectorService:
                         document_ids.extend(archive_ids)
                         filenames.append(file.filename)
                 else:
+                    # 先提取文本用于直接注入 prompt
+                    try:
+                        from app.services.rag.document_parser import extract_text
+                        import tempfile, os
+                        await file.seek(0)
+                        raw = await file.read()
+                        suffix = os.path.splitext(file.filename)[1] or ".txt"
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                            tmp.write(raw)
+                            tmp_path = tmp.name
+                        text = extract_text(tmp_path)
+                        os.unlink(tmp_path)
+                        if text and text.strip():
+                            file_contents[file.filename] = text.strip()
+                        await file.seek(0)
+                    except Exception:
+                        await file.seek(0)
+
                     doc_id = await AsyncVectorService.upload_file(
                         session,
                         vector_db_id=vector_db.id,
@@ -1717,6 +1736,7 @@ class AsyncVectorService:
             "vector_db_name": vector_db.name,
             "document_ids": document_ids,
             "filenames": filenames,
+            "file_contents": file_contents,
             "errors": errors,
         }
 
