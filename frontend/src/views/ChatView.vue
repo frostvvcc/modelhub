@@ -143,7 +143,18 @@ const appendAssistantMessage = (content: string) => {
   scrollToBottom();
 };
 
-const openFilePicker = () => { fileInputRef.value?.click(); };
+const openFilePicker = () => {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.multiple = true;
+  input.accept = '.pdf,.doc,.docx,.txt,.md,.csv,.xlsx,.xls,.pptx,.ppt,.png,.jpg,.jpeg,.gif,.bmp,.tiff,.tif,.webp,.zip,.tar,.gz,.tgz';
+  input.onchange = (e: Event) => {
+    handleFileSelected(e);
+    input.remove();
+  };
+  document.body.appendChild(input);
+  input.click();
+};
 
 const handleFileSelected = (event: Event) => {
   const input = event.target as HTMLInputElement;
@@ -812,12 +823,9 @@ const scrollToBottom = () => {
           <!-- 底部工具栏 -->
           <div class="chat-input-toolbar">
             <div class="toolbar-left">
-              <label class="toolbar-btn upload-btn" title="上传文件">
-                <input ref="fileInputRef" type="file" class="upload-input-overlay" multiple
-                  accept=".pdf,.doc,.docx,.txt,.md,.csv,.xlsx,.xls,.pptx,.ppt,.png,.jpg,.jpeg,.gif,.bmp,.tiff,.tif,.webp,.zip,.tar,.gz,.tgz"
-                  @change="handleFileSelected" />
+              <button class="toolbar-btn" @click="openFilePicker" title="上传文件">
                 <el-icon :size="16"><UploadFilled /></el-icon>
-              </label>
+              </button>
             </div>
             <div class="toolbar-right">
               <button v-if="isGenerating" class="stop-btn" @click="stopGenerating" title="停止生成">
@@ -1209,8 +1217,6 @@ const scrollToBottom = () => {
 .chat-input-container { max-width: 720px; width: 100%; }
 .chat-input-box { background: #fff; border: 1.5px solid #d4d4d8; border-radius: 20px; overflow: hidden; transition: border-color 0.2s, box-shadow 0.2s; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
 .chat-input-box:focus-within { border-color: #818cf8; box-shadow: 0 0 0 3px rgba(99,102,241,0.1), 0 2px 12px rgba(0,0,0,0.06); }
-.upload-btn { position: relative; overflow: hidden; cursor: pointer; }
-.upload-input-overlay { position: absolute; inset: 0; opacity: 0; cursor: pointer; font-size: 0; z-index: 1; }
 .file-chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 14px 0; }
 .file-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; background: #f5f3ff; border: 1px solid #e9e5ff; border-radius: 6px; font-size: 12px; color: #4338ca; max-width: 200px; }
 .file-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
