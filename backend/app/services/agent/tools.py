@@ -356,13 +356,16 @@ def get_default_tools(
     user_id: int,
     vector_db_ids: Optional[List[int]] = None,
 ) -> List[BaseTool]:
-    return [
-        KnowledgeSearchTool(session, model_config_id, user_id, vector_db_ids),
+    tools: List[BaseTool] = []
+    if vector_db_ids:
+        tools.append(KnowledgeSearchTool(session, model_config_id, user_id, vector_db_ids))
+    tools.extend([
         DatabaseQueryTool(session, user_id),
         CalculatorTool(),
         DateTimeTool(),
         TopicAnalysisTool(),
-    ]
+    ])
+    return tools
 
 
 def get_tools_for_query(

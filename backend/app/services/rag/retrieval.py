@@ -630,10 +630,12 @@ class VectorRetriever:
         alpha: float = 0.7,
         folder_path: Optional[str] = None,
         parent_id: Optional[int] = None,
+        skip_rerank: bool = False,
     ) -> List[RetrievalResult]:
         """
         检索执行阶段：使用已准备好的查询（改写结果、约束条件等），
         只做 DB 检索 + Rerank，不再调用 LLM。
+        skip_rerank=True 时只做粗排，由调用方统一做合并 rerank。
         """
         from app.services.rag.monitor import RAGTimer, RAGQueryMetrics, get_rag_monitor
         timer = RAGTimer()
@@ -710,7 +712,7 @@ class VectorRetriever:
 
         pre_rerank_top1 = coarse_results[0].chunk_id if coarse_results else ""
 
-        if prepared.use_rerank and len(coarse_results) > 1:
+        if not skip_rerank and prepared.use_rerank and len(coarse_results) > 1:
             try:
                 from app.services.rag.reranker import rerank
                 timer.start("rerank")

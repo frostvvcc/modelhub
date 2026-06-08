@@ -2046,6 +2046,9 @@ class AsyncVectorService:
                     use_hyde=RAG_USE_HYDE,
                 )
 
+            need_multi_db = len(candidates) > 1
+            use_unified_rerank = need_multi_db and RAG_USE_RERANK
+
             primary_result = None
             fallback_candidates = candidates
             if candidates[0][1] == "primary":
@@ -2054,11 +2057,12 @@ class AsyncVectorService:
                     primary_vector_db,
                     primary_layer,
                     message,
-                    n_results=LAYERED_RAG_MAX_CONTEXTS,
+                    n_results=LAYERED_RAG_MAX_CONTEXTS * 2 if use_unified_rerank else LAYERED_RAG_MAX_CONTEXTS,
                     prepared_query=prepared,
+                    skip_rerank=use_unified_rerank,
                 )
                 fallback_candidates = candidates[1:]
-                if primary_result["used_knowledge_base"] and primary_result["avg_similarity"] >= LAYERED_RAG_FALLBACK_THRESHOLD:
+                if not use_unified_rerank and primary_result["used_knowledge_base"] and primary_result["avg_similarity"] >= LAYERED_RAG_FALLBACK_THRESHOLD:
                     logger.info(
                         "✅ [RAG] 主知识库命中: vector_db_id=%s, avg_similarity=%.4f",
                         primary_vector_db.id,
@@ -2066,13 +2070,14 @@ class AsyncVectorService:
                     )
                     return primary_result
 
-            # Fallback 知识库并行检索，复用同一个 PreparedQuery（不再重复调 LLM）
             fallback_results = []
             if fallback_candidates:
                 fallback_results = await asyncio.gather(*[
                     AsyncVectorService._query_single_vector_db_layer(
-                        vector_db, layer, message, n_results=LAYERED_RAG_MAX_CONTEXTS,
+                        vector_db, layer, message,
+                        n_results=LAYERED_RAG_MAX_CONTEXTS * 2 if use_unified_rerank else LAYERED_RAG_MAX_CONTEXTS,
                         prepared_query=prepared,
+                        skip_rerank=use_unified_rerank,
                     )
                     for vector_db, layer in fallback_candidates
                 ])
@@ -2082,6 +2087,52 @@ class AsyncVectorService:
                 merged_inputs.append(primary_result)
             merged_inputs.extend(fallback_results)
             merged_result = AsyncVectorService._merge_layered_rag_results(merged_inputs)
+
+            if use_unified_rerank and merged_result.get("sources"):
+                try:
+                    from app.services.rag.reranker import rerank
+                    from app.services.rag.retrieval import RetrievalResult
+                    candidates_for_rerank = [
+                        RetrievalResult(
+                            chunk_id=s.get("id", ""),
+                            content=s.get("content", ""),
+                            score=float(s.get("final_score", 0)),
+                            vector_score=float(s.get("vector_score", 0)),
+                            bm25_score=float(s.get("bm25_score", 0)),
+                            similarity=float(s.get("similarity", 0)),
+                            source=s.get("source", ""),
+                            document_id=str(s.get("document_id", "")),
+                            retrieval_method=s.get("retrieval_method", "hybrid"),
+                            metadata={"vector_db_id": s.get("vector_db_id"), "vector_db_name": s.get("vector_db_name"), "retrieval_layer": s.get("retrieval_layer")},
+                        )
+                        for s in merged_result["sources"]
+                    ]
+                    reranked = await rerank(message, candidates_for_rerank, top_k=LAYERED_RAG_MAX_CONTEXTS)
+                    reranked_sources = []
+                    for r in reranked:
+                        reranked_sources.append({
+                            "id": r.chunk_id,
+                            "content": r.content,
+                            "source": r.source,
+                            "distance": 1.0 - r.similarity,
+                            "similarity": r.similarity,
+                            "vector_score": r.vector_score,
+                            "bm25_score": r.bm25_score,
+                            "final_score": r.score,
+                            "retrieval_method": r.retrieval_method,
+                            "document_id": r.document_id,
+                            "vector_db_id": r.metadata.get("vector_db_id"),
+                            "vector_db_name": r.metadata.get("vector_db_name"),
+                            "retrieval_layer": r.metadata.get("retrieval_layer"),
+                        })
+                    merged_result["sources"] = reranked_sources
+                    merged_result["contexts"] = [s["content"] for s in reranked_sources]
+                    merged_result["total_results"] = len(reranked_sources)
+                    if reranked_sources:
+                        merged_result["avg_similarity"] = sum(s["similarity"] for s in reranked_sources) / len(reranked_sources)
+                    logger.info(f"✅ [RAG] 统一 Rerank 完成: {len(candidates_for_rerank)} → {len(reranked_sources)} 条")
+                except Exception as e:
+                    logger.warning(f"统一 Rerank 失败，使用粗排结果: {e}")
 
             logger.info(
                 "✅ [RAG] 分层检索完成: queried=%s, selected=%s, layers=%s, avg_similarity=%.4f",

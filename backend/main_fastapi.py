@@ -2,8 +2,9 @@
 FastAPI 应用入口
 """
 import os
-# 修复 protobuf 版本兼容性问题
 os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 from app import create_app
 import uvicorn
