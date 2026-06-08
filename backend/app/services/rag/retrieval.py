@@ -321,7 +321,9 @@ class VectorRetriever:
             vector_db_id, query_text, n_results * 2,
             metadata_filter=metadata_filter,
         )
+        _t0 = time.perf_counter()
         vector_results, bm25_results = await asyncio.gather(vector_task, bm25_task)
+        _bm25_ms = (time.perf_counter() - _t0) * 1000
 
         logger.info(
             f"🔍 [混合检索] vector_db_id={vector_db_id}: "
@@ -555,7 +557,7 @@ class VectorRetriever:
         查询准备阶段：并行执行所有 LLM 调用（约束提取 + 改写 + HyDE）。
         结果可复用于多个知识库，避免每个知识库重复调用 LLM。
         """
-        coarse_n = n_results * 4 if use_rerank else n_results
+        coarse_n = n_results * 2 if use_rerank else n_results
 
         # 所有 LLM 调用并行启动
         from app.services.rag.query_rewriter import (
@@ -666,6 +668,7 @@ class VectorRetriever:
         timer.start("retrieval")
         multi_results = await asyncio.gather(*retrieval_tasks, return_exceptions=True)
         timer.stop()
+        _retrieval_total = timer.get("retrieval")
 
         seen_chunks = set()
         all_results: List[RetrievalResult] = []
@@ -737,6 +740,7 @@ class VectorRetriever:
         metrics = RAGQueryMetrics(
             query_id=prepared.original_query[:40],
             vector_search_ms=timer.get("retrieval"),
+            bm25_search_ms=timer.get("retrieval"),
             rerank_ms=timer.get("rerank"),
             total_ms=timer.total,
             result_count=len(final_results),

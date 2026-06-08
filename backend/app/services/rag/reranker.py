@@ -20,9 +20,6 @@ logger = logging.getLogger(__name__)
 
 RAG_RERANK_MODE = os.getenv("RAG_RERANK_MODE", "cross_encoder")  # cross_encoder | llm | off
 
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-
 _cross_encoder = None
 _ce_lock = asyncio.Lock()
 _llm_client = None

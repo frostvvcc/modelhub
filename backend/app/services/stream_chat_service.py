@@ -253,6 +253,9 @@ class StreamChatService:
                 use_agent = False
                 logger.info(f"🚦 [路由] 意图=chitchat，降级为 SimpleStream，省去 Agent 调用")
 
+            agent_tool_calls = []
+            agent_thinking = ""
+
             if use_agent:
                 # === Agent 模式 ===
                 tools = get_tools_for_query(message, session, model_config_id, user_id, all_extra_ids if all_extra_ids else None)
@@ -540,6 +543,9 @@ class StreamChatService:
                 yield _sse_event("warning", {"type": "prompt_injection_detected", "message": "检测到异常指令，已切换为安全模式"})
 
             all_vector_db_ids = (vector_db_ids or []) + attachment_vector_db_ids
+
+            agent_tool_calls = []
+            agent_thinking = ""
 
             if use_agent:
                 # Agent 模式

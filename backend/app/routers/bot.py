@@ -2,6 +2,7 @@
 Bot（数字助理）路由
 """
 from typing import List, Optional
+from app.schemas.response import SuccessResponse
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,16 +57,16 @@ async def create_bot(
         raise HTTPException(status_code=403, detail=str(e))
 
 
-@router.get("", response_model=list)
+@router.get("")
 async def list_bots(
     db: AsyncSession = Depends(get_async_db),
     current_user=Depends(get_current_user),
 ):
     bots = await AsyncBotService.list_bots(db, current_user)
-    return [b.to_dict() for b in bots]
+    return SuccessResponse(message="获取成功", data=[b.to_dict() for b in bots])
 
 
-@router.get("/own", response_model=list)
+@router.get("/own")
 async def list_own_bots(
     db: AsyncSession = Depends(get_async_db),
     current_user=Depends(get_current_user),
@@ -73,7 +74,7 @@ async def list_own_bots(
     """获取当前用户自己创建的数字助理"""
     from app.mappers.bot_mapper import AsyncBotMapper
     bots = await AsyncBotMapper.get_by_user(db, current_user.id)
-    return [b.to_dict() for b in bots]
+    return SuccessResponse(message="获取成功", data=[b.to_dict() for b in bots])
 
 
 @router.get("/{bot_id}", response_model=BotResponse)

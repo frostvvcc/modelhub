@@ -1500,6 +1500,7 @@ class AsyncVectorService:
             {
                 "text": r.content,
                 "score": r.vector_score,
+                "source": r.source or r.metadata.get("source", ""),
                 "document_name": r.source or "未知来源",
                 "document_id": r.document_id,
                 "id": r.chunk_id,

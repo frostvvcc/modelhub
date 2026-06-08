@@ -187,7 +187,7 @@ def clean_document_text(text: str) -> str:
     return result
 
 
-def is_worth_indexing(text: str, min_length: int = 150) -> bool:
+def is_worth_indexing(text: str, min_length: int = 20) -> bool:
     """判断清洗后的文本是否值得入库（有意义字符占比需 > 60%）"""
     if not text or len(text.strip()) < min_length:
         return False
