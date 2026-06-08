@@ -461,7 +461,7 @@ class AsyncVectorService:
             )
 
             # 分割文本为块（使用 rag/chunking 模块）
-            from app.services.rag.chunking import split_text_into_chunks, ChunkStrategy, split_parent_child
+            from app.services.rag.chunking import split_text_into_chunks, ChunkStrategy, split_parent_child, split_contextual
             try:
                 strategy = ChunkStrategy(chunk_strategy)
             except ValueError:
@@ -549,6 +549,36 @@ class AsyncVectorService:
                     metadatas=all_metadatas,
                     ids=all_ids,
                 )
+            elif strategy == ChunkStrategy.CONTEXTUAL:
+                import asyncio as _ctx_aio
+                _ctx_loop = _ctx_aio.new_event_loop()
+                ctx_chunks = _ctx_loop.run_until_complete(split_contextual(
+                    text_content,
+                    chunk_size=safe_chunk_size,
+                    overlap=safe_overlap,
+                ))
+                _ctx_loop.close()
+                texts_to_embed = [c.contextualized_content for c in ctx_chunks]
+                all_embeddings = embedding_model._get_text_embeddings(texts_to_embed)
+                all_ids = [f"{document_id}_chunk_{i}" for i in range(len(ctx_chunks))]
+                all_documents = [c.original_content for c in ctx_chunks]
+                all_metadatas = [
+                    {
+                        **base_meta,
+                        'chunk_id': i,
+                        'total_chunks': len(ctx_chunks),
+                        'context_prefix': c.context_prefix,
+                        'contextualized_content': c.contextualized_content[:500],
+                    }
+                    for i, c in enumerate(ctx_chunks)
+                ]
+                collection.add(
+                    embeddings=all_embeddings,
+                    documents=all_documents,
+                    metadatas=all_metadatas,
+                    ids=all_ids,
+                )
+                chunks = all_documents
             else:
                 chunks = split_text_into_chunks(
                     text_content,
