@@ -408,7 +408,7 @@ class StreamChatService:
             used_kb = (rag_result or {}).get("used_knowledge_base", False)
             # Phase 1 即时标签：只标记来源状态，真实可信度等 Grounding 验证后更新
             if used_kb and source_citations:
-                grounded_level = "验证中"
+                grounded_level = "知识库回答"
             elif used_kb:
                 grounded_level = "未引用"
             else:
@@ -674,7 +674,7 @@ class StreamChatService:
             used_kb = (rag_result or {}).get("used_knowledge_base", False)
             # Phase 1 即时标签
             if used_kb and source_citations:
-                grounded_level = "验证中"
+                grounded_level = "知识库回答"
             elif used_kb:
                 grounded_level = "未引用"
             else:

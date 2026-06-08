@@ -523,7 +523,7 @@ class AsyncChatService:
             content, source_citations = AsyncChatService._renumber_citations(content, source_citations, ct_rechat)
 
             grounded_ratio = 0.0
-            grounded_level = "验证中" if (rag_result["used_knowledge_base"] and source_citations) else ("AI回答" if not rag_result["used_knowledge_base"] else "未引用")
+            grounded_level = "知识库回答" if (rag_result["used_knowledge_base"] and source_citations) else ("AI回答" if not rag_result["used_knowledge_base"] else "未引用")
 
             # 保存回复（含富数据）
             rechat_metadata = {}
@@ -788,7 +788,7 @@ class AsyncChatService:
         answer, source_citations = AsyncChatService._renumber_citations(answer, source_citations, ct_bot)
 
         grounded_ratio = 0.0
-        grounded_level = "验证中" if (rag_result["used_knowledge_base"] and source_citations) else ("AI回答" if not rag_result["used_knowledge_base"] else "未引用")
+        grounded_level = "知识库回答" if (rag_result["used_knowledge_base"] and source_citations) else ("AI回答" if not rag_result["used_knowledge_base"] else "未引用")
 
         # 保存助手回复（含富数据）
         bot_metadata = {}
