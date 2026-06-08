@@ -551,6 +551,13 @@ const scrollToBottom = () => {
                     <span class="quote-card-role">{{ message.quote.role === 'assistant' ? 'AI' : '我' }}</span>
                     <span class="quote-card-text">{{ truncateQuote(message.quote.content, 80) }}</span>
                   </div>
+                  <div v-if="message.attachments && message.attachments.length > 0" class="msg-attachments">
+                    <div class="msg-attachment-chip" v-for="(att, ai) in message.attachments" :key="ai">
+                      <span class="msg-attachment-icon">{{ att.name.endsWith('.pdf') ? '📄' : att.name.endsWith('.docx') || att.name.endsWith('.doc') ? '📝' : att.name.match(/\.(png|jpg|jpeg|gif|webp)$/i) ? '🖼️' : '📎' }}</span>
+                      <span class="msg-attachment-name">{{ att.name }}</span>
+                      <span class="msg-attachment-size">{{ formatFileSize(att.size) }}</span>
+                    </div>
+                  </div>
                   {{ message.content }}
                 </div>
               </div>
@@ -943,6 +950,11 @@ const scrollToBottom = () => {
 .msg-user-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.15s; flex-shrink: 0; padding-bottom: 4px; }
 .msg-user-row:hover .msg-user-actions { opacity: 1; }
 .msg-user-bubble { width: max-content; max-width: 100%; padding: 12px 18px; background: linear-gradient(135deg, #6366f1, #818cf8); border: none; border-radius: 20px 20px 4px 20px; font-size: 14px; line-height: 1.6; color: #fff; word-break: break-word; white-space: pre-wrap; box-shadow: 0 2px 8px rgba(99,102,241,0.2); }
+.msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.msg-attachment-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; background: rgba(255, 255, 255, 0.15); backdrop-filter: blur(4px); border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 10px; font-size: 12px; color: #fff; max-width: 220px; }
+.msg-attachment-icon { font-size: 16px; flex-shrink: 0; }
+.msg-attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.msg-attachment-size { flex-shrink: 0; font-size: 11px; color: rgba(255, 255, 255, 0.7); }
 
 /* ===== AI Message ===== */
 .msg-ai-row { display: flex; gap: 12px; align-items: flex-start; }

@@ -47,13 +47,16 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  const appendUserMessage = (content: string, quote?: { content: string; role: string }) => {
+  const appendUserMessage = (content: string, quote?: { content: string; role: string }, files?: File[]) => {
     const msg: ChatMessage = {
       content,
       role: 'user',
       create_at: getCurrentTime(),
     } as ChatMessage
     if (quote) (msg as Record<string, unknown>).quote = quote
+    if (files && files.length > 0) {
+      msg.attachments = files.map(f => ({ name: f.name, size: f.size, type: f.type }))
+    }
     messages.value.push(msg)
     renderKey.value++
   }
@@ -208,8 +211,7 @@ export const useChatStore = defineStore('chat', () => {
     if (query.trim() === '' && files.length === 0) return
     if (query.trim() === '' && files.length > 0) query = '请总结并回答我上传的附件内容。'
 
-    const attachmentText = files.length ? `\n\n附件：${files.map(f => f.name).join('、')}` : ''
-    appendUserMessage(`${query}${attachmentText}`, quote ?? undefined)
+    appendUserMessage(query, quote ?? undefined, files.length > 0 ? files : undefined)
 
     const msgIndex = appendAssistantPlaceholder()
     isGenerating.value = true
