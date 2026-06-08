@@ -1929,11 +1929,11 @@ class AsyncVectorService:
         message: str,
         n_results: int = 5,
         prepared_query=None,
+        skip_rerank: bool = False,
     ) -> Dict[str, Any]:
         """
         查询单个知识库。
-        如果传入 prepared_query（PreparedQuery 对象），则复用已有的 LLM 结果，
-        不再重复调用 LLM 做改写/约束提取，只执行 DB 检索 + Rerank。
+        skip_rerank=True 时只做粗排（由调用方合并后统一 rerank）。
         """
         from app.services.rag.retrieval import VectorRetriever
 
@@ -1944,6 +1944,7 @@ class AsyncVectorService:
             if prepared_query:
                 rag_results = await VectorRetriever.execute_prepared_query(
                     vector_db.id, prepared_query, n_results=n_results,
+                    skip_rerank=skip_rerank,
                 )
             elif RAG_USE_ENHANCED:
                 rag_results = await VectorRetriever.enhanced_query(
