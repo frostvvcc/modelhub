@@ -582,6 +582,16 @@ class StreamChatService:
                     "files": _file_details,
                     "total_chars": _total_chars,
                 })
+                _preview_limit = 10000
+                _contents_payload = []
+                for _fname, _text in (attachment_info.get("file_contents") or {}).items():
+                    _contents_payload.append({
+                        "filename": _fname,
+                        "content": _text[:_preview_limit],
+                        "truncated": len(_text) > _preview_limit,
+                        "total_chars": len(_text),
+                    })
+                yield _sse_event("attachment_contents", _contents_payload)
 
             agent_tool_calls = []
             agent_thinking = ""

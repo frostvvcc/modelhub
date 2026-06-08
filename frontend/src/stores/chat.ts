@@ -173,6 +173,15 @@ export const useChatStore = defineStore('chat', () => {
       messages.value[msgIndex].retrievalProcess!.push(info as any)
       triggerRender()
     },
+    onAttachmentContents(contents) {
+      const userMsg = messages.value[msgIndex - 1]
+      if (userMsg?.role === 'user' && userMsg.attachments) {
+        for (const item of contents) {
+          const att = userMsg.attachments.find(a => a.name === item.filename)
+          if (att) (att as any).content = item.content
+        }
+      }
+    },
     onTrace(trace) {
       messages.value[msgIndex].trace = trace
     },

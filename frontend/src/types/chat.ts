@@ -96,7 +96,7 @@ export class ChatMessage {
     errors?: string[];
   } | null;
   /** 用户上传的附件 */
-  attachments?: { name: string; size: number; type: string }[];
+  attachments?: { name: string; size: number; type: string; content?: string }[];
   /** 检索过程（展示给用户的思考步骤） */
   retrievalProcess?: RetrievalStep[];
   /** 流式计时与 token 统计 */

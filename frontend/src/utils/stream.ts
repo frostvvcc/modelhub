@@ -39,6 +39,7 @@ export interface StreamCallbacks {
   onMemory?: (stats: MemoryStats) => void
   onConversation?: (info: { conversation_id: number | string; conversation_name?: string }) => void
   onRetrievalInfo?: (info: Record<string, unknown>) => void
+  onAttachmentContents?: (contents: { filename: string; content: string; truncated: boolean; total_chars: number }[]) => void
   onTrace?: (trace: TraceInfo) => void
   onTokenUsage?: (usage: { total_tokens: number; prompt_tokens: number; completion_tokens: number }) => void
   onError?: (message: string) => void
@@ -184,6 +185,9 @@ function dispatchEvent(event: SSEEvent, callbacks: StreamCallbacks): void {
       break
     case 'retrieval_info':
       callbacks.onRetrievalInfo?.(d)
+      break
+    case 'attachment_contents':
+      callbacks.onAttachmentContents?.(d as any)
       break
     case 'trace':
       callbacks.onTrace?.(d as unknown as TraceInfo)

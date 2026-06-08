@@ -304,6 +304,13 @@ const handleCiteClick = (e: MouseEvent) => {
 
 const closeCitePopover = () => { activeCite.value = null; };
 
+const activeAttachment = ref<{ name: string; content: string; size: number } | null>(null);
+const openAttachmentPreview = (att: { name: string; size: number; content?: string }) => {
+  if (!att.content) return;
+  activeAttachment.value = { name: att.name, content: att.content, size: att.size };
+};
+const closeAttachmentPreview = () => { activeAttachment.value = null; };
+
 const escapeHtml = (text: string) =>
   text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -552,7 +559,7 @@ const scrollToBottom = () => {
                     <span class="quote-card-text">{{ truncateQuote(message.quote.content, 80) }}</span>
                   </div>
                   <div v-if="message.attachments && message.attachments.length > 0" class="msg-attachments">
-                    <div class="msg-attachment-chip" v-for="(att, ai) in message.attachments" :key="ai">
+                    <div class="msg-attachment-chip" :class="{ clickable: att.content }" v-for="(att, ai) in message.attachments" :key="ai" @click.stop="openAttachmentPreview(att)">
                       <span class="msg-attachment-icon">{{ att.name.endsWith('.pdf') ? '📄' : att.name.endsWith('.docx') || att.name.endsWith('.doc') ? '📝' : att.name.match(/\.(png|jpg|jpeg|gif|webp)$/i) ? '🖼️' : '📎' }}</span>
                       <span class="msg-attachment-name">{{ att.name }}</span>
                       <span class="msg-attachment-size">{{ formatFileSize(att.size) }}</span>
@@ -881,6 +888,22 @@ const scrollToBottom = () => {
         </div>
       </div>
     </div>
+
+    <!-- 附件内容预览弹窗 -->
+    <div v-if="activeAttachment" class="cite-overlay" @click.self="closeAttachmentPreview">
+      <div class="attachment-preview-popover">
+        <div class="attachment-preview-header">
+          <span class="attachment-preview-icon">📎</span>
+          <span class="attachment-preview-file">{{ activeAttachment.name }}</span>
+          <span class="attachment-preview-size">{{ formatFileSize(activeAttachment.size) }}</span>
+        </div>
+        <div class="attachment-preview-content">{{ activeAttachment.content }}</div>
+        <div class="attachment-preview-actions">
+          <button class="cite-popover-btn" @click="handleCopyMessage(activeAttachment.content)">复制内容</button>
+          <button class="cite-popover-btn" @click="closeAttachmentPreview">关闭</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -951,7 +974,9 @@ const scrollToBottom = () => {
 .msg-user-row:hover .msg-user-actions { opacity: 1; }
 .msg-user-bubble { width: max-content; max-width: 100%; padding: 12px 18px; background: linear-gradient(135deg, #6366f1, #818cf8); border: none; border-radius: 20px 20px 4px 20px; font-size: 14px; line-height: 1.6; color: #fff; word-break: break-word; white-space: pre-wrap; box-shadow: 0 2px 8px rgba(99,102,241,0.2); }
 .msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-.msg-attachment-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; background: rgba(255, 255, 255, 0.15); backdrop-filter: blur(4px); border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 10px; font-size: 12px; color: #fff; max-width: 220px; }
+.msg-attachment-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; background: rgba(255, 255, 255, 0.15); backdrop-filter: blur(4px); border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 10px; font-size: 12px; color: #fff; max-width: 220px; transition: all 0.15s; }
+.msg-attachment-chip.clickable { cursor: pointer; }
+.msg-attachment-chip.clickable:hover { background: rgba(255, 255, 255, 0.28); border-color: rgba(255, 255, 255, 0.45); }
 .msg-attachment-icon { font-size: 16px; flex-shrink: 0; }
 .msg-attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .msg-attachment-size { flex-shrink: 0; font-size: 11px; color: rgba(255, 255, 255, 0.7); }
@@ -1271,6 +1296,15 @@ const scrollToBottom = () => {
 .cite-popover-btn:hover { background: #f8fafc; border-color: #cbd5e1; }
 .cite-popover-btn--primary { background: #6366f1; color: #fff; border-color: #6366f1; }
 .cite-popover-btn--primary:hover { background: #4f46e5; border-color: #4f46e5; }
+
+/* ===== Attachment Preview Popover ===== */
+.attachment-preview-popover { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 520px; max-width: calc(100vw - 40px); max-height: 70vh; background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; box-shadow: 0 12px 40px rgba(0,0,0,0.15); display: flex; flex-direction: column; overflow: hidden; animation: popIn 0.15s ease-out; }
+.attachment-preview-header { display: flex; align-items: center; gap: 8px; padding: 14px 18px; border-bottom: 1px solid #f1f5f9; }
+.attachment-preview-icon { font-size: 18px; flex-shrink: 0; }
+.attachment-preview-file { font-size: 14px; font-weight: 600; color: #1e293b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.attachment-preview-size { font-size: 12px; color: #94a3b8; flex-shrink: 0; }
+.attachment-preview-content { flex: 1; min-height: 0; padding: 16px 18px; font-size: 13px; color: #334155; line-height: 1.7; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+.attachment-preview-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 10px 18px; border-top: 1px solid #f1f5f9; }
 
 /* ===== Responsive ===== */
 @media (max-width: 768px) {
