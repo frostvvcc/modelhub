@@ -1,16 +1,16 @@
 """
-多 Agent 编排层
+多 Agent 编排层 — 基于 CRAG (Corrective RAG) 的编排策略
 
 Orchestrator 根据用户意图分派子 Agent：
   - RetrievalAgent: RAG 知识检索（复用现有 AgentEngine + KnowledgeSearchTool）
   - AnalysisAgent:  结构化数据分析（复用 DatabaseQueryTool）
-  - VerifierAgent:  对最终回答做 Claim 级 fact-check（Self-RAG 闭环）
+  - VerifierAgent:  Claim 级 fact-check + Corrective 补充检索闭环
 
-编排策略：
-  1. 意图识别 → 决定激活哪些子 Agent
+CRAG 编排流程 (Yan et al., 2024)：
+  1. LLM 意图分类 → 决定激活哪些子 Agent
   2. 子 Agent 并行执行
-  3. VerifierAgent 对合成结果做 Grounding 验证
-  4. 如果 grounded_ratio < 阈值 → 触发补充检索 → 重新验证
+  3. VerifierAgent 对合成结果做 Claim-Level Grounding 验证
+  4. 如果 grounded_ratio < 阈值 → 触发 Corrective 补充检索 → 重新合成
 """
 import asyncio
 import logging
@@ -47,7 +47,10 @@ class AgentOrchestrator:
     - 复杂问题拆解后分派多个子 Agent
     """
 
-    GROUNDING_THRESHOLD = 0.6
+    @property
+    def grounding_threshold(self) -> float:
+        from app.config import settings
+        return settings.grounding_threshold
 
     def __init__(
         self,
@@ -64,20 +67,71 @@ class AgentOrchestrator:
         self.token_budget = token_budget or TokenBudget(max_tokens=16000)
 
     async def classify_intent(self, query: str) -> List[SubAgentRole]:
-        """意图分类：决定需要哪些子 Agent"""
-        knowledge_keywords = ["什么", "怎么", "如何", "规定", "要求", "条件", "流程", "截止", "政策"]
-        analysis_keywords = ["多少", "统计", "数量", "人数", "排名", "对比", "分析"]
+        """
+        LLM-based 意图分类：通过 function calling 让 LLM 判断需要哪些子 Agent。
+        比关键词匹配更准确，能理解语义而非依赖表面词汇。
+        """
+        try:
+            client = self.llm_client._get_client()
+            tools = [{
+                "type": "function",
+                "function": {
+                    "name": "classify_query_intent",
+                    "description": "分析用户查询的意图，判断需要哪些处理路径",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "needs_retrieval": {
+                                "type": "boolean",
+                                "description": "是否需要从知识库检索信息（政策、规定、流程、事实性问题等）"
+                            },
+                            "needs_analysis": {
+                                "type": "boolean",
+                                "description": "是否需要查询结构化数据（统计、数量、排名、组织架构等）"
+                            },
+                            "reasoning": {
+                                "type": "string",
+                                "description": "一句话说明分类理由"
+                            },
+                        },
+                        "required": ["needs_retrieval", "needs_analysis", "reasoning"]
+                    }
+                }
+            }]
 
-        roles = []
-        if any(kw in query for kw in knowledge_keywords) or self.vector_db_ids:
-            roles.append(SubAgentRole.RETRIEVAL)
-        if any(kw in query for kw in analysis_keywords):
-            roles.append(SubAgentRole.ANALYSIS)
+            response = await client.chat.completions.create(
+                model=self.llm_client.model,
+                messages=[{
+                    "role": "user",
+                    "content": f"分析以下用户查询的意图：\n\n{query[:200]}"
+                }],
+                tools=tools,
+                tool_choice={"type": "function", "function": {"name": "classify_query_intent"}},
+                max_tokens=150,
+                temperature=0.0,
+            )
 
-        if not roles:
-            roles.append(SubAgentRole.RETRIEVAL)
+            import json
+            tc = response.choices[0].message.tool_calls
+            if tc:
+                result = json.loads(tc[0].function.arguments)
+                roles = []
+                if result.get("needs_retrieval", True):
+                    roles.append(SubAgentRole.RETRIEVAL)
+                if result.get("needs_analysis", False):
+                    roles.append(SubAgentRole.ANALYSIS)
+                if not roles:
+                    roles.append(SubAgentRole.RETRIEVAL)
+                roles.append(SubAgentRole.VERIFIER)
+                logger.info(f"[意图分类] LLM: {[r.value for r in roles]}, reason={result.get('reasoning', '')}")
+                return roles
 
-        roles.append(SubAgentRole.VERIFIER)
+        except Exception as e:
+            logger.warning(f"LLM 意图分类失败，降级为默认策略: {e}")
+
+        roles = [SubAgentRole.RETRIEVAL]
+        if self.vector_db_ids:
+            roles.append(SubAgentRole.VERIFIER)
         return roles
 
     async def _run_retrieval(self, query: str) -> SubAgentResult:
@@ -134,10 +188,11 @@ class AgentOrchestrator:
         sources: List[Dict[str, Any]],
     ) -> SubAgentResult:
         """
-        验证子 Agent（Self-RAG 核心）：
-        1. 用 Grounding 模块做 Claim 级 NLI 验证
-        2. 如果 grounded_ratio < 阈值，标记不可靠的 claim
-        3. 对不可靠 claim 触发 GraphRAG 定向补充检索
+        验证子 Agent — CRAG (Corrective RAG) 核心：
+        1. Claim-Level Grounding: 将回答拆分为独立声明，逐条 NLI 验证
+        2. Confidence Evaluation: 计算 grounded_ratio，低于阈值标记为不可靠
+        3. Corrective Retrieval: 对不可靠 claim 触发 GraphRAG 定向补充检索
+        参考: Yan et al., "Corrective Retrieval Augmented Generation", 2024
         """
         from app.services.rag.grounding import verify_grounding
 
@@ -163,18 +218,18 @@ class AgentOrchestrator:
             "grounded_ratio": grounded_ratio,
             "total_claims": len(grounding_result.get("claims", [])),
             "unsupported_count": len(unsupported_claims),
-            "verification_passed": grounded_ratio >= self.GROUNDING_THRESHOLD,
+            "verification_passed": grounded_ratio >= self.grounding_threshold,
         }
 
-        if grounded_ratio < self.GROUNDING_THRESHOLD and unsupported_claims and self.vector_db_ids:
+        if grounded_ratio < self.grounding_threshold and unsupported_claims and self.vector_db_ids:
             logger.info(
-                f"VerifierAgent: grounded_ratio={grounded_ratio:.2f} < {self.GROUNDING_THRESHOLD}, "
-                f"触发 GraphRAG 补充检索 ({len(unsupported_claims)} 条不可靠 claim)"
+                f"[CRAG] grounded_ratio={grounded_ratio:.2f} < {self.grounding_threshold}, "
+                f"触发 Corrective Retrieval ({len(unsupported_claims)} 条不可靠 claim)"
             )
             supplementary = await self._supplement_with_graph(unsupported_claims)
             if supplementary:
                 metadata["graph_supplement"] = supplementary
-                metadata["self_rag_triggered"] = True
+                metadata["crag_triggered"] = True
 
         return SubAgentResult(
             role=SubAgentRole.VERIFIER,

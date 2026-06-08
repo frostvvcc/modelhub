@@ -18,10 +18,12 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-NEO4J_ENABLED = os.getenv("NEO4J_ENABLED", "false").lower() in ("true", "1", "yes")
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "modelhub123")
+from app.config import settings as _settings
+
+NEO4J_ENABLED = _settings.neo4j_enabled
+NEO4J_URI = _settings.neo4j_uri
+NEO4J_USER = _settings.neo4j_user
+NEO4J_PASSWORD = _settings.neo4j_password
 
 _driver = None
 _llm_client: Optional[AsyncOpenAI] = None
