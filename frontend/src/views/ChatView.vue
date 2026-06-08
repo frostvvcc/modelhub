@@ -67,6 +67,7 @@ const selectedFiles = ref<File[]>([]);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const hasInput = computed(() => userInput.value.trim() !== '' || selectedFiles.value.length > 0);
 const messageAreaRef = ref<HTMLElement | null>(null);
+const citeContentRef = ref<HTMLElement | null>(null);
 
 const expandedRetrieval = ref<Record<number, boolean>>({});
 const toggleRetrieval = (index: number) => {
@@ -300,6 +301,10 @@ const handleCiteClick = (e: MouseEvent) => {
   const source = msg.sources[citeIndex] || msg.sources[0];
   const citedText = extractCitedText(target);
   activeCite.value = { source, rect: target.getBoundingClientRect(), citedText };
+  nextTick(() => {
+    const mark = citeContentRef.value?.querySelector('.cite-hl') as HTMLElement | null;
+    if (mark) mark.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  });
 };
 
 const closeCitePopover = () => { activeCite.value = null; };
@@ -364,13 +369,7 @@ const highlightedContent = computed(() => {
     + escapeHtml(raw.slice(hlEnd));
 });
 
-const citePopoverStyle = computed(() => {
-  if (!activeCite.value) return {};
-  const r = activeCite.value.rect;
-  const top = Math.min(r.bottom + 8, window.innerHeight - 320);
-  const left = Math.max(16, Math.min(r.left, window.innerWidth - 360));
-  return { top: `${top}px`, left: `${left}px` };
-});
+// citePopoverStyle removed — now uses centered layout like attachment preview
 
 const handleDownloadSource = async (src: SourceCitation) => {
   const docId = src.document_id;
@@ -869,17 +868,20 @@ const scrollToBottom = () => {
 
     <!-- 引用来源弹窗 -->
     <div v-if="activeCite" class="cite-overlay" @click.self="closeCitePopover">
-      <div class="cite-popover" :style="citePopoverStyle">
+      <div class="cite-popover">
         <div class="cite-popover-header">
-          <span class="cite-popover-file">{{ activeCite.source.source }}</span>
+          <span class="cite-popover-icon">📚</span>
+          <span class="cite-popover-file">{{ activeCite.source.source?.replace(/^[0-9a-f]{32}_/, '') }}</span>
           <span class="cite-popover-tag" :class="getConfidenceClass(activeCite.source.confidence_label)">{{ activeCite.source.confidence_label || '中' }}</span>
         </div>
         <div class="cite-popover-meta">
           <span v-if="activeCite.source.vector_db_name" class="cite-popover-meta-tag">{{ activeCite.source.vector_db_name }}</span>
           <span class="cite-popover-meta-tag">{{ getRetrievalMethodLabel(activeCite.source.retrieval_method) }}</span>
+          <span class="cite-popover-meta-tag">相似度 {{ formatPercent(activeCite.source.similarity) }}</span>
         </div>
-        <div class="cite-popover-content" v-html="highlightedContent"></div>
+        <div ref="citeContentRef" class="cite-popover-content" v-html="highlightedContent"></div>
         <div class="cite-popover-actions">
+          <button class="cite-popover-btn" @click="handleCopyMessage(activeCite.source.content || '')">复制内容</button>
           <button v-if="activeCite.source.document_id" class="cite-popover-btn cite-popover-btn--primary" @click="handleDownloadSource(activeCite.source)">
             <el-icon :size="13"><Download /></el-icon>
             下载文档
@@ -1280,18 +1282,19 @@ const scrollToBottom = () => {
 .ref-download { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: none; background: transparent; border-radius: 4px; cursor: pointer; color: #94a3b8; transition: all 0.12s; flex-shrink: 0; margin-left: auto; }
 .ref-download:hover { background: #eef2ff; color: #6366f1; }
 
-/* ===== Citation Popover ===== */
+/* ===== Citation Popover (居中弹窗，与附件预览风格统一) ===== */
 .cite-overlay { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.08); }
-.cite-popover { position: fixed; width: 340px; max-height: 300px; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.12); display: flex; flex-direction: column; overflow: hidden; animation: popIn 0.15s ease-out; }
+.cite-popover { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 520px; max-width: calc(100vw - 40px); max-height: 70vh; background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; box-shadow: 0 12px 40px rgba(0,0,0,0.15); display: flex; flex-direction: column; overflow: hidden; animation: popIn 0.15s ease-out; }
 @keyframes popIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
-.cite-popover-header { display: flex; align-items: center; gap: 8px; padding: 12px 14px 8px; }
-.cite-popover-file { font-size: 13px; font-weight: 600; color: #1e293b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.cite-popover-header { display: flex; align-items: center; gap: 8px; padding: 14px 18px; border-bottom: 1px solid #f1f5f9; }
+.cite-popover-icon { font-size: 18px; flex-shrink: 0; }
+.cite-popover-file { font-size: 14px; font-weight: 600; color: #1e293b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
 .cite-popover-tag { font-size: 11px; padding: 2px 8px; border-radius: 50vw; font-weight: 500; flex-shrink: 0; }
-.cite-popover-meta { display: flex; gap: 4px; padding: 0 14px 8px; flex-wrap: wrap; }
+.cite-popover-meta { display: flex; gap: 4px; padding: 8px 18px; flex-wrap: wrap; }
 .cite-popover-meta-tag { font-size: 11px; padding: 2px 7px; border-radius: 4px; background: #f1f5f9; color: #64748b; }
-.cite-popover-content { flex: 1; min-height: 0; padding: 0 14px 10px; font-size: 12px; color: #64748b; line-height: 1.6; overflow-y: auto; white-space: pre-wrap; word-break: break-word; max-height: 140px; }
+.cite-popover-content { flex: 1; min-height: 0; padding: 16px 18px; font-size: 13px; color: #334155; line-height: 1.7; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
 .cite-popover-content :deep(.cite-hl) { background: #fef08a; color: #854d0e; padding: 2px 4px; border-radius: 3px; line-height: 1.8; }
-.cite-popover-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 8px 14px 12px; border-top: 1px solid #f1f5f9; }
+.cite-popover-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 10px 18px; border-top: 1px solid #f1f5f9; }
 .cite-popover-btn { display: inline-flex; align-items: center; gap: 4px; padding: 6px 14px; font-size: 12px; font-weight: 500; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; color: #475569; cursor: pointer; transition: all 0.12s; }
 .cite-popover-btn:hover { background: #f8fafc; border-color: #cbd5e1; }
 .cite-popover-btn--primary { background: #6366f1; color: #fff; border-color: #6366f1; }
@@ -1320,6 +1323,6 @@ const scrollToBottom = () => {
   .intro-greeting { font-size: 20px; }
   .intro-logo { width: 48px; height: 48px; border-radius: 14px; }
   .msg-user-actions, .msg-ai-actions { opacity: 1; }
-  .cite-popover { width: calc(100vw - 32px); left: 16px !important; }
+  .cite-popover { width: calc(100vw - 32px); }
 }
 </style>
