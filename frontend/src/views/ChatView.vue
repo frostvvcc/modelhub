@@ -2,7 +2,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ElInput, ElIcon, ElSlider, ElDrawer } from 'element-plus';
+import { ElInput, ElIcon, ElSlider, ElDrawer, ElMessage } from 'element-plus';
 import { Promotion, DocumentCopy, ArrowDown, ArrowUp, UploadFilled, Close, Plus, Setting, CopyDocument, ChatRound, ArrowLeft } from '@element-plus/icons-vue';
 import type { ChatMessage, QuoteInfo } from '../types/chat';
 import { getMessages, rechat, setChatHistory } from '../api/chat';
@@ -236,11 +236,16 @@ const handleRegenerate = async (index: number) => {
 
 const copiedIndex = ref<number | null>(null);
 const handleCopyMessage = (content: string, index?: number) => {
-  navigator.clipboard.writeText(content);
-  if (index !== undefined) {
-    copiedIndex.value = index;
-    setTimeout(() => { copiedIndex.value = null; }, 1500);
-  }
+  navigator.clipboard.writeText(content).then(() => {
+    if (index !== undefined) {
+      copiedIndex.value = index;
+      setTimeout(() => { copiedIndex.value = null; }, 1500);
+    } else {
+      ElMessage.success({ message: '已复制到剪贴板', duration: 1500 });
+    }
+  }).catch(() => {
+    ElMessage.error({ message: '复制失败，请手动选择复制', duration: 2000 });
+  });
 };
 
 const quotedMessage = ref<QuoteInfo | null>(null);
@@ -385,7 +390,10 @@ const handleDownloadSource = async (src: SourceCitation) => {
     a.download = filename;
     a.click();
     window.URL.revokeObjectURL(url);
-  } catch {}
+    ElMessage.success({ message: `${filename} 下载成功`, duration: 2000 });
+  } catch {
+    ElMessage.error({ message: '文档下载失败，请稍后重试', duration: 2000 });
+  }
 };
 
 const loadDate = async () => {
