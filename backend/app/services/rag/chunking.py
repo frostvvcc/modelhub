@@ -1,6 +1,10 @@
 """
 文本分块策略模块
-支持 fixed、sentence、markdown、parent_child、semantic 五种策略
+支持 fixed、sentence、markdown、parent_child、semantic、contextual 六种策略
+
+Contextual Retrieval (Anthropic, 2024):
+  为每个 chunk 前置文档级上下文摘要，提升检索时的语义理解。
+  chunk 被嵌入时带有"这是关于XX的文档中的一段"前缀，避免孤立 chunk 丢失语境。
 """
 import re
 from dataclasses import dataclass
@@ -19,6 +23,7 @@ class ChunkStrategy(str, Enum):
     MARKDOWN = "markdown"
     PARENT_CHILD = "parent_child"
     SEMANTIC = "semantic"
+    CONTEXTUAL = "contextual"
 
 
 @dataclass
@@ -43,6 +48,9 @@ def split_text_into_chunks(
         return []
 
     text = text.strip()
+
+    if strategy == ChunkStrategy.CONTEXTUAL:
+        raise ValueError("CONTEXTUAL 策略需要 LLM，请直接调用 split_contextual()")
 
     if strategy == ChunkStrategy.SEMANTIC:
         raise ValueError("SEMANTIC 策略需要 embedding_fn，请直接调用 split_semantic()")
@@ -263,3 +271,146 @@ def _chunk_by_markdown(text: str, chunk_size: int) -> List[str]:
 
     logger.info(f"Markdown 分块: 原始长度={len(text)}, 分割成 {len(chunks)} 块")
     return chunks
+
+
+# ------------------------------------------------------------------
+# Contextual Retrieval (Anthropic, 2024)
+# ------------------------------------------------------------------
+
+@dataclass
+class ContextualChunk:
+    """上下文增强分块：包含原始内容和带上下文前缀的版本"""
+    original_content: str
+    contextualized_content: str
+    context_prefix: str
+    chunk_index: int
+
+
+async def _generate_chunk_context(
+    document_text: str,
+    chunk_text: str,
+    chunk_index: int,
+    model: str = None,
+) -> str:
+    """
+    用 LLM 为单个 chunk 生成上下文前缀。
+    输入：完整文档 + 当前 chunk → 输出：一段简短的上下文说明。
+    """
+    from openai import AsyncOpenAI
+    from app.config import settings
+    import httpx
+
+    model = model or settings.rag_llm_model
+    client = AsyncOpenAI(
+        api_key=settings.rag_llm_api_key or settings.embedding_api_key,
+        base_url=settings.rag_llm_base_url or settings.embedding_base_url,
+        timeout=httpx.Timeout(timeout=30.0),
+        max_retries=1,
+    )
+
+    doc_preview = document_text[:1500]
+
+    prompt = (
+        "这是一份文档的全文概要和其中的一个片段。"
+        "请用 1-2 句话简要说明这个片段在文档中的位置和上下文，"
+        "以便单独看到这个片段时也能理解它的背景。\n"
+        "只输出上下文说明，不要其他内容。\n\n"
+        f"<document>\n{doc_preview}\n</document>\n\n"
+        f"<chunk>\n{chunk_text[:500]}\n</chunk>"
+    )
+
+    try:
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=100,
+            temperature=0.0,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        logger.warning(f"Chunk #{chunk_index} 上下文生成失败: {e}")
+        return ""
+
+
+async def split_contextual(
+    text: str,
+    chunk_size: int = 800,
+    overlap: int = 150,
+    base_strategy: ChunkStrategy = ChunkStrategy.FIXED,
+    model: str = None,
+    max_concurrency: int = 10,
+) -> List[ContextualChunk]:
+    """
+    Contextual Retrieval 分块 (Anthropic, 2024)：
+
+    1. 先用基础策略（fixed/sentence/markdown）切分文本
+    2. 对每个 chunk 用 LLM 生成上下文前缀
+    3. 将前缀 + 原文拼接为 contextualized_content，用于后续 embedding
+
+    优势：
+    - 解决孤立 chunk 语义不完整的问题
+    - 检索时 chunk 自带文档上下文，召回率提升 ~20% (Anthropic 实测)
+    - 与 BM25 + 向量混合检索组合效果更佳
+
+    Args:
+        text: 完整文档文本
+        chunk_size: 分块大小
+        overlap: 重叠字符数
+        base_strategy: 基础分块策略
+        model: LLM 模型名
+        max_concurrency: 并行生成上下文的最大并发数
+    """
+    import asyncio
+
+    if not text or not text.strip():
+        return []
+
+    # Step 1: 基础分块
+    if base_strategy == ChunkStrategy.MARKDOWN:
+        raw_chunks = _chunk_by_markdown(text.strip(), chunk_size)
+    elif base_strategy == ChunkStrategy.SENTENCE:
+        raw_chunks = _chunk_by_sentence(text.strip(), chunk_size, overlap)
+    else:
+        raw_chunks = _chunk_fixed(text.strip(), chunk_size, overlap)
+
+    if not raw_chunks:
+        return []
+
+    # Step 2: 并行生成上下文前缀
+    semaphore = asyncio.Semaphore(max_concurrency)
+
+    async def _gen_context(idx: int, chunk: str) -> ContextualChunk:
+        async with semaphore:
+            prefix = await _generate_chunk_context(text, chunk, idx, model)
+            if prefix:
+                contextualized = f"{prefix}\n\n{chunk}"
+            else:
+                contextualized = chunk
+            return ContextualChunk(
+                original_content=chunk,
+                contextualized_content=contextualized,
+                context_prefix=prefix,
+                chunk_index=idx,
+            )
+
+    results = await asyncio.gather(
+        *[_gen_context(i, c) for i, c in enumerate(raw_chunks)],
+        return_exceptions=True,
+    )
+
+    contextual_chunks = []
+    for r in results:
+        if isinstance(r, ContextualChunk):
+            contextual_chunks.append(r)
+        elif isinstance(r, Exception):
+            logger.warning(f"上下文生成异常: {r}")
+
+    contextual_chunks.sort(key=lambda c: c.chunk_index)
+
+    prefixed_count = sum(1 for c in contextual_chunks if c.context_prefix)
+    logger.info(
+        f"Contextual 分块: {len(raw_chunks)} 块, "
+        f"{prefixed_count}/{len(contextual_chunks)} 块成功添加上下文前缀"
+    )
+
+    return contextual_chunks

@@ -1,7 +1,7 @@
 """
 Agent 工具定义
 
-支持知识库检索、数据库查询、计算器、日期时间、话题分析等 5 种工具。
+支持知识库检索、数据库查询、计算器、日期时间等工具。
 每个工具定义 OpenAI Function Calling 兼容的 JSON Schema。
 """
 import ast
@@ -139,17 +139,19 @@ class DatabaseQueryTool(BaseTool):
         "required": ["query_type"]
     }
 
-    def __init__(self, session: AsyncSession, user_id: int):
+    def __init__(self, session: AsyncSession, user_id: int, school_id: Optional[int] = None):
         self._session = session
         self._user_id = user_id
+        self._school_id = school_id
 
     async def execute(self, query_type: str, organization_id: Optional[int] = None, **kwargs) -> Dict[str, Any]:
         from app.mappers.organization_mapper import AsyncOrganizationMapper
         try:
             if query_type == "organization_tree":
-                orgs = await AsyncOrganizationMapper.get_by_school(self._session, school_id=1)
+                school_id = self._school_id or await self._resolve_school_id()
+                orgs = await AsyncOrganizationMapper.get_by_school(self._session, school_id=school_id)
                 tree = []
-                for org in orgs[:20]:
+                for org in orgs:
                     tree.append({
                         "id": org.id,
                         "name": org.name,
@@ -176,6 +178,17 @@ class DatabaseQueryTool(BaseTool):
         except Exception as e:
             logger.error(f"数据库查询失败: {e}")
             return {"error": str(e)}
+
+    async def _resolve_school_id(self) -> int:
+        """从当前用户所属组织链推断 school_id"""
+        try:
+            from app.mappers.user_mapper import AsyncUserMapper
+            user = await AsyncUserMapper.get_user_by_id(self._session, self._user_id)
+            if user and hasattr(user, 'school_id') and user.school_id:
+                return user.school_id
+        except Exception:
+            pass
+        return 1
 
 
 class CalculatorTool(BaseTool):
@@ -295,61 +308,6 @@ class DateTimeTool(BaseTool):
             return {"error": str(e)}
 
 
-class TopicAnalysisTool(BaseTool):
-    """话题分析工具 — 分析用户意图和消息主题"""
-    name = "topic_analysis"
-    description = "分析用户消息的主题和意图，判断问题类别。当需要对复杂问题进行分类或理解用户真正意图时使用。"
-    parameters = {
-        "type": "object",
-        "properties": {
-            "message": {
-                "type": "string",
-                "description": "要分析的用户消息"
-            },
-            "context": {
-                "type": "string",
-                "description": "对话上下文摘要（可选）"
-            },
-        },
-        "required": ["message"]
-    }
-
-    async def execute(self, message: str, context: Optional[str] = None, **kwargs) -> Dict[str, Any]:
-        keywords = {
-            "学校": "school_info", "学院": "school_info", "专业": "school_info", "班级": "school_info",
-            "课程": "course_info", "考试": "exam_info", "成绩": "grade_info",
-            "图书": "library_info", "宿舍": "dorm_info", "食堂": "canteen_info",
-            "政策": "policy_info", "规定": "policy_info", "制度": "policy_info",
-            "计算": "calculation", "多少": "calculation",
-            "时间": "datetime", "日期": "datetime", "几号": "datetime",
-        }
-        detected_topics = []
-        for keyword, topic in keywords.items():
-            if keyword in message and topic not in detected_topics:
-                detected_topics.append(topic)
-
-        return {
-            "message_length": len(message),
-            "detected_topics": detected_topics if detected_topics else ["general"],
-            "has_question": "?" in message or "？" in message or any(w in message for w in ["什么", "怎么", "为什么", "哪", "吗", "几"]),
-            "suggested_tools": self._suggest_tools(detected_topics),
-        }
-
-    @staticmethod
-    def _suggest_tools(topics: List[str]) -> List[str]:
-        tool_map = {
-            "school_info": ["knowledge_search", "database_query"],
-            "course_info": ["knowledge_search"],
-            "policy_info": ["knowledge_search"],
-            "calculation": ["calculator"],
-            "datetime": ["datetime_info"],
-        }
-        tools = set()
-        for topic in topics:
-            tools.update(tool_map.get(topic, ["knowledge_search"]))
-        return list(tools) if tools else ["knowledge_search"]
-
-
 def get_default_tools(
     session: AsyncSession,
     model_config_id: int,
@@ -363,7 +321,6 @@ def get_default_tools(
         DatabaseQueryTool(session, user_id),
         CalculatorTool(),
         DateTimeTool(),
-        TopicAnalysisTool(),
     ])
     return tools
 

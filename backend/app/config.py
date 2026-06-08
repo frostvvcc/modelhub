@@ -109,6 +109,15 @@ class Settings(BaseSettings):
         "大学教务知识库，包含通知公告、规章制度、办事指南等官方文档"
     )
 
+    # CRAG (Corrective RAG) 配置
+    grounding_threshold: float = float(os.getenv("GROUNDING_THRESHOLD", "0.6"))
+
+    # Neo4j GraphRAG 配置
+    neo4j_enabled: bool = os.getenv("NEO4J_ENABLED", "false").lower() in ("true", "1", "yes")
+    neo4j_uri: str = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    neo4j_user: str = os.getenv("NEO4J_USER", "neo4j")
+    neo4j_password: str = os.getenv("NEO4J_PASSWORD", "")
+
     # OCR配置
     ocr_provider: str = os.getenv("OCR_PROVIDER", "local")  # local, baidu, tencent, aliyun
     # 百度OCR配置

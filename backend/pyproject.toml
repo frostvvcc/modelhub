@@ -41,6 +41,8 @@ dependencies = [
     "python-pptx>=0.6.23",   # PPT 解析
     # 混合检索
     "rank-bm25>=0.2.2",      # BM25 关键词检索
+    # Agent 编排
+    "langgraph>=0.2.0",      # LangGraph 状态图编排
     # 其他工具
     "requests==2.32.4",
     "aiofiles>=25.1.0",

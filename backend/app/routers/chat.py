@@ -144,6 +144,56 @@ async def chat_stream(
 
 
 @router.post(
+    "/evaluate",
+    response_model=SuccessResponse[dict],
+    summary="RAG 质量评估"
+)
+async def evaluate_rag_quality(
+    conversation_id: int = Form(...),
+    message_index: int = Form(-1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """
+    对指定对话的 RAG 回答进行质量评估（RAGAS 四指标）。
+    message_index=-1 表示最后一条 assistant 消息。
+    """
+    from app.mappers.chat_mapper import AsyncChatMapper
+    from app.services.rag.evaluation import evaluate_rag
+
+    conversation = await AsyncChatMapper.get_conversation(db, conversation_id)
+    if not conversation:
+        raise ValidationError("对话不存在")
+
+    messages = conversation["history"]["messages"]
+    assistant_msgs = [m for m in messages if m["role"] == "assistant"]
+    user_msgs = [m for m in messages if m["role"] == "user"]
+
+    if not assistant_msgs:
+        raise ValidationError("对话中没有 assistant 回复")
+
+    target = assistant_msgs[message_index] if abs(message_index) <= len(assistant_msgs) else assistant_msgs[-1]
+    answer = target.get("content", "")
+    metadata = target.get("metadata") or {}
+
+    sources = metadata.get("sources", [])
+    contexts = [s.get("content", "") for s in sources if s.get("content")]
+
+    question = user_msgs[-1]["content"] if user_msgs else ""
+
+    eval_result = await evaluate_rag(
+        question=question,
+        answer=answer,
+        contexts=contexts,
+    )
+
+    return SuccessResponse(
+        message="RAG 评估完成",
+        data=eval_result.to_dict(),
+    )
+
+
+@router.post(
     "/rechat",
     response_model=SuccessResponse[dict],
     summary="重新回答"

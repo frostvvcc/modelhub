@@ -25,6 +25,8 @@ from app.services.agent.tools import get_default_tools, get_tools_for_query
 from app.services.agent.memory import ConversationMemory, count_tokens
 from app.utils.logger_config import get_logger
 
+USE_LANGGRAPH = os.getenv("USE_LANGGRAPH", "false").lower() in ("true", "1", "yes")
+
 logger = get_logger(__name__)
 
 # ── 输入安全过滤层：检测 Prompt Injection 攻击指令 ──
@@ -555,8 +557,37 @@ class StreamChatService:
             agent_tool_calls = []
             agent_thinking = ""
 
-            if use_agent:
-                # Agent 模式
+            if use_agent and USE_LANGGRAPH and all_vector_db_ids:
+                # === LangGraph 编排模式 ===
+                # 多 Agent 编排：LLM 意图分类 → 并行检索/分析 → 合成 → CRAG 验证闭环
+                from app.services.agent.graph_orchestrator import LangGraphOrchestrator
+                logger.info(f"🔀 [路由] LangGraph 编排模式, vector_db_ids={all_vector_db_ids}")
+
+                orchestrator = LangGraphOrchestrator(
+                    llm_client=model,
+                    vector_db_ids=all_vector_db_ids,
+                    user_id=user.id,
+                    session=db,
+                )
+
+                accumulated_content = ""
+                rag_result = None
+                trace_data = None
+
+                async for event in orchestrator.run(message, compressed):
+                    yield _sse_event(event.type, event.data)
+                    if event.type == "token":
+                        accumulated_content += event.data.get("content", "")
+                    elif event.type == "done":
+                        accumulated_content = event.data.get("content", accumulated_content)
+                        rag_result = {
+                            "sources": event.data.get("sources", []),
+                            "used_knowledge_base": bool(event.data.get("sources")),
+                            "avg_similarity": 0.0,
+                        }
+
+            elif use_agent:
+                # === Agent 模式（ReAct Tool-Calling）===
                 tools = get_default_tools(db, model_config_id, user.id, all_vector_db_ids if all_vector_db_ids else None)
                 engine = AgentEngine(tools=tools, max_iterations=5, user_id=user.id, session=db)
 
