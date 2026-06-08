@@ -1209,7 +1209,7 @@ const scrollToBottom = () => {
 .chat-input-container { max-width: 720px; width: 100%; }
 .chat-input-box { background: #fff; border: 1.5px solid #d4d4d8; border-radius: 20px; overflow: hidden; transition: border-color 0.2s, box-shadow 0.2s; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
 .chat-input-box:focus-within { border-color: #818cf8; box-shadow: 0 0 0 3px rgba(99,102,241,0.1), 0 2px 12px rgba(0,0,0,0.06); }
-.sr-only { display: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .file-chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 14px 0; }
 .file-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; background: #f5f3ff; border: 1px solid #e9e5ff; border-radius: 6px; font-size: 12px; color: #4338ca; max-width: 200px; }
 .file-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
