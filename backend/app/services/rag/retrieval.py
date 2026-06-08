@@ -230,27 +230,8 @@ class VectorRetriever:
             results = await asyncio.to_thread(collection.query, **kwargs)
 
             doc_count = len(results.get('documents', [[]])[0]) if results.get('documents') else 0
-            if where and metadata_filter and doc_count < 2:
-                # 渐进式放宽：先去掉年份只保留院系，如果还不够再全放宽
-                # 每次放宽都标记结果为非精确匹配
-                relaxed = False
-                if "$and" in (metadata_filter or {}):
-                    conditions = metadata_filter["$and"]
-                    # 只保留 department 过滤，去掉 year
-                    dept_only = [c for c in conditions if "department" in c]
-                    if dept_only and len(dept_only) < len(conditions):
-                        logger.info(f"约束过滤后结果不足({doc_count}条)，放宽：去掉年份，保留院系")
-                        relaxed_kwargs = dict(kwargs)
-                        relaxed_kwargs['where'] = dept_only[0] if len(dept_only) == 1 else {"$and": dept_only}
-                        relaxed_results = await asyncio.to_thread(collection.query, **relaxed_kwargs)
-                        relaxed_count = len(relaxed_results.get('documents', [[]])[0])
-                        if relaxed_count > doc_count:
-                            results = relaxed_results
-                            doc_count = relaxed_count
-                            relaxed = True
-
-                if doc_count < 1 and not relaxed:
-                    logger.info(f"约束过滤后仍无结果，全部放宽")
+            if where and doc_count < 1:
+                    logger.info(f"过滤后无结果，放宽为无条件检索")
                     fallback_kwargs = {
                         'query_embeddings': [query_embedding],
                         'n_results': n_results,
@@ -578,17 +559,16 @@ class VectorRetriever:
         )
         result_map = dict(zip(keys, results))
 
-        # 解析约束
+        # 解析约束（只做软约束：提取结果用于 Constraint Boost 加权，不做 ChromaDB 硬过滤）
         constraints = None
         metadata_filter = None
         c_result = result_map.get('constraints')
         if c_result and not isinstance(c_result, Exception):
             constraints = c_result
             if constraints.has_constraints():
-                metadata_filter = constraints.to_chromadb_where()
                 logger.info(
-                    f"🔎 [约束过滤] year={constraints.year}, "
-                    f"dept={constraints.department}, filter={metadata_filter}"
+                    f"🔎 [约束提取] year={constraints.year}, "
+                    f"dept={constraints.department} (软约束，不做 ChromaDB 硬过滤)"
                 )
 
         # 解析改写结果（如果约束提取成功且有 semantic_query，用它替换改写输入）
