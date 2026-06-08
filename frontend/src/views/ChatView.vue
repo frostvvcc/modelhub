@@ -209,13 +209,13 @@ const sendMessage = async (query: string) => {
     router.replace({ path: '/chat', query: { ...route.query, ...q } });
   };
 
-  await chatStore.sendMessage(
+  scrollToBottom();
+  chatStore.sendMessage(
     query,
     filesToSend,
     pendingQuote,
     routerReplace,
   );
-  scrollToBottom();
 };
 
 const handleRegenerate = async (index: number) => {

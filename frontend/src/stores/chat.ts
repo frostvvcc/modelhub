@@ -55,6 +55,7 @@ export const useChatStore = defineStore('chat', () => {
     } as ChatMessage
     if (quote) (msg as Record<string, unknown>).quote = quote
     messages.value.push(msg)
+    renderKey.value++
   }
 
   const appendAssistantPlaceholder = (): number => {
@@ -70,6 +71,7 @@ export const useChatStore = defineStore('chat', () => {
       toolCalls: [],
     } as ChatMessage
     messages.value.push(msg)
+    renderKey.value++
     return messages.value.length - 1
   }
 
@@ -185,6 +187,7 @@ export const useChatStore = defineStore('chat', () => {
       messages.value[msgIndex].agentStateLabel = '完成'
       isGenerating.value = false
       renderKey.value++
+      setTimeout(() => { renderKey.value++ }, 100)
     },
     onError(message) {
       if (!messages.value[msgIndex].content) {
