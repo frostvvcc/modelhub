@@ -83,9 +83,14 @@ const loadBot = async () => {
 
 const scrollToBottom = () => {
   nextTick(() => {
-    if (messageAreaRef.value) {
-      messageAreaRef.value.scrollTop = messageAreaRef.value.scrollHeight;
-    }
+    nextTick(() => {
+      if (messageAreaRef.value) {
+        messageAreaRef.value.scrollTo({
+          top: messageAreaRef.value.scrollHeight,
+          behavior: "smooth",
+        });
+      }
+    });
   });
 };
 
