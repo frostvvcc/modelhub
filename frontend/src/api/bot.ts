@@ -76,12 +76,12 @@ export const createBot = async (data: BotCreate): Promise<BotResponse> => {
 
 export const listBots = async (): Promise<BotResponse[]> => {
   const response = await api.get("/bots");
-  return response.data;
+  return response.data.data;
 };
 
 export const listOwnBots = async (): Promise<BotResponse[]> => {
   const response = await api.get("/bots/own");
-  return response.data;
+  return response.data.data;
 };
 
 export const getBot = async (id: number): Promise<BotResponse> => {
