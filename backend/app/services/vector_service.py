@@ -1875,6 +1875,57 @@ class AsyncVectorService:
             "fallback_used": any(layer != "primary" for layer in retrieval_layers),
         }
 
+
+    # ---- Knowledge Router: Query-Aware 知识库路由 ----
+
+    _kb_embedding_cache: Dict[int, List[float]] = {}
+
+    @staticmethod
+    async def _get_kb_embedding(vector_db: "VectorDb") -> List[float]:
+        """获取知识库描述的 Embedding（带内存缓存）"""
+        if vector_db.id in AsyncVectorService._kb_embedding_cache:
+            return AsyncVectorService._kb_embedding_cache[vector_db.id]
+        from app.utils.async_embedding import get_query_embedding_async
+        text = f"{vector_db.name} {vector_db.describe or ''}"
+        emb = await get_query_embedding_async(text)
+        AsyncVectorService._kb_embedding_cache[vector_db.id] = emb
+        return emb
+
+    @staticmethod
+    def _cosine_similarity(a: List[float], b: List[float]) -> float:
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = sum(x * x for x in a) ** 0.5
+        norm_b = sum(x * x for x in b) ** 0.5
+        return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
+
+    @staticmethod
+    async def _route_knowledge_bases(
+        query: str,
+        candidates: List[tuple],
+        max_count: int = 3,
+    ) -> List[tuple]:
+        """Query-Aware Knowledge Router: 按 query 与库描述的语义相似度选择 top-N 库"""
+        if len(candidates) <= max_count:
+            return candidates
+
+        from app.utils.async_embedding import get_query_embedding_async
+        query_emb = await get_query_embedding_async(query)
+
+        scored = []
+        for vdb, layer in candidates:
+            kb_emb = await AsyncVectorService._get_kb_embedding(vdb)
+            sim = AsyncVectorService._cosine_similarity(query_emb, kb_emb)
+            scored.append((sim, vdb, layer))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        selected = [(vdb, layer) for _, vdb, layer in scored[:max_count]]
+
+        logger.info(
+            f"🔀 [Knowledge Router] {len(candidates)} 库 → {len(selected)} 库 | "
+            f"top: {', '.join(f'{s[1].name}({s[0]:.3f})' for s in scored[:max_count])}"
+        )
+        return selected
+
     @staticmethod
     async def _get_layered_vector_db_candidates(
         session: AsyncSession,
@@ -1882,8 +1933,9 @@ class AsyncVectorService:
         primary_vector_db_id: Optional[int],
         extra_vector_db_ids: Optional[List[int]] = None,
         skip_primary: bool = False,
+        query: str = "",
     ) -> List[tuple[VectorDb, str]]:
-        """按主库、用户私有库、官方总库的顺序生成候选知识库。"""
+        """按主库、用户私有库、官方总库的顺序生成候选知识库。大量候选时用 Knowledge Router 语义选库。"""
         from sqlalchemy import select, or_
 
         candidates: List[tuple[VectorDb, str]] = []
@@ -1909,6 +1961,10 @@ class AsyncVectorService:
                 has_user_selected = True
 
         if has_user_selected:
+            if query and len(candidates) > LAYERED_RAG_MAX_VECTOR_DBS:
+                candidates = await AsyncVectorService._route_knowledge_bases(
+                    query, candidates, max_count=max(LAYERED_RAG_MAX_VECTOR_DBS, 3),
+                )
             return candidates
 
         # 回退：搜索用户有权访问的所有知识库（私有 + 组织级 + 教学空间）
@@ -2031,6 +2087,7 @@ class AsyncVectorService:
                 None,
                 extra_vector_db_ids=extra_vector_db_ids,
                 skip_primary=True,
+                query=message,
             )
             if not candidates:
                 logger.debug("根据模型查询向量: 没有可访问的分层知识库 - model_config_id=%s", model_config_id)
@@ -2131,6 +2188,26 @@ class AsyncVectorService:
                     merged_result["total_results"] = len(reranked_sources)
                     if reranked_sources:
                         merged_result["avg_similarity"] = sum(s["similarity"] for s in reranked_sources) / len(reranked_sources)
+                    # Constraint-Boosted Rerank: 命中约束条件的文档加权
+                    if prepared and prepared.constraints and prepared.constraints.has_constraints():
+                        dept = prepared.constraints.department
+                        year = prepared.constraints.year
+                        boosted = 0
+                        for s in reranked_sources:
+                            boost = 1.0
+                            s_content = s.get("content", "") + " " + s.get("source", "")
+                            if dept and dept in s_content:
+                                boost *= 1.3
+                            if year and year in s_content:
+                                boost *= 1.15
+                            if boost > 1.0:
+                                s["similarity"] = min(1.0, s["similarity"] * boost)
+                                s["final_score"] = s["final_score"] * boost
+                                boosted += 1
+                        if boosted:
+                            reranked_sources.sort(key=lambda x: x["final_score"], reverse=True)
+                            logger.info(f"🎯 [Constraint Boost] {boosted} 条文档命中约束加权 (dept={dept}, year={year})")
+
                     logger.info(f"✅ [RAG] 统一 Rerank 完成: {len(candidates_for_rerank)} → {len(reranked_sources)} 条")
                 except Exception as e:
                     logger.warning(f"统一 Rerank 失败，使用粗排结果: {e}")
