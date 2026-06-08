@@ -246,6 +246,65 @@ def format_triples_for_context(triples: List[Dict[str, str]]) -> str:
     return "【知识图谱先验】\n" + "\n".join(lines)
 
 
+
+
+def query_subgraph_global(
+    entities: List[str],
+    max_hops: int = 2,
+    limit: int = 20,
+) -> List[Dict[str, str]]:
+    """全局图谱查询：不限 kb_id，跨所有知识库查询实体关系"""
+    driver = _get_driver()
+    if not driver or not entities:
+        return []
+
+    triples = []
+    with driver.session() as session:
+        for entity in entities[:5]:
+            try:
+                result = session.run(
+                    """
+                    MATCH path = (s:Entity)-[r:RELATION*1..""" + str(max_hops) + """]->(o:Entity)
+                    WHERE s.name CONTAINS $entity OR o.name CONTAINS $entity
+                    UNWIND relationships(path) AS rel
+                    WITH startNode(rel) AS src, rel, endNode(rel) AS tgt
+                    RETURN DISTINCT src.name AS subject, rel.type AS relation, tgt.name AS object
+                    LIMIT $limit
+                    """,
+                    entity=entity,
+                    limit=limit,
+                )
+                for record in result:
+                    triples.append({
+                        "subject": record["subject"],
+                        "relation": record["relation"],
+                        "object": record["object"],
+                    })
+            except Exception as e:
+                logger.warning(f"Neo4j 全局查询失败 entity={entity}: {e}")
+
+    seen = set()
+    deduped = []
+    for t in triples:
+        key = (t["subject"], t["relation"], t["object"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(t)
+
+    logger.info(f"🌐 [全局图谱查询] entities={entities}, 返回 {len(deduped)} 条三元组")
+    return deduped[:limit]
+
+
+async def global_graph_retrieval(query: str) -> List[Dict[str, str]]:
+    """全局 GraphRAG：提取实体 → 跨全库查询图谱 → 返回三元组"""
+    if not NEO4J_ENABLED or not _get_driver():
+        return []
+    entities = await extract_query_entities(query)
+    if not entities:
+        return []
+    return await asyncio.to_thread(query_subgraph_global, entities)
+
+
 async def graph_augmented_retrieval(
     query: str,
     vector_db_id: int,

@@ -2190,11 +2190,25 @@ class AsyncVectorService:
                     for vector_db, layer in fallback_candidates
                 ])
 
+            # 全局 GraphRAG：与向量检索结果分开，作为上下文先验
+            graph_context = ""
+            try:
+                from app.services.rag.graph_rag import global_graph_retrieval, format_triples_for_context, NEO4J_ENABLED
+                if NEO4J_ENABLED:
+                    graph_triples = await global_graph_retrieval(message)
+                    if graph_triples:
+                        graph_context = format_triples_for_context(graph_triples)
+                        logger.info(f"🌐 [GraphRAG] 全局查询返回 {len(graph_triples)} 条三元组，注入上下文")
+            except Exception as graph_err:
+                logger.warning(f"全局 GraphRAG 查询失败（不影响向量检索）: {graph_err}")
+
             merged_inputs = []
             if primary_result:
                 merged_inputs.append(primary_result)
             merged_inputs.extend(fallback_results)
             merged_result = AsyncVectorService._merge_layered_rag_results(merged_inputs)
+            if graph_context:
+                merged_result["graph_context"] = graph_context
 
             if use_unified_rerank and merged_result.get("sources"):
                 try:

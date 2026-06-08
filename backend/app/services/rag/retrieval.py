@@ -669,23 +669,9 @@ class VectorRetriever:
                         all_results.append(r)
                         seen_chunks.add(r.chunk_id)
 
-        from app.services.rag.graph_rag import format_triples_for_context
-        for i, triple in enumerate(graph_triples[:10]):
-            content = f"{triple['subject']} {triple['relation']} {triple['object']}"
-            chunk_id = f"graph_triple_{i}"
-            rrf_like_score = 1.0 / (60 + i)
-            if chunk_id not in seen_chunks:
-                all_results.append(RetrievalResult(
-                    chunk_id=chunk_id,
-                    content=content,
-                    score=rrf_like_score,
-                    similarity=rrf_like_score,
-                    source="knowledge_graph",
-                    document_id="",
-                    retrieval_method="graph_rag",
-                    metadata={"triple": triple, "is_graph_result": True},
-                ))
-                seen_chunks.add(chunk_id)
+        # GraphRAG 三元组不再混入候选池（已提升到全局层级，作为上下文注入）
+        if graph_triples:
+            logger.info(f"📊 [GraphRAG] 单库查到 {len(graph_triples)} 条三元组（已由全局路径处理）")
 
         all_results.sort(key=lambda r: r.score, reverse=True)
         coarse_results = all_results[:prepared.coarse_n]

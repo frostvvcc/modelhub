@@ -302,6 +302,16 @@ class AgentEngine:
                         "label": "分析工具结果中...",
                     })
 
+                    # 注入 GraphRAG 上下文先验（如果有）
+                    for _, tn, _, res, _ in tool_results:
+                        if tn == "knowledge_search" and isinstance(res, dict) and res.get("graph_context"):
+                            working_messages.append({
+                                "role": "system",
+                                "content": res["graph_context"] + "\n\n请结合以上知识图谱信息和检索来源回答用户问题。图谱信息提供了实体之间的关系，检索来源提供了详细内容。",
+                            })
+                            logger.info(f"🌐 [GraphRAG] 图谱上下文已注入 Agent working_messages")
+                            break
+
                     succeeded, failed, blocked, no_result = [], [], [], []
                     ks_sources = []
                     for _, tn, _, res, _ in tool_results:

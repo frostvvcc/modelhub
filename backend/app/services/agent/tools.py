@@ -103,7 +103,7 @@ class KnowledgeSearchTool(BaseTool):
                     "bm25_score": round(s.get("bm25_score", 0), 4),
                     "retrieval_method": s.get("retrieval_method", "vector"),
                 })
-            return {
+            result = {
                 "found": True,
                 "count": len(formatted),
                 "total_found": rag_result.get("total_found", len(formatted)),
@@ -114,6 +114,10 @@ class KnowledgeSearchTool(BaseTool):
                 "has_result_db_ids": rag_result.get("has_result_db_ids", []),
                 "_raw_rag_result": rag_result,
             }
+            graph_context = rag_result.get("graph_context", "")
+            if graph_context:
+                result["graph_context"] = graph_context
+            return result
         except Exception as e:
             logger.error(f"知识库检索失败: {e}")
             return {"found": False, "error": str(e), "sources": []}
