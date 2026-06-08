@@ -70,6 +70,16 @@ class Settings(BaseSettings):
                 "RAG_LLM_API_KEY 和 EMBEDDING_API_KEY 均未配置，所有 LLM 功能将不可用",
                 stacklevel=2,
             )
+
+        _WEAK_PASSWORDS = {"", "modelhub123", "password", "123456", "neo4j"}
+        if self.neo4j_enabled and self.neo4j_password in _WEAK_PASSWORDS:
+            if env == "production":
+                raise ValueError("生产环境 Neo4j 密码不安全，请在 .env 中设置强密码 NEO4J_PASSWORD")
+            warnings.warn(
+                "NEO4J_PASSWORD 使用了弱密码或为空，生产部署前请修改",
+                stacklevel=2,
+            )
+
         return self
     
     # CORS 配置
