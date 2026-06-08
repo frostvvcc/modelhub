@@ -626,8 +626,24 @@ const scrollToBottom = () => {
                       </el-icon>
                     </div>
                     <div class="retrieval-steps" v-show="expandedRetrieval[index] ?? true">
-                      <!-- 理解问题 -->
+                      <!-- 读取附件 -->
                       <template v-for="(step, si) in message.retrievalProcess" :key="si">
+                        <div class="retrieval-step" v-if="step.step === 'attachment_read'">
+                          <span class="step-icon">📎</span>
+                          <div class="step-body">
+                            <span class="step-title">读取附件内容</span>
+                            <span class="step-detail">
+                              已读取 {{ (step.files as any[])?.length || 0 }} 个文件（共 {{ step.total_chars?.toLocaleString() }} 字符），内容已注入对话上下文
+                            </span>
+                            <div class="attachment-file-list" v-if="(step.files as any[])?.length">
+                              <span class="attachment-file-tag" v-for="(f, fi) in (step.files as any[])" :key="fi">
+                                {{ f.filename }}
+                                <span class="attachment-file-size">{{ f.inline ? '全文' : '摘要' }}</span>
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <!-- 理解问题 -->
                         <div class="retrieval-step" v-if="step.step === 'query_rewrite'">
                           <span class="step-icon">💬</span>
                           <div class="step-body">
@@ -965,6 +981,9 @@ const scrollToBottom = () => {
 .thinking-timer.is-live { color: #2563eb; font-weight: 500; }
 .thinking-tokens { color: #8b5cf6; }
 .streaming-timer { font-size: 12px; color: #94a3b8; margin-left: auto; font-variant-numeric: tabular-nums; }
+.attachment-file-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.attachment-file-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 2px 8px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 4px; color: #166534; }
+.attachment-file-size { font-size: 10px; color: #6b7280; }
 .retrieval-toggle { color: #93a3b8; transition: transform 0.2s; }
 .retrieval-steps {
   display: flex; flex-direction: column; gap: 2px; margin-top: 10px;

@@ -570,6 +570,18 @@ class StreamChatService:
 
             if attachment_context:
                 system_prompt = system_prompt + f"\n\n## 用户上传的附件内容\n以下是用户本次上传的文件内容，请基于这些内容回答问题：{attachment_context}"
+                _file_details = []
+                for _fname, _text in (attachment_info.get("file_contents") or {}).items():
+                    _file_details.append({
+                        "filename": _fname,
+                        "char_count": len(_text),
+                        "inline": len(_text) <= _INLINE_CHAR_LIMIT,
+                    })
+                yield _sse_event("retrieval_info", {
+                    "step": "attachment_read",
+                    "files": _file_details,
+                    "total_chars": _total_chars,
+                })
 
             agent_tool_calls = []
             agent_thinking = ""
