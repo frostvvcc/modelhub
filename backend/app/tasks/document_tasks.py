@@ -47,7 +47,7 @@ def process_document_task(
         from app.utils.optimized_chromadb import get_chromadb_client
         from app.utils.EmbbedingModel import ChatEmbeddings
         from app.services.rag.document_parser import extract_text, clean_web_text, clean_document_text, is_worth_indexing, is_quality_chunk
-        from app.services.rag.chunking import split_text_into_chunks, split_parent_child, ChunkStrategy
+        from app.services.rag.chunking import split_text_into_chunks, split_parent_child, split_contextual, ChunkStrategy
         from app.config import settings
         import os
 
@@ -124,6 +124,50 @@ def process_document_task(
                 metadatas=all_metadatas,
                 ids=all_ids,
             )
+
+            self.update_state(state="PROGRESS", meta={
+                "progress": 90, "step": "embedding",
+                "current": total, "total_chunks": total,
+            })
+        elif strategy == ChunkStrategy.CONTEXTUAL:
+            import asyncio
+            _ctx_loop = asyncio.new_event_loop()
+            ctx_chunks = _ctx_loop.run_until_complete(split_contextual(
+                text_content, chunk_size=safe_chunk_size, overlap=safe_overlap,
+            ))
+            _ctx_loop.close()
+            total = len(ctx_chunks)
+
+            self.update_state(state="PROGRESS", meta={"progress": 30, "step": "embedding", "total_chunks": total})
+
+            texts_to_embed = [c.contextualized_content for c in ctx_chunks]
+            all_embeddings = embedding_model._get_text_embeddings(texts_to_embed)
+
+            all_ids = [f"{document_id}_chunk_{i}" for i in range(total)]
+            all_documents = [c.original_content for c in ctx_chunks]
+            all_metadatas = []
+            for i, c in enumerate(ctx_chunks):
+                metadata = {
+                    "source": os.path.basename(file_path),
+                    "chunk_id": i,
+                    "total_chunks": total,
+                    "document_id": str(document_id),
+                    "chunk_strategy": "contextual",
+                    "context_prefix": c.context_prefix,
+                }
+                if folder_hierarchy:
+                    metadata["folder_hierarchy"] = folder_hierarchy
+                if parent_id:
+                    metadata["parent_id"] = str(parent_id)
+                all_metadatas.append(metadata)
+
+            collection.add(
+                embeddings=all_embeddings,
+                documents=all_documents,
+                metadatas=all_metadatas,
+                ids=all_ids,
+            )
+            chunks = all_documents
 
             self.update_state(state="PROGRESS", meta={
                 "progress": 90, "step": "embedding",
