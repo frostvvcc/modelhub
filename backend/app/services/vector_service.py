@@ -2198,7 +2198,7 @@ class AsyncVectorService:
                             s_content = s.get("content", "") + " " + s.get("source", "")
                             if dept and dept in s_content:
                                 boost *= 1.3
-                            if year and year in s_content:
+                            if year and str(year) in s_content:
                                 boost *= 1.15
                             if boost > 1.0:
                                 s["similarity"] = min(1.0, s["similarity"] * boost)
