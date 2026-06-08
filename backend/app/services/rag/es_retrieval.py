@@ -335,3 +335,16 @@ async def delete_index(vector_db_id: int) -> bool:
     except Exception as e:
         logger.warning(f"ES 索引删除失败: {e}")
         return False
+
+
+async def close_es_client():
+    """关闭 ES 客户端，释放 aiohttp 连接池"""
+    global _es_client
+    if _es_client is not None:
+        try:
+            await _es_client.close()
+            logger.info("Elasticsearch 客户端已关闭")
+        except Exception as e:
+            logger.warning(f"ES 客户端关闭失败: {e}")
+        finally:
+            _es_client = None

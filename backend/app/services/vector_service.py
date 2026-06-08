@@ -129,7 +129,7 @@ OFFICIAL_VECTOR_DB_NAMES = {
     "默认智能对话知识库",
 }
 LAYERED_RAG_FALLBACK_THRESHOLD = float(os.getenv("RAG_FALLBACK_THRESHOLD", "0.40"))
-LAYERED_RAG_MAX_VECTOR_DBS = int(os.getenv("RAG_MAX_VECTOR_DBS", "5"))
+LAYERED_RAG_MAX_VECTOR_DBS = int(os.getenv("RAG_MAX_VECTOR_DBS", "2"))
 LAYERED_RAG_MAX_CONTEXTS = int(os.getenv("RAG_MAX_CONTEXTS", "5"))
 RAG_USE_ENHANCED = os.getenv("RAG_USE_ENHANCED", "true").lower() in ("true", "1", "yes")
 RAG_USE_REWRITE = os.getenv("RAG_USE_REWRITE", "true").lower() in ("true", "1", "yes")

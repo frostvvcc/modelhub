@@ -110,14 +110,27 @@ def create_app() -> FastAPI:
     async def startup():
         """应用启动时的初始化工作"""
         logger.info("应用启动中...")
-        # 不再在启动时创建表，表应该通过迁移脚本创建
-        # 这样可以避免启动时阻塞
+        # 后台预加载 Reranker 模型，避免首请求延迟
+        import asyncio
+        async def _preload_reranker():
+            try:
+                from app.services.rag.reranker import _get_cross_encoder, RAG_RERANK_MODE
+                if RAG_RERANK_MODE == "cross_encoder":
+                    await _get_cross_encoder()
+            except Exception as e:
+                logger.warning(f"Reranker 预加载失败（非致命）: {e}")
+        asyncio.create_task(_preload_reranker())
         logger.info("应用启动完成")
     
     @app.on_event("shutdown")
     async def shutdown():
         """应用关闭时的清理工作"""
         logger.info("应用正在关闭...")
+        try:
+            from app.services.rag.es_retrieval import close_es_client
+            await close_es_client()
+        except Exception as e:
+            logger.warning(f"ES 客户端清理失败: {e}")
     
     # 健康检查
     @app.get("/health", tags=["系统"])

@@ -334,24 +334,27 @@ class StreamChatService:
                     "fallback_used": False,
                 }
 
-                # Multi-turn Query Reformulation：追问补全为独立查询
-                retrieval_query = await AsyncChatService._reformulate_for_retrieval(
-                    message, history_dicts_desc,
-                )
-
-                yield _sse_event("retrieval_info", {
-                    "step": "query_rewrite",
-                    "original_query": message,
-                    "retrieval_query": retrieval_query,
-                    "is_reformulated": retrieval_query != message,
-                })
-
-                if model_config:
-                    rag_result = await AsyncVectorService.query_vector_by_model(
-                        session, model_config_id, retrieval_query,
-                        user_id=user_id,
-                        extra_vector_db_ids=all_extra_ids if all_extra_ids else None,
+                if intent != "chitchat":
+                    # Multi-turn Query Reformulation：追问补全为独立查询
+                    retrieval_query = await AsyncChatService._reformulate_for_retrieval(
+                        message, history_dicts_desc,
                     )
+
+                    yield _sse_event("retrieval_info", {
+                        "step": "query_rewrite",
+                        "original_query": message,
+                        "retrieval_query": retrieval_query,
+                        "is_reformulated": retrieval_query != message,
+                    })
+
+                    if model_config:
+                        rag_result = await AsyncVectorService.query_vector_by_model(
+                            session, model_config_id, retrieval_query,
+                            user_id=user_id,
+                            extra_vector_db_ids=all_extra_ids if all_extra_ids else None,
+                        )
+                else:
+                    logger.info(f"🚦 [路由] chitchat 意图，跳过 RAG 检索直接回复")
 
                 _rr = rag_result or {}
                 _has_dbs = _rr.get("has_result_db_ids", [])

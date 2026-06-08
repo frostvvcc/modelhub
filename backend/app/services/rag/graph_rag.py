@@ -44,9 +44,12 @@ def _get_driver():
 def _get_llm_client() -> AsyncOpenAI:
     global _llm_client
     if _llm_client is None:
+        import httpx
         _llm_client = AsyncOpenAI(
             api_key=settings.rag_llm_api_key or settings.embedding_api_key,
             base_url=settings.rag_llm_base_url or settings.embedding_base_url,
+            timeout=httpx.Timeout(timeout=60.0, connect=10.0, read=50.0, write=10.0),
+            max_retries=1,
         )
     return _llm_client
 

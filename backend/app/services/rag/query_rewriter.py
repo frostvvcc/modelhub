@@ -303,9 +303,12 @@ _rewrite_client: AsyncOpenAI = None
 def _get_rewrite_client() -> AsyncOpenAI:
     global _rewrite_client
     if _rewrite_client is None:
+        import httpx
         _rewrite_client = AsyncOpenAI(
             api_key=settings.rag_llm_api_key or settings.embedding_api_key,
             base_url=settings.rag_llm_base_url or settings.embedding_base_url,
+            timeout=httpx.Timeout(timeout=60.0, connect=10.0, read=50.0, write=10.0),
+            max_retries=1,
         )
     return _rewrite_client
 

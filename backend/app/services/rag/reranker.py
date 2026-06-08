@@ -20,13 +20,16 @@ logger = logging.getLogger(__name__)
 
 RAG_RERANK_MODE = os.getenv("RAG_RERANK_MODE", "cross_encoder")  # cross_encoder | llm | off
 
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 _cross_encoder = None
 _ce_lock = asyncio.Lock()
 _llm_client = None
 
 
 async def _get_cross_encoder(model_name: str = None):
-    """单例加载 Cross-Encoder 模型（首次 ~2s，之后 0ms）"""
+    """单例加载 Cross-Encoder 模型（离线模式，只用本地缓存）"""
     global _cross_encoder
     if _cross_encoder is not None:
         return _cross_encoder
@@ -38,7 +41,7 @@ async def _get_cross_encoder(model_name: str = None):
         try:
             from sentence_transformers import CrossEncoder
             _cross_encoder = await asyncio.to_thread(CrossEncoder, model_name)
-            logger.info(f"Cross-Encoder 加载完成: {model_name}")
+            logger.info(f"Cross-Encoder 加载完成（离线模式）: {model_name}")
         except ImportError:
             logger.warning("sentence-transformers 未安装，Cross-Encoder 不可用")
         except Exception as e:
@@ -51,9 +54,12 @@ def _get_llm_client():
     if _llm_client is None:
         from openai import AsyncOpenAI
         from app.config import settings
+        import httpx
         _llm_client = AsyncOpenAI(
             api_key=getattr(settings, 'rag_llm_api_key', None) or settings.embedding_api_key,
             base_url=getattr(settings, 'rag_llm_base_url', None) or settings.embedding_base_url,
+            timeout=httpx.Timeout(timeout=60.0, connect=10.0, read=50.0, write=10.0),
+            max_retries=1,
         )
     return _llm_client
 
