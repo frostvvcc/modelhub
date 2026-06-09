@@ -40,17 +40,17 @@ async def get_all_providers(
 
 
 @router.get(
-    "/provider/{provider_id}",
+    "/provider/default",
     response_model=SuccessResponse[dict],
-    summary="获取供应商配置详情"
+    summary="获取默认供应商配置"
 )
-async def get_provider(
-    provider_id: int,
+async def get_default_provider(
+    provider_type: Optional[str] = Query(None, description="供应商类型"),
     include_sensitive: bool = Query(False, description="是否包含敏感信息"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db)
 ):
-    """获取供应商配置详情"""
+    """获取默认供应商配置"""
     if include_sensitive:
         await require_system_admin(db, current_user)
     else:
@@ -59,9 +59,11 @@ async def get_provider(
             current_user,
             ["config:read", "config:write", "config:manage"],
         )
-    result = await AsyncProviderService.get_provider(
-        db, provider_id, include_sensitive=include_sensitive
+    result = await AsyncProviderService.get_default_provider(
+        db, provider_type=provider_type, include_sensitive=include_sensitive
     )
+    if not result:
+        return SuccessResponse(message="未找到默认供应商配置", data=None)
     return SuccessResponse(message="查询成功", data=result)
 
 
@@ -92,17 +94,17 @@ async def get_provider_by_code(
 
 
 @router.get(
-    "/provider/default",
+    "/provider/{provider_id}",
     response_model=SuccessResponse[dict],
-    summary="获取默认供应商配置"
+    summary="获取供应商配置详情"
 )
-async def get_default_provider(
-    provider_type: Optional[str] = Query(None, description="供应商类型"),
+async def get_provider(
+    provider_id: int,
     include_sensitive: bool = Query(False, description="是否包含敏感信息"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db)
 ):
-    """获取默认供应商配置"""
+    """获取供应商配置详情"""
     if include_sensitive:
         await require_system_admin(db, current_user)
     else:
@@ -111,11 +113,9 @@ async def get_default_provider(
             current_user,
             ["config:read", "config:write", "config:manage"],
         )
-    result = await AsyncProviderService.get_default_provider(
-        db, provider_type=provider_type, include_sensitive=include_sensitive
+    result = await AsyncProviderService.get_provider(
+        db, provider_id, include_sensitive=include_sensitive
     )
-    if not result:
-        return SuccessResponse(message="未找到默认供应商配置", data=None)
     return SuccessResponse(message="查询成功", data=result)
 
 

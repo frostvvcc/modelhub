@@ -125,10 +125,19 @@ async def get_current_user(
     
     # 从数据库获取用户（异步查询）
     user = await AsyncDB.get_by_id(db, User, user_id)
-    
+
     if user is None:
         raise credentials_exception
-    
+
+    jwt_tv = payload.get("tv", 0)
+    user_tv = getattr(user, "token_version", 0) or 0
+    if jwt_tv != user_tv:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token 已失效，请重新登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     return user
 
 

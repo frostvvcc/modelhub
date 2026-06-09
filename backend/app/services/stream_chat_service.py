@@ -25,7 +25,7 @@ from app.services.agent.tools import get_default_tools
 from app.services.agent.memory import ConversationMemory, count_tokens
 from app.utils.logger_config import get_logger
 
-USE_LANGGRAPH = os.getenv("USE_LANGGRAPH", "false").lower() in ("true", "1", "yes")
+USE_LANGGRAPH = os.getenv("USE_LANGGRAPH", "true").lower() in ("true", "1", "yes")
 
 logger = get_logger(__name__)
 

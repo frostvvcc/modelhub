@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.mappers.model_mapper import AsyncModelMapper
 from app.mappers.user_mapper import AsyncUserMapper
 from app.utils.logger_config import get_logger
-from app.utils.error_handler import NotFoundError, InternalServerError
+from app.utils.error_handler import NotFoundError, InternalServerError, ConflictError
 
 logger = get_logger(__name__)
 
@@ -172,6 +172,8 @@ class AsyncModelService:
                 "refusal_strategy": config.refusal_strategy,
                 "max_context_chars": config.max_context_chars,
                 "answer_with_citations": config.answer_with_citations,
+                "temperature": config.temperature,
+                "top_p": config.top_p,
 
                 "organization_id": config.organization_id,
                 "created_at": config.create_at.isoformat() if config.create_at else None,
@@ -327,9 +329,12 @@ class AsyncModelService:
                 "updated_at": config.update_at.isoformat() if config.update_at else None,
             }
         except Exception as e:
+            from sqlalchemy.exc import IntegrityError
+            if isinstance(e.__cause__, IntegrityError) or isinstance(e, IntegrityError):
+                raise ConflictError("share_id 已存在或数据冲突")
             logger.error(f"创建模型配置失败: {str(e)}", exc_info=True)
-            raise InternalServerError(f"创建模型配置失败: {str(e)}")
-    
+            raise InternalServerError("创建模型配置失败，请稍后重试")
+
     @staticmethod
     async def update_model_config(
         session: AsyncSession,

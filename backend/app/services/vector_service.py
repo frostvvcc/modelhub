@@ -4,7 +4,7 @@
 """
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List, Dict, Any
-from app.utils.optimized_chromadb import get_chromadb_client
+from app.utils.optimized_chromadb import get_vector_store
 from app.utils.EmbbedingModel import ChatEmbeddings
 from app.models.vector_db import VectorDb
 from app.models.document import Document
@@ -150,51 +150,38 @@ class AsyncVectorService:
     
     @staticmethod
     async def create_chroma_collection(vector_db_id: int) -> bool:
-        """创建 ChromaDB 集合（异步，带重试）"""
+        """创建向量集合（异步，带重试）"""
         from app.utils.retry import async_retry
-        
-        client = get_chromadb_client()
-        if not client:
-            logger.error("无法获取 ChromaDB 客户端")
-            return False
-        
+
+        store = get_vector_store()
         collection_name = f"vector_db_{vector_db_id}"
-        
+
         @async_retry(
             max_attempts=MAX_RETRIES,
             delay=RETRY_DELAY,
             exceptions=(Exception,)
         )
         async def _create():
-            try:
-                await asyncio.to_thread(
-                    client.create_collection,
-                    name=collection_name,
-                    metadata={"hnsw:space": "cosine"},
-                )
+            result = await asyncio.to_thread(
+                store.create_collection, collection_name, {"hnsw:space": "cosine"}
+            )
+            if result:
                 logger.info(f"成功创建集合: {collection_name}")
-                return True
-            except chromadb.errors.UniqueConstraintError:
-                logger.info(f"集合已存在: {collection_name}")
-                return True
-        
+            return result
+
         try:
             return await _create()
         except Exception as e:
             logger.error(f"创建集合最终失败: {collection_name}, 错误: {e}")
             return False
-    
+
     @staticmethod
     async def get_chroma_collection(vector_db_id: int):
-        """获取 ChromaDB 集合（异步）"""
-        client = get_chromadb_client()
-        if not client:
-            return None
-        
+        """获取向量集合（异步）"""
+        store = get_vector_store()
         collection_name = f"vector_db_{vector_db_id}"
         try:
-            # 在后台线程执行同步操作
-            collection = await asyncio.to_thread(client.get_collection, name=collection_name)
+            collection = await asyncio.to_thread(store.get_collection, collection_name)
             return collection
         except Exception as e:
             logger.error(f"获取集合失败: {e}")
@@ -442,13 +429,17 @@ class AsyncVectorService:
                 else:
                     raise RuntimeError(f"OCR识别失败，无法提取图片文字: {file_path}")
 
-            from app.services.rag.document_parser import extract_text, clean_web_text, is_worth_indexing
+            from app.services.rag.document_parser import extract_text, clean_web_text, clean_document_text, is_worth_indexing
             text_content = extract_text(actual_file_path)
 
             if not text_content or not text_content.strip():
                 raise RuntimeError(f"文件内容为空，无法解析文件: {os.path.basename(file_path)}")
 
-            text_content = clean_web_text(text_content)
+            source_ext = os.path.splitext(actual_file_path)[1].lower()
+            if source_ext == '.txt':
+                text_content = clean_web_text(text_content)
+            else:
+                text_content = clean_document_text(text_content)
             if not is_worth_indexing(text_content):
                 raise RuntimeError(f"文件清洗后有效内容不足，跳过入库: {os.path.basename(file_path)}")
 
@@ -682,9 +673,12 @@ class AsyncVectorService:
             from app.utils.async_file_utils import delete_file_async
 
             documents = await AsyncDB.filter_by(session, Document, vector_db_id=vector_db_id)
-            collection = None
+            store = get_vector_store()
+            collection_name = f"vector_db_{vector_db_id}"
+            collection_exists = False
             try:
-                collection = get_chromadb_client().get_collection(f"vector_db_{vector_db_id}")
+                coll = await asyncio.to_thread(store.get_collection, collection_name)
+                collection_exists = coll is not None
             except Exception as e:
                 logger.warning(f"获取向量集合失败，继续删除数据库记录: vector_db_id={vector_db_id}, 错误: {e}")
 
@@ -694,10 +688,11 @@ class AsyncVectorService:
 
             for document in sorted(documents, key=delete_order):
                 if not document.is_folder:
-                    if collection:
+                    if collection_exists:
                         try:
                             await asyncio.to_thread(
-                                collection.delete,
+                                store.delete,
+                                collection_name,
                                 where={"document_id": str(document.id)}
                             )
                         except Exception as e:
@@ -708,8 +703,8 @@ class AsyncVectorService:
 
             try:
                 await asyncio.to_thread(
-                    get_chromadb_client().delete_collection,
-                    f"vector_db_{vector_db_id}"
+                    store.delete_collection,
+                    collection_name
                 )
             except Exception as e:
                 logger.warning(f"删除 Chroma 集合失败: vector_db_id={vector_db_id}, 错误: {e}")
@@ -806,11 +801,10 @@ class AsyncVectorService:
             # 从 ChromaDB 删除该文档对应的所有 chunk，避免数据库记录删除后旧向量仍被检索到。
             if not document.is_folder:
                 try:
-                    collection = get_chromadb_client().get_collection(
-                        f"vector_db_{document.vector_db_id}"
-                    )
+                    store = get_vector_store()
                     await asyncio.to_thread(
-                        collection.delete,
+                        store.delete,
+                        f"vector_db_{document.vector_db_id}",
                         where={"document_id": str(document.id)}
                     )
                     logger.info(f"从向量数据库删除: document_id={document.id}")
@@ -851,10 +845,12 @@ class AsyncVectorService:
     @staticmethod
     async def _delete_document_vectors(vector_db_id: int, document_id: int) -> None:
         try:
-            collection = await asyncio.to_thread(
-                get_chromadb_client().get_collection, f"vector_db_{vector_db_id}",
+            store = get_vector_store()
+            await asyncio.to_thread(
+                store.delete,
+                f"vector_db_{vector_db_id}",
+                where={"document_id": str(document_id)},
             )
-            await asyncio.to_thread(collection.delete, where={"document_id": str(document_id)})
             from app.services.rag.retrieval import invalidate_bm25_cache
             invalidate_bm25_cache(vector_db_id)
         except Exception as e:
@@ -1028,12 +1024,11 @@ class AsyncVectorService:
 
                         # 2. 从向量数据库删除
                         try:
-                            collection = await asyncio.to_thread(
-                                get_chromadb_client().get_collection,
-                                f"vector_db_{child.vector_db_id}"
-                            )
+                            store = get_vector_store()
                             await asyncio.to_thread(
-                                collection.delete, where={"document_id": str(child.id)}
+                                store.delete,
+                                f"vector_db_{child.vector_db_id}",
+                                where={"document_id": str(child.id)}
                             )
                             logger.info(f"从向量数据库删除: document_id={child.id}")
                         except Exception as e:
@@ -1759,11 +1754,12 @@ class AsyncVectorService:
             return False
 
         documents = await AsyncDB.filter_by(session, Document, vector_db_id=vector_db.id)
-        collection = None
+        store = get_vector_store()
+        collection_name = f"vector_db_{vector_db.id}"
+        collection_exists = False
         try:
-            collection = await asyncio.to_thread(
-                get_chromadb_client().get_collection, f"vector_db_{vector_db.id}"
-            )
+            coll = await asyncio.to_thread(store.get_collection, collection_name)
+            collection_exists = coll is not None
         except Exception as exc:
             logger.warning("获取会话附件向量集合失败，继续删除数据库记录: vector_db_id=%s (%s)", vector_db.id, exc)
 
@@ -1774,10 +1770,10 @@ class AsyncVectorService:
 
         for document in sorted(documents, key=delete_order):
             if not document.is_folder:
-                if collection:
+                if collection_exists:
                     try:
                         await asyncio.to_thread(
-                            collection.delete, where={"document_id": str(document.id)}
+                            store.delete, collection_name, where={"document_id": str(document.id)}
                         )
                     except Exception as exc:
                         logger.warning("删除会话附件向量失败: document_id=%s (%s)", document.id, exc)
@@ -1787,7 +1783,7 @@ class AsyncVectorService:
 
         try:
             await asyncio.to_thread(
-                get_chromadb_client().delete_collection, f"vector_db_{vector_db.id}"
+                store.delete_collection, collection_name
             )
         except Exception as exc:
             logger.warning("删除会话附件向量集合失败: vector_db_id=%s (%s)", vector_db.id, exc)

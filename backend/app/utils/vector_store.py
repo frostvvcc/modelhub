@@ -69,6 +69,29 @@ class VectorStore(ABC):
         ...
 
     @abstractmethod
+    def upsert(
+        self,
+        collection_name: str,
+        ids: List[str],
+        embeddings: List[List[float]],
+        documents: List[str],
+        metadatas: List[Dict],
+    ) -> None:
+        ...
+
+    @abstractmethod
+    def count(self, collection_name: str) -> int:
+        ...
+
+    @abstractmethod
+    def get_or_create_collection(self, name: str, metadata: Optional[Dict] = None) -> Any:
+        ...
+
+    @abstractmethod
+    def collection_metadata(self, collection_name: str) -> Dict:
+        ...
+
+    @abstractmethod
     def health_check(self) -> bool:
         ...
 
@@ -132,6 +155,21 @@ class ChromaDBStore(VectorStore):
         if ids:
             kwargs["ids"] = ids
         col.delete(**kwargs)
+
+    def upsert(self, collection_name, ids, embeddings, documents, metadatas):
+        col = self.get_collection(collection_name)
+        col.upsert(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
+
+    def count(self, collection_name) -> int:
+        col = self.get_collection(collection_name)
+        return col.count()
+
+    def get_or_create_collection(self, name: str, metadata: Optional[Dict] = None) -> Any:
+        return self.client.get_or_create_collection(name=name, metadata=metadata or {"hnsw:space": "cosine"})
+
+    def collection_metadata(self, collection_name: str) -> Dict:
+        col = self.get_collection(collection_name)
+        return getattr(col, 'metadata', None) or {}
 
     def health_check(self) -> bool:
         try:
@@ -263,6 +301,27 @@ class MilvusStore(VectorStore):
             for k, v in where.items():
                 col.delete(f'metadata_json like "%\\"{k}\\\": {v}%"')
         col.flush()
+
+    def upsert(self, collection_name, ids, embeddings, documents, metadatas):
+        import json
+        col = self._ensure_collection(collection_name)
+        col.upsert([
+            ids,
+            embeddings,
+            documents,
+            [json.dumps(m, ensure_ascii=False) for m in metadatas],
+        ])
+        col.flush()
+
+    def count(self, collection_name) -> int:
+        col = self._ensure_collection(collection_name)
+        return col.num_entities
+
+    def get_or_create_collection(self, name: str, metadata: Optional[Dict] = None) -> Any:
+        return self._ensure_collection(name)
+
+    def collection_metadata(self, collection_name: str) -> Dict:
+        return {"hnsw:space": "cosine"}
 
     def health_check(self) -> bool:
         try:

@@ -5,7 +5,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElInput, ElIcon, ElSlider, ElDrawer, ElMessage } from 'element-plus';
 import { Promotion, DocumentCopy, ArrowDown, ArrowUp, UploadFilled, Close, Plus, Setting, CopyDocument, ChatRound, ArrowLeft } from '@element-plus/icons-vue';
 import type { ChatMessage, QuoteInfo } from '../types/chat';
-import { getMessages, rechat, setChatHistory } from '../api/chat';
+import { getMessages, setChatHistory } from '../api/chat';
 import { getCurrentTime, getCurrentStatus } from '../utils/common';
 import { fetchOwnConfigs, getModelConfig, getModelConfigs } from '../api/model';
 import { DownloadFile } from '../api/vectorDb';
@@ -233,16 +233,10 @@ const sendMessage = async (query: string) => {
 const handleRegenerate = async (index: number) => {
   const reg_content = messages.value[index].content;
   if (reg_content.includes('正在') || isGenerating.value) return;
-  if (reg_content === '请求失败，请稍后再试') {
-    messages.value.pop();
-    const last_query = messages.value[index - 1].content;
-    messages.value.pop();
-    await sendMessage(last_query);
-    return;
-  }
-  const formData = new FormData();
-  formData.append('conversation_id', conversationId.value);
-  try { const response = await rechat(formData); messages.value[index] = response; } catch {}
+  messages.value.pop();
+  const lastQuery = messages.value[index - 1].content;
+  messages.value.pop();
+  await sendMessage(lastQuery);
 };
 
 const copiedIndex = ref<number | null>(null);

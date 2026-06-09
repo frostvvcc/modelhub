@@ -294,6 +294,7 @@ async def search(
 
         return results
     except Exception as e:
+        global _es_client, _es_last_failure
         logger.warning(f"ES 检索失败: {e}")
         _es_client = None
         _es_last_failure = _time.monotonic()

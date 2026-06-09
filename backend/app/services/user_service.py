@@ -89,6 +89,15 @@ class AsyncUserService:
             if organization_id and organization_id != school_id:
                 await AsyncOrganizationMapper.add_member(session, user.id, organization_id, member_role)
 
+            from app.mappers.permission_mapper import AsyncPermissionMapper
+            role_code_map = {'teacher': 'teacher', 'student': 'student'}
+            rbac_code = role_code_map.get(role, 'student')
+            rbac_role = await AsyncPermissionMapper.get_role_by_code(session, rbac_code)
+            if rbac_role:
+                await AsyncPermissionMapper.assign_role_to_user(
+                    session, user.id, rbac_role.id, school_id, "school"
+                )
+
             token = generate_jwt(user.id, user.name, user.email or "")
             logger.info(f"用户注册成功: user_id={user.id}, student_id={student_id}")
 
@@ -106,7 +115,7 @@ class AsyncUserService:
             raise
         except Exception as e:
             logger.error(f"用户注册失败: {str(e)}", exc_info=True)
-            raise InternalServerError(f"注册失败: {str(e)}")
+            raise InternalServerError("注册失败，请稍后重试")
 
     @staticmethod
     async def login(session: AsyncSession, account: str, password: str) -> dict:
@@ -126,7 +135,7 @@ class AsyncUserService:
             logger.warning(f"登录失败: 账号已被禁用 - {account}, status={user.status}")
             raise UnauthorizedError("账号已被禁用")
 
-        token = generate_jwt(user.id, user.name, user.email or "")
+        token = generate_jwt(user.id, user.name, user.email or "", getattr(user, 'token_version', 0) or 0)
         logger.info(f"用户登录成功: user_id={user.id}, account={account}")
 
         from app.mappers.permission_mapper import AsyncPermissionMapper
@@ -356,6 +365,7 @@ class AsyncUserService:
             raise ValidationError("新密码长度不能少于6位")
 
         user.password = get_password_hash(new_password)
+        user.token_version = (user.token_version or 0) + 1
         await AsyncUserMapper.update_user(session, user)
         return True
 

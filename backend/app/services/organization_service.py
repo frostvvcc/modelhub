@@ -13,7 +13,8 @@ from app.utils.cache import cache_result, clear_cache
 from app.utils.error_handler import (
     NotFoundError,
     ValidationError,
-    InternalServerError
+    InternalServerError,
+    ForbiddenError
 )
 
 logger = get_logger(__name__)
@@ -62,7 +63,7 @@ class AsyncOrganizationService:
                     raise ValidationError("父组织不存在")
                 
                 level = parent.level + 1
-                path = f"{parent.path}/{parent.id}" if parent.path else str(parent.id)
+                path = parent.path if parent.path else str(parent.id)
                 final_school_id = parent.school_id or parent.id  # 如果父组织是学校，则使用父组织ID
             
             elif org_type == "school":
@@ -104,9 +105,11 @@ class AsyncOrganizationService:
         except ValueError as e:
             logger.warning(f"创建组织失败: {str(e)}")
             raise ValidationError(str(e))
+        except (ValidationError, NotFoundError, ForbiddenError):
+            raise
         except Exception as e:
             logger.error(f"创建组织失败: {str(e)}", exc_info=True)
-            raise InternalServerError(f"创建组织失败: {str(e)}")
+            raise InternalServerError("创建组织失败，请稍后重试")
     
     @staticmethod
     async def get_organization(

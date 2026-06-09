@@ -244,12 +244,12 @@ class AsyncOrganizationMapper:
         existing = result.scalar_one_or_none()
         
         if existing:
-            # 更新现有成员
             existing.role = role
             existing.status = "active"
             await AsyncDB.commit(session)
+            await session.refresh(existing, ['user'])
             return existing
-        
+
         member = OrganizationMember(
             user_id=user_id,
             organization_id=organization_id,
@@ -258,6 +258,7 @@ class AsyncOrganizationMapper:
         )
         member = await AsyncDB.create(session, member)
         await AsyncDB.commit(session)
+        await session.refresh(member, ['user'])
         return member
     
     @staticmethod

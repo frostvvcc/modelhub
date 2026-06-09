@@ -12,7 +12,8 @@ from app.utils.cache import cache_result, clear_cache
 from app.utils.error_handler import (
     NotFoundError,
     ValidationError,
-    InternalServerError
+    InternalServerError,
+    ConflictError
 )
 
 logger = get_logger(__name__)
@@ -159,9 +160,11 @@ class AsyncPermissionService:
         except ValueError as e:
             logger.warning(f"创建角色失败: {str(e)}")
             raise ValidationError(str(e))
+        except (ValidationError, NotFoundError, ConflictError):
+            raise
         except Exception as e:
             logger.error(f"创建角色失败: {str(e)}", exc_info=True)
-            raise InternalServerError(f"创建角色失败: {str(e)}")
+            raise InternalServerError("创建角色失败，请稍后重试")
     
     @staticmethod
     async def assign_permission_to_role(

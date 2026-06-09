@@ -24,6 +24,7 @@ class User(Base):
     phone = Column(String(20), nullable=True, comment="手机号")
     enrollment_year = Column(Integer, nullable=True, comment="入学年份，由学号前4位自动识别")
     status = Column(String(20), nullable=False, default="active", comment="用户状态：active/inactive/suspended")
+    token_version = Column(Integer, nullable=False, default=0, server_default="0", comment="Token版本号，修改密码时递增")
     create_at = Column(DateTime, server_default=func.now(), nullable=False)
     update_at = Column(
         DateTime,

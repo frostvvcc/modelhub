@@ -56,6 +56,7 @@ class AsyncUserMapper:
             or_(
                 User.student_id == account,
                 User.employee_id == account,
+                User.email == account,
             )
         )
         result = await session.execute(stmt)

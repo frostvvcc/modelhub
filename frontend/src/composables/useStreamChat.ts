@@ -2,7 +2,6 @@ import { ref, nextTick } from 'vue'
 import type { ChatMessage, QuoteInfo, ToolCallRecord } from '../types/chat'
 import type { StreamCallbacks } from '../utils/stream'
 import { streamChat, streamBotChat } from '../utils/stream'
-import { rechat } from '../api/chat'
 import { getCurrentTime } from '../utils/common'
 
 export function useStreamChat() {
@@ -141,19 +140,10 @@ export function useStreamChat() {
   ) => {
     const content = messages[index].content
     if (content.includes('正在') || isGenerating.value) return
-    if (content === '请求失败，请稍后再试') {
-      messages.pop()
-      const lastQuery = messages[index - 1].content
-      messages.pop()
-      await sendMessageFn(lastQuery)
-      return
-    }
-    const formData = new FormData()
-    formData.append('conversation_id', conversationId)
-    try {
-      const response = await rechat(formData)
-      messages[index] = response
-    } catch {}
+    messages.pop()
+    const lastQuery = messages[index - 1].content
+    messages.pop()
+    await sendMessageFn(lastQuery)
   }
 
   return {

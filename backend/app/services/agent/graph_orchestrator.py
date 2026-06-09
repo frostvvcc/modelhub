@@ -344,8 +344,7 @@ class LangGraphOrchestrator:
 
         try:
             from app.services.rag.grounding import verify_grounding
-            source_texts = [s.get("content", "") for s in sources if s.get("content")]
-            grounding_result = await verify_grounding(answer, source_texts)
+            grounding_result = await verify_grounding(answer, sources)
 
             ratio = grounding_result.get("grounded_ratio", 1.0)
             threshold = settings.grounding_threshold
@@ -442,6 +441,54 @@ class LangGraphOrchestrator:
             return "corrective"
         return "pass"
 
+    # ── Streaming Synthesis ──
+
+    async def _stream_synthesize(self, state: dict):
+        """流式合成：逐 token yield，供 run() 实时推送给前端"""
+        context_parts = []
+        if state.get("retrieval_context"):
+            context_parts.append(state["retrieval_context"])
+        if state.get("analysis_context"):
+            context_parts.append(state["analysis_context"])
+        if state.get("corrective_context"):
+            context_parts.append(f"【补充检索】\n{state['corrective_context']}")
+
+        combined = "\n\n".join(context_parts)
+
+        client = self.llm_client._get_client()
+        messages = [
+            {"role": "system", "content": (
+                "你是一个智能助手。基于以下参考资料回答用户问题，引用时标注[来源N]。\n"
+                "如果资料不足以回答，请如实说明。\n\n"
+                f"参考资料：\n{combined[:4000]}"
+            )},
+        ]
+        if state.get("conversation_messages"):
+            messages.extend(state["conversation_messages"][-6:])
+        messages.append({"role": "user", "content": state["query"]})
+
+        answer = ""
+        try:
+            response = await client.chat.completions.create(
+                model=self.llm_client.model,
+                messages=messages,
+                temperature=self.llm_client.temperature,
+                max_tokens=2048,
+                stream=True,
+            )
+            async for chunk in response:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta and delta.content:
+                    answer += delta.content
+                    yield delta.content
+        except Exception as e:
+            logger.error(f"[LangGraph:synthesize] 流式合成失败: {e}")
+            fallback = "抱歉，生成回答时出现错误。"
+            answer = fallback
+            yield fallback
+
+        state["answer"] = answer
+
     # ── Public API ──
 
     async def run(
@@ -450,9 +497,13 @@ class LangGraphOrchestrator:
         conversation_messages: Optional[List[Dict[str, str]]] = None,
     ):
         """
-        执行 LangGraph 编排，yield AgentEvent 流。
+        执行 LangGraph 编排，分阶段 yield AgentEvent 流。
+
+        Phase 1: classify + retrieve + analyze（非流式，快速完成）
+        Phase 2: synthesize（真正流式，逐 token yield）
+        Phase 3: CRAG verify（验证不通过则 corrective retrieve + 重新流式合成）
         """
-        initial_state: OrchestratorState = {
+        state: dict = {
             "query": query,
             "conversation_messages": conversation_messages or [],
             "active_agents": [],
@@ -470,23 +521,67 @@ class LangGraphOrchestrator:
             "events": [],
         }
 
-        final_state = await self._graph.ainvoke(initial_state)
+        # ── Phase 1: Classify + Retrieve + Analyze ──
+        yield AgentEvent(type="state_change", data={"state": "classifying", "label": "意图分类中..."})
+        classify_result = await self._node_classify(state)
+        state.update(classify_result)
+        for ev in classify_result.get("events", []):
+            yield AgentEvent(type=ev["type"], data=ev["data"])
 
-        # Yield accumulated events
-        for event_data in final_state.get("events", []):
-            yield AgentEvent(type=event_data["type"], data=event_data["data"])
+        agents = state.get("active_agents", ["retrieval"])
 
-        # Yield answer tokens for streaming
-        for token in final_state.get("answer_tokens", []):
+        if "retrieval" in agents:
+            yield AgentEvent(type="state_change", data={"state": "retrieving", "label": "检索知识库..."})
+            retrieve_result = await self._node_retrieve(state)
+            state.update(retrieve_result)
+            for ev in retrieve_result.get("events", []):
+                yield AgentEvent(type=ev["type"], data=ev["data"])
+
+        if "analysis" in agents:
+            yield AgentEvent(type="state_change", data={"state": "analyzing", "label": "查询结构化数据..."})
+            analyze_result = await self._node_analyze(state)
+            state.update(analyze_result)
+            for ev in analyze_result.get("events", []):
+                yield AgentEvent(type=ev["type"], data=ev["data"])
+
+        # 检索完成后先发 sources
+        if state.get("retrieval_sources"):
+            yield AgentEvent(type="sources", data=state["retrieval_sources"])
+
+        # ── Phase 2: Streaming Synthesis ──
+        yield AgentEvent(type="state_change", data={"state": "responding", "label": "生成回答中..."})
+        async for token in self._stream_synthesize(state):
             yield AgentEvent(type="token", data={"content": token})
 
-        # Final done event
+        # ── Phase 3: CRAG Verification Loop ──
+        for _ in range(self.MAX_CRAG_ITERATIONS):
+            yield AgentEvent(type="state_change", data={"state": "verifying", "label": "验证回答可靠性..."})
+            verify_result = await self._node_verify(state)
+            state.update(verify_result)
+            for ev in verify_result.get("events", []):
+                yield AgentEvent(type=ev["type"], data=ev["data"])
+
+            if not state.get("crag_triggered", False):
+                break
+
+            yield AgentEvent(type="state_change", data={"state": "corrective_retrieval", "label": "补充检索中..."})
+            corrective_result = await self._node_corrective_retrieve(state)
+            state.update(corrective_result)
+            for ev in corrective_result.get("events", []):
+                yield AgentEvent(type=ev["type"], data=ev["data"])
+
+            yield AgentEvent(type="state_change", data={"state": "responding", "label": "重新生成回答..."})
+            state["answer"] = ""
+            async for token in self._stream_synthesize(state):
+                yield AgentEvent(type="token", data={"content": token})
+
+        # ── Final Done ──
         yield AgentEvent(type="done", data={
-            "content": final_state.get("answer", ""),
-            "sources": final_state.get("retrieval_sources", []),
-            "agents_used": final_state.get("active_agents", []),
-            "grounded_ratio": final_state.get("grounded_ratio", 0.0),
-            "crag_triggered": final_state.get("crag_triggered", False),
+            "content": state.get("answer", ""),
+            "sources": state.get("retrieval_sources", []),
+            "agents_used": state.get("active_agents", []),
+            "grounded_ratio": state.get("grounded_ratio", 0.0),
+            "crag_triggered": state.get("crag_triggered", False),
         })
 
     def get_graph_mermaid(self) -> str:

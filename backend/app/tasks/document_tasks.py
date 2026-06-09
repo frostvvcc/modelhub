@@ -44,17 +44,18 @@ def process_document_task(
     try:
         self.update_state(state="PROGRESS", meta={"progress": 0, "step": "parsing"})
 
-        from app.utils.optimized_chromadb import get_chromadb_client
+        from app.utils.optimized_chromadb import get_vector_store
         from app.utils.EmbbedingModel import ChatEmbeddings
         from app.services.rag.document_parser import extract_text, clean_web_text, clean_document_text, is_worth_indexing, is_quality_chunk
         from app.services.rag.chunking import split_text_into_chunks, split_parent_child, split_contextual, ChunkStrategy
         from app.config import settings
         import os
 
-        client = get_chromadb_client()
-        if not client:
-            raise RuntimeError("ChromaDB 服务不可用")
-        collection = client.get_collection(f"vector_db_{vector_db_id}")
+        store = get_vector_store()
+        if not store.health_check():
+            raise RuntimeError("向量存储服务不可用")
+        collection_name = f"vector_db_{vector_db_id}"
+        store.get_collection(collection_name)
 
         text_content = extract_text(file_path)
         if not text_content or not text_content.strip():
@@ -118,12 +119,7 @@ def process_document_task(
                     metadata["parent_id"] = str(parent_id)
                 all_metadatas.append(metadata)
 
-            collection.add(
-                embeddings=all_embeddings,
-                documents=all_documents,
-                metadatas=all_metadatas,
-                ids=all_ids,
-            )
+            store.add(collection_name, all_ids, all_embeddings, all_documents, all_metadatas)
 
             self.update_state(state="PROGRESS", meta={
                 "progress": 90, "step": "embedding",
@@ -161,12 +157,7 @@ def process_document_task(
                     metadata["parent_id"] = str(parent_id)
                 all_metadatas.append(metadata)
 
-            collection.add(
-                embeddings=all_embeddings,
-                documents=all_documents,
-                metadatas=all_metadatas,
-                ids=all_ids,
-            )
+            store.add(collection_name, all_ids, all_embeddings, all_documents, all_metadatas)
             chunks = all_documents
 
             self.update_state(state="PROGRESS", meta={
@@ -203,12 +194,7 @@ def process_document_task(
                     metadata["parent_id"] = str(parent_id)
                 all_metadatas.append(metadata)
 
-            collection.add(
-                embeddings=all_embeddings,
-                documents=chunks,
-                metadatas=all_metadatas,
-                ids=all_ids,
-            )
+            store.add(collection_name, all_ids, all_embeddings, chunks, all_metadatas)
 
             self.update_state(state="PROGRESS", meta={
                 "progress": 90, "step": "embedding",

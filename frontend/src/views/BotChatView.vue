@@ -3,7 +3,7 @@ import { nextTick, onMounted, ref, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { Back, Promotion, Close, ChatRound, CopyDocument, Download } from "@element-plus/icons-vue";
-import { botChat, getBot, type BotResponse, type BotChatSource, type BotChatRagInfo, type SourceCitation } from "../api/bot";
+import { getBot, type BotResponse, type BotChatSource, type BotChatRagInfo, type SourceCitation } from "../api/bot";
 import { DownloadFile } from "../api/vectorDb";
 import { streamBotChat, type StreamCallbacks } from "../utils/stream";
 

@@ -139,8 +139,12 @@ class AsyncProviderService:
     ) -> Dict[str, Any]:
         """更新供应商配置"""
         logger.info(f"更新供应商配置: provider_id={provider_id}")
-        
+
         try:
+            VALID_TYPES = ['openai', 'aliyun', 'anthropic', 'local', 'custom']
+            if 'provider_type' in kwargs and kwargs['provider_type'] not in VALID_TYPES:
+                raise ValidationError(f"无效的供应商类型，可选: {', '.join(VALID_TYPES)}")
+
             provider = await AsyncProviderMapper.update_provider(session, provider_id, **kwargs)
             if not provider:
                 raise NotFoundError("供应商配置不存在")

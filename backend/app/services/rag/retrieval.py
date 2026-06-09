@@ -184,16 +184,13 @@ class VectorRetriever:
         Returns:
             RetrievalResult 列表
         """
-        from app.utils.optimized_chromadb import get_chromadb_client
+        from app.utils.optimized_chromadb import get_vector_store
         from app.utils.async_embedding import get_query_embedding_async
 
-        client = get_chromadb_client()
-        if not client:
-            raise RuntimeError("ChromaDB 服务不可用，请检查 ChromaDB 是否已启动（默认端口 8000）")
-
+        store = get_vector_store()
         collection_name = f"vector_db_{vector_db_id}"
         try:
-            collection = await asyncio.to_thread(client.get_collection, name=collection_name)
+            await asyncio.to_thread(store.get_collection, collection_name)
         except Exception as e:
             logger.warning(f"获取集合失败 {collection_name}: {e}")
             raise RuntimeError(f"知识库向量集合不存在或不可用: {collection_name}")
@@ -219,26 +216,18 @@ class VectorRetriever:
             elif len(where_conditions) > 1:
                 where = {"$and": where_conditions}
 
-            # 带约束过滤的检索 + 渐进式放宽策略
-            kwargs: Dict[str, Any] = {
-                'query_embeddings': [query_embedding],
-                'n_results': n_results,
-            }
-            if where:
-                kwargs['where'] = where
-
-            results = await asyncio.to_thread(collection.query, **kwargs)
+            results = await asyncio.to_thread(
+                store.query, collection_name, query_embedding, n_results, where
+            )
 
             doc_count = len(results.get('documents', [[]])[0]) if results.get('documents') else 0
             if where and doc_count < 1:
-                    logger.info(f"过滤后无结果，放宽为无条件检索")
-                    fallback_kwargs = {
-                        'query_embeddings': [query_embedding],
-                        'n_results': n_results,
-                    }
-                    results = await asyncio.to_thread(collection.query, **fallback_kwargs)
+                logger.info(f"过滤后无结果，放宽为无条件检索")
+                results = await asyncio.to_thread(
+                    store.query, collection_name, query_embedding, n_results
+                )
 
-            dist_fn = _detect_distance_fn(collection)
+            dist_fn = (await asyncio.to_thread(store.collection_metadata, collection_name)).get('hnsw:space', 'l2').lower()
 
             output = []
             if results.get('documents') and results['documents'][0]:
@@ -411,20 +400,14 @@ class VectorRetriever:
                 return cached
             del _BM25_CACHE[vector_db_id]
 
-        # 从 ChromaDB 加载所有文本
-        from app.utils.optimized_chromadb import get_chromadb_client
+        from app.utils.optimized_chromadb import get_vector_store
         from rank_bm25 import BM25L
 
-        client = get_chromadb_client()
-        if not client:
-            return None
-
+        store = get_vector_store()
         collection_name = f"vector_db_{vector_db_id}"
         try:
-            collection = await asyncio.to_thread(client.get_collection, name=collection_name)
             data = await asyncio.to_thread(
-                collection.get,
-                include=['documents', 'metadatas']
+                store.get_all, collection_name, ['documents', 'metadatas']
             )
         except Exception as e:
             logger.error(f"BM25 索引构建失败，无法获取集合 {collection_name}: {e}")

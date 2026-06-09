@@ -76,15 +76,22 @@ class AsyncPermissionMapper:
     ) -> List[Role]:
         """获取角色列表"""
         stmt = select(Role)
-        
-        conditions = []
+
         if school_id is not None:
-            conditions.append(Role.school_id == school_id)
-        if include_system:
-            conditions.append(Role.is_system == True)
-        
-        if conditions:
-            stmt = stmt.where(or_(*conditions))
+            if include_system:
+                # school_id 匹配 OR 系统角色
+                stmt = stmt.where(
+                    or_(Role.school_id == school_id, Role.is_system == True)
+                )
+            else:
+                # 仅 school_id 匹配，排除系统角色
+                stmt = stmt.where(
+                    and_(Role.school_id == school_id, Role.is_system == False)
+                )
+        else:
+            if not include_system:
+                # 无 school_id，排除系统角色
+                stmt = stmt.where(Role.is_system == False)
         
         result = await session.execute(stmt)
         return list(result.scalars().all())
@@ -103,10 +110,11 @@ class AsyncPermissionMapper:
         for key, value in kwargs.items():
             if hasattr(role, key) and value is not None:
                 setattr(role, key, value)
-        
+
         await AsyncDB.commit(session)
+        await session.refresh(role)
         return role
-    
+
     @staticmethod
     async def delete_role(session: AsyncSession, role_id: int) -> bool:
         """删除角色"""
