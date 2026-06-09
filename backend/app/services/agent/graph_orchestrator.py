@@ -1,17 +1,23 @@
 """
-CRAG (Corrective RAG) 多 Agent 编排器
+LangGraph CRAG (Corrective RAG) 多 Agent 编排器
 
-执行流程（run() 手动编排各节点，实现合成阶段真正流式输出）：
-  classify → retrieve / analyze → stream_synthesize → verify → [corrective_retrieve → re-synthesize]
+使用 LangGraph StateGraph 驱动的多 Agent 工作流：
+  classify → retrieve / analyze → synthesize(流式) → verify → [corrective_retrieve → re-synthesize]
 
-CRAG 闭环：verify 不通过 → GraphRAG 补充检索 → 重新流式合成
+合成节点通过 get_stream_writer() 实现真正的逐 token 流式输出，
+同时保持 LangGraph 图引擎的状态管理和条件路由能力。
 
-参考: Yan et al., "Corrective Retrieval Augmented Generation", 2024
+参考:
+  - Yan et al., "Corrective Retrieval Augmented Generation", 2024
+  - LangGraph Documentation: https://langchain-ai.github.io/langgraph/
 """
 import asyncio
 import json
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TypedDict, Annotated
+
+from langgraph.graph import StateGraph, END
+from langgraph.config import get_stream_writer
 
 from app.services.agent.engine import AgentEvent
 from app.config import settings
@@ -19,12 +25,40 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
+# ── State Schema ──
+
+def _merge_lists(left: list, right: list) -> list:
+    return left + right
+
+
+class OrchestratorState(TypedDict):
+    query: str
+    conversation_messages: List[Dict[str, str]]
+    active_agents: List[str]
+    intent_reasoning: str
+    retrieval_context: str
+    retrieval_sources: Annotated[List[Dict[str, Any]], _merge_lists]
+    analysis_context: str
+    answer: str
+    grounded_ratio: float
+    grounding_detail: Dict[str, Any]
+    crag_triggered: bool
+    corrective_context: str
+    iteration: int
+    events: Annotated[List[Dict[str, Any]], _merge_lists]
+
+
+# ── Orchestrator ──
+
 class LangGraphOrchestrator:
     """
-    CRAG 多 Agent 编排器。
+    基于 LangGraph StateGraph 的 CRAG 编排器。
 
-    Graph 结构:
-        classify → route → [retrieve, analyze] → synthesize → verify → route_verify → [END / corrective]
+    图结构:
+      classify → route → [retrieve → (analyze?)] → synthesize → verify → [END / corrective → synthesize]
+
+    合成节点使用 get_stream_writer() 逐 token 推送，
+    run() 通过 astream(stream_mode=['updates','custom']) 同时拿到图状态和流式 token。
     """
 
     MAX_CRAG_ITERATIONS = 2
@@ -40,12 +74,66 @@ class LangGraphOrchestrator:
         self.vector_db_ids = vector_db_ids or []
         self.user_id = user_id
         self.session = session
+        self._graph = self._build_graph()
+
+    def _build_graph(self):
+        graph = StateGraph(OrchestratorState)
+
+        graph.add_node("classify", self._node_classify)
+        graph.add_node("retrieve", self._node_retrieve)
+        graph.add_node("analyze", self._node_analyze)
+        graph.add_node("synthesize", self._node_synthesize)
+        graph.add_node("verify", self._node_verify)
+        graph.add_node("corrective_retrieve", self._node_corrective_retrieve)
+
+        graph.set_entry_point("classify")
+
+        graph.add_conditional_edges("classify", self._route_after_classify, {
+            "retrieve_only": "retrieve",
+            "analyze_only": "analyze",
+            "both": "retrieve",
+        })
+        graph.add_conditional_edges("retrieve", self._route_after_retrieve, {
+            "synthesize": "synthesize",
+            "analyze": "analyze",
+        })
+        graph.add_edge("analyze", "synthesize")
+        graph.add_edge("synthesize", "verify")
+        graph.add_conditional_edges("verify", self._route_after_verify, {
+            "pass": END,
+            "corrective": "corrective_retrieve",
+        })
+        graph.add_edge("corrective_retrieve", "synthesize")
+
+        return graph.compile()
+
+    # ── Routing ──
+
+    def _route_after_classify(self, state: OrchestratorState) -> str:
+        agents = state.get("active_agents", ["retrieval"])
+        if "retrieval" in agents and "analysis" in agents:
+            return "both"
+        if "analysis" in agents:
+            return "analyze_only"
+        return "retrieve_only"
+
+    def _route_after_retrieve(self, state: OrchestratorState) -> str:
+        if "analysis" in state.get("active_agents", []):
+            return "analyze"
+        return "synthesize"
+
+    def _route_after_verify(self, state: OrchestratorState) -> str:
+        if state.get("crag_triggered", False):
+            return "corrective"
+        return "pass"
 
     # ── Classify Node ──
 
     async def _node_classify(self, state: OrchestratorState) -> dict:
-        """LLM-based 意图分类"""
+        writer = get_stream_writer()
         query = state["query"]
+
+        writer({"type": "state_change", "state": "classifying", "label": "意图分类中..."})
 
         try:
             client = self.llm_client._get_client()
@@ -57,18 +145,9 @@ class LangGraphOrchestrator:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "needs_retrieval": {
-                                "type": "boolean",
-                                "description": "是否需要从知识库检索信息"
-                            },
-                            "needs_analysis": {
-                                "type": "boolean",
-                                "description": "是否需要查询结构化数据（统计、组织架构等）"
-                            },
-                            "reasoning": {
-                                "type": "string",
-                                "description": "分类理由"
-                            },
+                            "needs_retrieval": {"type": "boolean", "description": "是否需要从知识库检索信息"},
+                            "needs_analysis": {"type": "boolean", "description": "是否需要查询结构化数据"},
+                            "reasoning": {"type": "string", "description": "分类理由"},
                         },
                         "required": ["needs_retrieval", "needs_analysis", "reasoning"]
                     }
@@ -80,8 +159,7 @@ class LangGraphOrchestrator:
                 messages=[{"role": "user", "content": f"分析以下查询的意图：\n\n{query[:200]}"}],
                 tools=tools,
                 tool_choice={"type": "function", "function": {"name": "classify_query_intent"}},
-                max_tokens=150,
-                temperature=0.0,
+                max_tokens=150, temperature=0.0,
             )
 
             tc = response.choices[0].message.tool_calls
@@ -96,24 +174,20 @@ class LangGraphOrchestrator:
                     agents.append("retrieval")
                 reasoning = result.get("reasoning", "")
                 logger.info(f"[LangGraph:classify] agents={agents}, reason={reasoning}")
-                return {
-                    "active_agents": agents,
-                    "intent_reasoning": reasoning,
-                    "events": [{"type": "orchestrator_plan", "data": {"agents": agents, "reasoning": reasoning}}],
-                }
+                writer({"type": "orchestrator_plan", "agents": agents, "reasoning": reasoning})
+                return {"active_agents": agents, "intent_reasoning": reasoning, "events": []}
         except Exception as e:
             logger.warning(f"LLM 意图分类失败: {e}")
 
-        return {
-            "active_agents": ["retrieval"],
-            "intent_reasoning": "LLM 分类失败，默认检索",
-            "events": [{"type": "orchestrator_plan", "data": {"agents": ["retrieval"], "reasoning": "fallback"}}],
-        }
+        writer({"type": "orchestrator_plan", "agents": ["retrieval"], "reasoning": "fallback"})
+        return {"active_agents": ["retrieval"], "intent_reasoning": "fallback", "events": []}
 
     # ── Retrieve Node ──
 
     async def _node_retrieve(self, state: OrchestratorState) -> dict:
-        """检索子 Agent：RAG 知识检索"""
+        writer = get_stream_writer()
+        writer({"type": "state_change", "state": "retrieving", "label": "检索知识库..."})
+
         from app.services.rag.retrieval import VectorRetriever
 
         query = state["query"]
@@ -131,26 +205,24 @@ class LangGraphOrchestrator:
         all_results.sort(key=lambda r: r.similarity, reverse=True)
         top_results = all_results[:5]
 
-        context = "\n\n".join(
-            f"[来源{i+1}] {r.content[:500]}" for i, r in enumerate(top_results)
-        )
+        context = "\n\n".join(f"[来源{i+1}] {r.content[:500]}" for i, r in enumerate(top_results))
         sources = [
             {"content": r.content, "source": r.source, "similarity": r.similarity, "chunk_id": r.chunk_id}
             for r in top_results
         ]
 
-        return {
-            "retrieval_context": context,
-            "retrieval_sources": sources,
-            "events": [{"type": "sub_agent_done", "data": {"agent": "retrieval", "source_count": len(sources)}}],
-        }
+        writer({"type": "sub_agent_done", "agent": "retrieval", "source_count": len(sources)})
+        writer({"type": "sources", "data": sources})
+
+        return {"retrieval_context": context, "retrieval_sources": sources, "events": []}
 
     # ── Analyze Node ──
 
     async def _node_analyze(self, state: OrchestratorState) -> dict:
-        """分析子 Agent：结构化数据查询"""
-        from app.services.agent.tools import DatabaseQueryTool
+        writer = get_stream_writer()
+        writer({"type": "state_change", "state": "analyzing", "label": "查询结构化数据..."})
 
+        from app.services.agent.tools import DatabaseQueryTool
         query = state["query"]
         try:
             from app.database_async import AsyncSessionLocal
@@ -162,116 +234,15 @@ class LangGraphOrchestrator:
             content = f"数据查询失败: {e}"
             logger.warning(f"[LangGraph:analyze] 失败: {e}")
 
-        return {
-            "analysis_context": content,
-            "events": [{"type": "sub_agent_done", "data": {"agent": "analysis"}}],
-        }
+        writer({"type": "sub_agent_done", "agent": "analysis"})
+        return {"analysis_context": content, "events": []}
 
-    # _node_synthesize 已删除 — 合成阶段由 _stream_synthesize 实现真正流式输出
+    # ── Synthesize Node (流式 via get_stream_writer) ──
 
-    # ── Verify Node (CRAG Core) ──
+    async def _node_synthesize(self, state: OrchestratorState) -> dict:
+        writer = get_stream_writer()
+        writer({"type": "state_change", "state": "responding", "label": "生成回答中..."})
 
-    async def _node_verify(self, state: OrchestratorState) -> dict:
-        """
-        CRAG 验证节点：Claim-Level Grounding 验证。
-        如果 grounded_ratio 低于阈值，标记需要 Corrective Retrieval。
-        """
-        answer = state.get("answer", "")
-        sources = state.get("retrieval_sources", [])
-
-        if not answer or not sources:
-            return {
-                "grounded_ratio": 1.0,
-                "grounding_detail": {},
-                "crag_triggered": False,
-                "events": [{"type": "verification", "data": {"grounded_ratio": 1.0, "skipped": True}}],
-            }
-
-        try:
-            from app.services.rag.grounding import verify_grounding
-            grounding_result = await verify_grounding(answer, sources)
-
-            ratio = grounding_result.get("grounded_ratio", 1.0)
-            threshold = settings.grounding_threshold
-            needs_correction = ratio < threshold and state.get("iteration", 0) < self.MAX_CRAG_ITERATIONS
-
-            if needs_correction:
-                logger.info(
-                    f"[CRAG] grounded_ratio={ratio:.2f} < {threshold}, "
-                    f"触发 Corrective Retrieval (iteration={state.get('iteration', 0)})"
-                )
-
-            return {
-                "grounded_ratio": ratio,
-                "grounding_detail": grounding_result,
-                "crag_triggered": needs_correction,
-                "iteration": state.get("iteration", 0) + 1,
-                "events": [{"type": "verification", "data": {
-                    "grounded_ratio": ratio,
-                    "total_claims": grounding_result.get("total_claims", 0),
-                    "supported_count": grounding_result.get("supported_count", 0),
-                    "crag_triggered": needs_correction,
-                }}],
-            }
-        except Exception as e:
-            logger.warning(f"[LangGraph:verify] Grounding 失败: {e}")
-            return {
-                "grounded_ratio": 0.0,
-                "grounding_detail": {"error": str(e)},
-                "crag_triggered": False,
-                "events": [{"type": "verification", "data": {"grounding_skipped": True, "reason": str(e)}}],
-            }
-
-    # ── Corrective Retrieve Node ──
-
-    async def _node_corrective_retrieve(self, state: OrchestratorState) -> dict:
-        """
-        CRAG 补充检索：对验证不通过的 claim 进行定向 GraphRAG 检索。
-        """
-        grounding_detail = state.get("grounding_detail", {})
-        unsupported = grounding_detail.get("unsupported_claims", [])
-
-        if not unsupported:
-            return {"corrective_context": "", "events": []}
-
-        try:
-            from app.services.rag.graph_rag import (
-                NEO4J_ENABLED, extract_query_entities, query_subgraph, format_triples_for_context,
-            )
-            if not NEO4J_ENABLED:
-                return {"corrective_context": "", "events": []}
-
-            claim_texts = [c.get("text", "") for c in unsupported[:3]]
-            combined = " ".join(claim_texts)
-            entities = await extract_query_entities(combined)
-
-            if not entities:
-                return {"corrective_context": "", "events": []}
-
-            all_triples = []
-            for vdb_id in self.vector_db_ids[:2]:
-                triples = await asyncio.to_thread(query_subgraph, entities, vdb_id)
-                all_triples.extend(triples)
-
-            context = format_triples_for_context(all_triples)
-
-            return {
-                "corrective_context": context,
-                "events": [{"type": "state_change", "data": {
-                    "state": "corrective_retrieval",
-                    "label": f"CRAG 补充检索: {len(all_triples)} 条三元组",
-                }}],
-            }
-        except Exception as e:
-            logger.warning(f"[LangGraph:corrective] 补充检索失败: {e}")
-            return {"corrective_context": "", "events": []}
-
-    # ── Routing Functions ──
-
-    # ── Streaming Synthesis ──
-
-    async def _stream_synthesize(self, state: dict):
-        """流式合成：逐 token yield，供 run() 实时推送给前端"""
         context_parts = []
         if state.get("retrieval_context"):
             context_parts.append(state["retrieval_context"])
@@ -307,14 +278,94 @@ class LangGraphOrchestrator:
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if delta and delta.content:
                     answer += delta.content
-                    yield delta.content
+                    writer({"type": "token", "content": delta.content})
         except Exception as e:
             logger.error(f"[LangGraph:synthesize] 流式合成失败: {e}")
-            fallback = "抱歉，生成回答时出现错误。"
-            answer = fallback
-            yield fallback
+            answer = "抱歉，生成回答时出现错误。"
+            writer({"type": "token", "content": answer})
 
-        state["answer"] = answer
+        return {"answer": answer, "events": []}
+
+    # ── Verify Node (CRAG Core) ──
+
+    async def _node_verify(self, state: OrchestratorState) -> dict:
+        writer = get_stream_writer()
+        writer({"type": "state_change", "state": "verifying", "label": "验证回答可靠性..."})
+
+        answer = state.get("answer", "")
+        sources = state.get("retrieval_sources", [])
+
+        if not answer or not sources:
+            writer({"type": "verification", "grounded_ratio": 1.0, "skipped": True})
+            return {"grounded_ratio": 1.0, "grounding_detail": {}, "crag_triggered": False, "events": []}
+
+        try:
+            from app.services.rag.grounding import verify_grounding
+            grounding_result = await verify_grounding(answer, sources)
+
+            ratio = grounding_result.get("grounded_ratio", 1.0)
+            threshold = settings.grounding_threshold
+            needs_correction = ratio < threshold and state.get("iteration", 0) < self.MAX_CRAG_ITERATIONS
+
+            if needs_correction:
+                logger.info(f"[CRAG] grounded_ratio={ratio:.2f} < {threshold}, 触发 Corrective Retrieval")
+
+            writer({"type": "verification",
+                     "grounded_ratio": ratio,
+                     "total_claims": grounding_result.get("total_claims", 0),
+                     "supported_count": grounding_result.get("supported_count", 0),
+                     "crag_triggered": needs_correction})
+
+            return {
+                "grounded_ratio": ratio,
+                "grounding_detail": grounding_result,
+                "crag_triggered": needs_correction,
+                "iteration": state.get("iteration", 0) + 1,
+                "events": [],
+            }
+        except Exception as e:
+            logger.warning(f"[LangGraph:verify] Grounding 失败: {e}")
+            writer({"type": "verification", "grounding_skipped": True, "reason": str(e)})
+            return {"grounded_ratio": 0.0, "grounding_detail": {"error": str(e)}, "crag_triggered": False, "events": []}
+
+    # ── Corrective Retrieve Node ──
+
+    async def _node_corrective_retrieve(self, state: OrchestratorState) -> dict:
+        writer = get_stream_writer()
+        writer({"type": "state_change", "state": "corrective_retrieval", "label": "CRAG 补充检索中..."})
+
+        grounding_detail = state.get("grounding_detail", {})
+        unsupported = grounding_detail.get("unsupported_claims", [])
+
+        if not unsupported:
+            return {"corrective_context": "", "events": []}
+
+        try:
+            from app.services.rag.graph_rag import (
+                NEO4J_ENABLED, extract_query_entities, query_subgraph, format_triples_for_context,
+            )
+            if not NEO4J_ENABLED:
+                return {"corrective_context": "", "events": []}
+
+            claim_texts = [c.get("text", "") for c in unsupported[:3]]
+            combined = " ".join(claim_texts)
+            entities = await extract_query_entities(combined)
+
+            if not entities:
+                return {"corrective_context": "", "events": []}
+
+            all_triples = []
+            for vdb_id in self.vector_db_ids[:2]:
+                triples = await asyncio.to_thread(query_subgraph, entities, vdb_id)
+                all_triples.extend(triples)
+
+            context = format_triples_for_context(all_triples)
+            writer({"type": "corrective_done", "triple_count": len(all_triples)})
+
+            return {"corrective_context": context, "events": []}
+        except Exception as e:
+            logger.warning(f"[LangGraph:corrective] 补充检索失败: {e}")
+            return {"corrective_context": "", "events": []}
 
     # ── Public API ──
 
@@ -324,13 +375,13 @@ class LangGraphOrchestrator:
         conversation_messages: Optional[List[Dict[str, str]]] = None,
     ):
         """
-        执行 LangGraph 编排，分阶段 yield AgentEvent 流。
+        执行 LangGraph 图编排，yield AgentEvent 流。
 
-        Phase 1: classify + retrieve + analyze（非流式，快速完成）
-        Phase 2: synthesize（真正流式，逐 token yield）
-        Phase 3: CRAG verify（验证不通过则 corrective retrieve + 重新流式合成）
+        使用 astream(stream_mode=['updates','custom']) 同时接收：
+        - 'custom' 事件：节点通过 get_stream_writer() 发射的 token 和状态变更
+        - 'updates' 事件：图引擎的节点完成状态更新
         """
-        state: dict = {
+        initial_state: OrchestratorState = {
             "query": query,
             "conversation_messages": conversation_messages or [],
             "active_agents": [],
@@ -339,7 +390,6 @@ class LangGraphOrchestrator:
             "retrieval_sources": [],
             "analysis_context": "",
             "answer": "",
-            "answer_tokens": [],
             "grounded_ratio": 0.0,
             "grounding_detail": {},
             "crag_triggered": False,
@@ -348,66 +398,62 @@ class LangGraphOrchestrator:
             "events": [],
         }
 
-        # ── Phase 1: Classify + Retrieve + Analyze ──
-        yield AgentEvent(type="state_change", data={"state": "classifying", "label": "意图分类中..."})
-        classify_result = await self._node_classify(state)
-        state.update(classify_result)
-        for ev in classify_result.get("events", []):
-            yield AgentEvent(type=ev["type"], data=ev["data"])
+        final_answer = ""
+        final_sources = []
+        final_agents = []
+        final_grounded_ratio = 0.0
+        final_crag_triggered = False
 
-        agents = state.get("active_agents", ["retrieval"])
+        async for mode, chunk in self._graph.astream(
+            initial_state, stream_mode=["updates", "custom"]
+        ):
+            if mode == "custom":
+                evt_type = chunk.get("type", "")
+                if evt_type == "token":
+                    yield AgentEvent(type="token", data={"content": chunk["content"]})
+                elif evt_type == "state_change":
+                    yield AgentEvent(type="state_change", data={
+                        "state": chunk.get("state", ""),
+                        "label": chunk.get("label", ""),
+                    })
+                elif evt_type == "orchestrator_plan":
+                    yield AgentEvent(type="orchestrator_plan", data={
+                        "agents": chunk.get("agents", []),
+                        "reasoning": chunk.get("reasoning", ""),
+                    })
+                elif evt_type == "sub_agent_done":
+                    yield AgentEvent(type="sub_agent_done", data={
+                        "agent": chunk.get("agent", ""),
+                        "source_count": chunk.get("source_count", 0),
+                    })
+                elif evt_type == "sources":
+                    yield AgentEvent(type="sources", data=chunk.get("data", []))
+                elif evt_type == "verification":
+                    yield AgentEvent(type="verification", data=chunk)
+                elif evt_type == "corrective_done":
+                    yield AgentEvent(type="state_change", data={
+                        "state": "corrective_retrieval",
+                        "label": f"CRAG 补充检索: {chunk.get('triple_count', 0)} 条三元组",
+                    })
 
-        if "retrieval" in agents:
-            yield AgentEvent(type="state_change", data={"state": "retrieving", "label": "检索知识库..."})
-            retrieve_result = await self._node_retrieve(state)
-            state.update(retrieve_result)
-            for ev in retrieve_result.get("events", []):
-                yield AgentEvent(type=ev["type"], data=ev["data"])
+            elif mode == "updates":
+                for node_name, node_output in chunk.items():
+                    if isinstance(node_output, dict):
+                        if node_output.get("answer"):
+                            final_answer = node_output["answer"]
+                        if node_output.get("retrieval_sources"):
+                            final_sources = node_output["retrieval_sources"]
+                        if node_output.get("active_agents"):
+                            final_agents = node_output["active_agents"]
+                        if "grounded_ratio" in node_output:
+                            final_grounded_ratio = node_output["grounded_ratio"]
+                        if "crag_triggered" in node_output:
+                            final_crag_triggered = node_output["crag_triggered"]
 
-        if "analysis" in agents:
-            yield AgentEvent(type="state_change", data={"state": "analyzing", "label": "查询结构化数据..."})
-            analyze_result = await self._node_analyze(state)
-            state.update(analyze_result)
-            for ev in analyze_result.get("events", []):
-                yield AgentEvent(type=ev["type"], data=ev["data"])
-
-        # 检索完成后先发 sources
-        if state.get("retrieval_sources"):
-            yield AgentEvent(type="sources", data=state["retrieval_sources"])
-
-        # ── Phase 2: Streaming Synthesis ──
-        yield AgentEvent(type="state_change", data={"state": "responding", "label": "生成回答中..."})
-        async for token in self._stream_synthesize(state):
-            yield AgentEvent(type="token", data={"content": token})
-
-        # ── Phase 3: CRAG Verification Loop ──
-        for _ in range(self.MAX_CRAG_ITERATIONS):
-            yield AgentEvent(type="state_change", data={"state": "verifying", "label": "验证回答可靠性..."})
-            verify_result = await self._node_verify(state)
-            state.update(verify_result)
-            for ev in verify_result.get("events", []):
-                yield AgentEvent(type=ev["type"], data=ev["data"])
-
-            if not state.get("crag_triggered", False):
-                break
-
-            yield AgentEvent(type="state_change", data={"state": "corrective_retrieval", "label": "补充检索中..."})
-            corrective_result = await self._node_corrective_retrieve(state)
-            state.update(corrective_result)
-            for ev in corrective_result.get("events", []):
-                yield AgentEvent(type=ev["type"], data=ev["data"])
-
-            yield AgentEvent(type="state_change", data={"state": "responding", "label": "重新生成回答..."})
-            state["answer"] = ""
-            async for token in self._stream_synthesize(state):
-                yield AgentEvent(type="token", data={"content": token})
-
-        # ── Final Done ──
         yield AgentEvent(type="done", data={
-            "content": state.get("answer", ""),
-            "sources": state.get("retrieval_sources", []),
-            "agents_used": state.get("active_agents", []),
-            "grounded_ratio": state.get("grounded_ratio", 0.0),
-            "crag_triggered": state.get("crag_triggered", False),
+            "content": final_answer,
+            "sources": final_sources,
+            "agents_used": final_agents,
+            "grounded_ratio": final_grounded_ratio,
+            "crag_triggered": final_crag_triggered,
         })
-
