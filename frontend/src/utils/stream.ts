@@ -42,6 +42,11 @@ export interface StreamCallbacks {
   onAttachmentContents?: (contents: { filename: string; content: string; truncated: boolean; total_chars: number }[]) => void
   onTrace?: (trace: TraceInfo) => void
   onTokenUsage?: (usage: { total_tokens: number; prompt_tokens: number; completion_tokens: number }) => void
+  onGroundingUpdate?: (data: { grounded_ratio: number; grounded_level: string; total_claims: number; supported_count: number }) => void
+  onVerification?: (data: { grounded_ratio: number; total_claims?: number; supported_count?: number; crag_triggered?: boolean }) => void
+  onOrchestratorPlan?: (data: { agents: string[]; reasoning: string }) => void
+  onSubAgentDone?: (data: { agent: string; source_count?: number }) => void
+  onWarning?: (message: string) => void
   onError?: (message: string) => void
   onDone?: (data: DonePayload) => void
 }
@@ -206,6 +211,21 @@ function dispatchEvent(event: SSEEvent, callbacks: StreamCallbacks): void {
       break
     case 'token_usage':
       callbacks.onTokenUsage?.(d as unknown as { total_tokens: number; prompt_tokens: number; completion_tokens: number })
+      break
+    case 'grounding_update':
+      callbacks.onGroundingUpdate?.(d as any)
+      break
+    case 'verification':
+      callbacks.onVerification?.(d as any)
+      break
+    case 'orchestrator_plan':
+      callbacks.onOrchestratorPlan?.(d as any)
+      break
+    case 'sub_agent_done':
+      callbacks.onSubAgentDone?.(d as any)
+      break
+    case 'warning':
+      callbacks.onWarning?.(String(d.message ?? ''))
       break
     case 'done':
       callbacks.onDone?.(d as unknown as DonePayload)

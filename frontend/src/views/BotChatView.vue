@@ -244,6 +244,13 @@ const sendMessage = async () => {
     onTrace(trace) {
       messages.value[msgIndex].trace = trace;
     },
+    onGroundingUpdate(data) {
+      messages.value[msgIndex].grounded_ratio = data.grounded_ratio;
+      messages.value[msgIndex].grounded_level = data.grounded_level;
+    },
+    onVerification(data) {
+      messages.value[msgIndex].grounded_ratio = data.grounded_ratio;
+    },
     onDone() {
       messages.value[msgIndex].isStreaming = false;
       messages.value[msgIndex].agentState = 'done';

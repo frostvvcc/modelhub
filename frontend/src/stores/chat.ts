@@ -199,6 +199,39 @@ export const useChatStore = defineStore('chat', () => {
       }
       triggerRender()
     },
+    onGroundingUpdate(data) {
+      messages.value[msgIndex].grounded_ratio = data.grounded_ratio
+      messages.value[msgIndex].grounded_level = data.grounded_level
+      triggerRender()
+    },
+    onVerification(data) {
+      messages.value[msgIndex].grounded_ratio = data.grounded_ratio
+      if (data.crag_triggered) {
+        messages.value[msgIndex].agentStateLabel = 'CRAG 纠错检索中...'
+      }
+      triggerRender()
+    },
+    onOrchestratorPlan(data) {
+      if (!messages.value[msgIndex].retrievalProcess) messages.value[msgIndex].retrievalProcess = []
+      messages.value[msgIndex].retrievalProcess!.push({
+        step: 'orchestrator_plan',
+        agents: data.agents,
+        reasoning: data.reasoning,
+      } as any)
+      triggerRender()
+    },
+    onSubAgentDone(data) {
+      if (!messages.value[msgIndex].retrievalProcess) messages.value[msgIndex].retrievalProcess = []
+      messages.value[msgIndex].retrievalProcess!.push({
+        step: 'sub_agent_done',
+        agent: data.agent,
+        source_count: data.source_count,
+      } as any)
+      triggerRender()
+    },
+    onWarning(message) {
+      console.warn('[ModelHub Warning]', message)
+    },
     onDone() {
       messages.value[msgIndex].isStreaming = false
       messages.value[msgIndex].agentState = 'done'
