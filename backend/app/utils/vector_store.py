@@ -304,7 +304,7 @@ class MilvusStore(VectorStore):
         self._ensure_collection(collection_name)
         results = self._client.query(
             collection_name=collection_name, filter="id != ''",
-            output_fields=["id", "document", "metadata_json"], limit=100000,
+            output_fields=["id", "document", "metadata_json"], limit=16384,
         )
         ids = [r["id"] for r in results]
         documents = [r["document"] for r in results]
