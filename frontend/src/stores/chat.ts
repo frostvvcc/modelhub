@@ -166,7 +166,7 @@ export const useChatStore = defineStore('chat', () => {
         conversationId.value = String(info.conversation_id)
         conversationInfo.value.id = Number(info.conversation_id)
         if (info.conversation_name) conversationInfo.value.name = info.conversation_name
-        if (isBotMode.value) botConversationId.value = conversationId.value
+        botConversationId.value = conversationId.value
         routerReplace?.({
           conversation_id: conversationId.value,
           model_config_id: modelConfigId.value,
