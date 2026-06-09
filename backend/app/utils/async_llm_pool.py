@@ -1,18 +1,23 @@
 """
 异步 LLM 客户端连接池
 
-Semaphore 控制全局 LLM 并发上限，防止打爆 API rate limit。
-支持模型自动降级：主模型超时/失败时自动切换到默认模型。
+- Semaphore 控制全局 LLM 并发上限，防止打爆 API rate limit
+- Circuit Breaker 熔断器：Provider 连续失败时快速拒绝
+- Bulkhead 舱壁隔离：各 Provider 独立并发配额
+- 模型自动降级：主模型不可用时切换到系统默认模型
 """
 import os
 from typing import Optional, Dict, Any
 import asyncio
 import logging
+from collections import OrderedDict
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.utils.circuit_breaker import get_circuit_breaker, CircuitOpenError
 
 logger = logging.getLogger(__name__)
 
 LLM_MAX_CONCURRENCY = int(os.getenv("LLM_MAX_CONCURRENCY", "10"))
+LLM_CLIENT_CACHE_MAX = int(os.getenv("LLM_CLIENT_CACHE_MAX", "50"))
 _llm_semaphore = asyncio.Semaphore(LLM_MAX_CONCURRENCY)
 
 
@@ -47,23 +52,41 @@ async def _get_default_model_config_id(session: AsyncSession) -> Optional[int]:
 
 
 class AsyncLLMPool:
-    """异步 LLM 客户端连接池（带模型自动降级）"""
-    _clients: Dict[int, Any] = {}
+    """异步 LLM 客户端连接池（LRU 上限 + Circuit Breaker + 模型自动降级）"""
+    _clients: OrderedDict = OrderedDict()
     _lock = asyncio.Lock()
 
     @classmethod
     async def get_client(cls, model_config_id: int, session: AsyncSession):
-        if model_config_id not in cls._clients:
-            async with cls._lock:
-                if model_config_id not in cls._clients:
-                    try:
-                        from app.utils.async_llm import get_chatllm_async
-                        cls._clients[model_config_id] = await get_chatllm_async(model_config_id, session)
-                        logger.info(f"创建异步LLM客户端: model_config_id={model_config_id}")
-                    except Exception as e:
-                        logger.error(f"创建异步LLM客户端失败: {e}")
-                        raise
-        return cls._clients[model_config_id]
+        if model_config_id in cls._clients:
+            cls._clients.move_to_end(model_config_id)
+            return cls._clients[model_config_id]
+
+        async with cls._lock:
+            if model_config_id in cls._clients:
+                cls._clients.move_to_end(model_config_id)
+                return cls._clients[model_config_id]
+
+            try:
+                from app.utils.async_llm import get_chatllm_async
+                client = await get_chatllm_async(model_config_id, session)
+
+                # LRU 淘汰：超过上限时移除最久未用的客户端
+                while len(cls._clients) >= LLM_CLIENT_CACHE_MAX:
+                    evicted_id, evicted_client = cls._clients.popitem(last=False)
+                    if hasattr(evicted_client, '_client') and evicted_client._client:
+                        try:
+                            await evicted_client._client.close()
+                        except Exception:
+                            pass
+                    logger.info(f"LLM 客户端缓存淘汰: config_id={evicted_id}")
+
+                cls._clients[model_config_id] = client
+                logger.info(f"创建异步 LLM 客户端: config_id={model_config_id}, cache_size={len(cls._clients)}")
+                return client
+            except Exception as e:
+                logger.error(f"创建异步 LLM 客户端失败: {e}")
+                raise
 
     @classmethod
     async def get_client_with_fallback(
@@ -73,12 +96,18 @@ class AsyncLLMPool:
     ):
         """
         获取 LLM 客户端，主模型不可用时自动降级到系统默认模型。
+        集成 Circuit Breaker：Provider 连续失败时快速拒绝。
         返回 (client, actually_used_config_id)。
         """
         try:
+            # Circuit Breaker 检查（基于 model_config_id）
+            breaker = get_circuit_breaker(f"llm_config_{model_config_id}")
+            if breaker.state.value == "open":
+                raise CircuitOpenError(f"llm_config_{model_config_id}", breaker.recovery_timeout)
+
             client = await cls.get_client(model_config_id, session)
             return client, model_config_id
-        except Exception as primary_err:
+        except (CircuitOpenError, Exception) as primary_err:
             logger.warning(f"主模型 config_id={model_config_id} 不可用: {primary_err}，尝试降级")
             fallback_id = await _get_default_model_config_id(session)
             if fallback_id and fallback_id != model_config_id:
