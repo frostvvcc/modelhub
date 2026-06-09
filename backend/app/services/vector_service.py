@@ -724,6 +724,8 @@ class AsyncVectorService:
             except Exception as e:
                 logger.warning(f"BM25 缓存失效失败: vector_db_id={vector_db_id}, 错误: {e}")
 
+            AsyncVectorService.invalidate_kb_embedding_cache(vector_db_id)
+
             try:
                 from app.services.rag.es_retrieval import delete_index as es_delete_index
                 await es_delete_index(vector_db_id)
@@ -1928,18 +1930,26 @@ class AsyncVectorService:
 
     # ---- Knowledge Router: Query-Aware 知识库路由 ----
 
-    _kb_embedding_cache: Dict[int, List[float]] = {}
+    _kb_embedding_cache: Dict[int, tuple] = {}
+    _KB_CACHE_TTL = 600
 
     @staticmethod
     async def _get_kb_embedding(vector_db: "VectorDb") -> List[float]:
-        """获取知识库描述的 Embedding（带内存缓存）"""
-        if vector_db.id in AsyncVectorService._kb_embedding_cache:
-            return AsyncVectorService._kb_embedding_cache[vector_db.id]
+        """获取知识库描述的 Embedding（带内存缓存 + TTL）"""
+        import time as _time
+        cached = AsyncVectorService._kb_embedding_cache.get(vector_db.id)
+        if cached and _time.monotonic() - cached[1] < AsyncVectorService._KB_CACHE_TTL:
+            return cached[0]
         from app.utils.async_embedding import get_query_embedding_async
         text = f"{vector_db.name} {vector_db.describe or ''}"
         emb = await get_query_embedding_async(text)
-        AsyncVectorService._kb_embedding_cache[vector_db.id] = emb
+        AsyncVectorService._kb_embedding_cache[vector_db.id] = (emb, _time.monotonic())
         return emb
+
+    @staticmethod
+    def invalidate_kb_embedding_cache(vector_db_id: int) -> None:
+        """知识库改名/删除时清除路由 embedding 缓存"""
+        AsyncVectorService._kb_embedding_cache.pop(vector_db_id, None)
 
     @staticmethod
     def _cosine_similarity(a: List[float], b: List[float]) -> float:
@@ -1969,11 +1979,13 @@ class AsyncVectorService:
             from app.utils.async_embedding import get_query_embedding_async
             query_emb = await get_query_embedding_async(query)
 
-            scored = []
-            for vdb, layer in competitive:
-                kb_emb = await AsyncVectorService._get_kb_embedding(vdb)
-                sim = AsyncVectorService._cosine_similarity(query_emb, kb_emb)
-                scored.append((sim, vdb, layer))
+            kb_embeddings = await asyncio.gather(*[
+                AsyncVectorService._get_kb_embedding(vdb) for vdb, _ in competitive
+            ])
+            scored = [
+                (AsyncVectorService._cosine_similarity(query_emb, emb), vdb, layer)
+                for emb, (vdb, layer) in zip(kb_embeddings, competitive)
+            ]
 
             scored.sort(key=lambda x: x[0], reverse=True)
             selected = pinned + [(vdb, layer) for _, vdb, layer in scored[:remaining_slots]]

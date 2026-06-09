@@ -293,7 +293,7 @@ class VectorRetriever:
         Returns:
             RetrievalResult 列表（按 RRF 融合分数降序）
         """
-        # 并发执行向量检索 + BM25 检索
+        # 并发执行向量检索 + BM25 检索（任一失败不影响另一路）
         vector_task = VectorRetriever.query(
             vector_db_id, query_text, n_results * 2, folder_path, parent_id,
             metadata_filter=metadata_filter,
@@ -303,8 +303,15 @@ class VectorRetriever:
             metadata_filter=metadata_filter,
         )
         _t0 = time.perf_counter()
-        vector_results, bm25_results = await asyncio.gather(vector_task, bm25_task)
+        results = await asyncio.gather(vector_task, bm25_task, return_exceptions=True)
         _bm25_ms = (time.perf_counter() - _t0) * 1000
+
+        vector_results = results[0] if not isinstance(results[0], Exception) else []
+        bm25_results = results[1] if not isinstance(results[1], Exception) else []
+        if isinstance(results[0], Exception):
+            logger.warning(f"向量检索失败，降级为纯 BM25: {results[0]}")
+        if isinstance(results[1], Exception):
+            logger.warning(f"BM25 检索失败，降级为纯向量: {results[1]}")
 
         logger.info(
             f"🔍 [混合检索] vector_db_id={vector_db_id}: "

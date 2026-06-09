@@ -1,10 +1,8 @@
 """
 对话路由
 """
-from fastapi import APIRouter, Depends, status, Form, UploadFile, File
-from fastapi.responses import StreamingResponse
-from typing import Optional, List
-import json
+from fastapi import APIRouter, Depends, status, Form
+from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database_async import get_async_db
@@ -12,7 +10,6 @@ from app.utils.auth import get_current_user
 from app.schemas.response import SuccessResponse
 from app.models.user import User
 from app.services.chat_service import AsyncChatService
-from app.services.stream_chat_service import StreamChatService
 from app.utils.logger_config import get_logger
 from app.utils.error_handler import ValidationError
 
@@ -87,60 +84,6 @@ async def set_chat_history(
     # 异常由中间件统一处理
     res = await AsyncChatService.set_chat_history(db, conversation_id, chat_history, current_user.id)
     return SuccessResponse(message="修改chat_history成功！", data={"res": res})
-
-
-@router.post(
-    "/stream",
-    summary="流式对话（SSE）"
-)
-async def chat_stream(
-    conversation_id: Optional[int] = Form(None),
-    model_config_id: Optional[int] = Form(None),
-    message: str = Form(""),
-    use_agent: bool = Form(True),
-    files: Optional[List[UploadFile]] = File(None),
-    organization_id: Optional[int] = Form(None),
-    vector_db_ids: Optional[str] = Form(None),
-    quoted_content: Optional[str] = Form(None),
-    quoted_role: Optional[str] = Form(None),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_db)
-):
-    """流式对话，通过 SSE 推送 token 和 Agent 事件"""
-    if not message and not (files and any(f.filename for f in files)):
-        raise ValidationError("用户消息和附件不能同时为空")
-    if not message:
-        message = "请总结并回答我上传的附件内容。"
-
-    parsed_vector_db_ids: Optional[List[int]] = None
-    if vector_db_ids:
-        try:
-            parsed_vector_db_ids = json.loads(vector_db_ids)
-            if not isinstance(parsed_vector_db_ids, list):
-                parsed_vector_db_ids = None
-        except (json.JSONDecodeError, TypeError):
-            parsed_vector_db_ids = None
-
-    return StreamingResponse(
-        StreamChatService.chat_stream(
-            session=db,
-            user_id=current_user.id,
-            conversation_id=conversation_id,
-            model_config_id=model_config_id,
-            message=message,
-            use_agent=use_agent,
-            files=files,
-            vector_db_ids=parsed_vector_db_ids,
-            quoted_content=quoted_content,
-            quoted_role=quoted_role,
-        ),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
 
 
 @router.post(

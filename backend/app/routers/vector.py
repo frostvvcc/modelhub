@@ -144,6 +144,9 @@ async def update_vector_db(
     if not vector_db:
         raise NotFoundError("未找到该向量数据库")
 
+    from app.services.vector_service import AsyncVectorService
+    AsyncVectorService.invalidate_kb_embedding_cache(vector_db_id)
+
     return SuccessResponse(message="更新成功", data=vector_db.to_dict())
 
 
