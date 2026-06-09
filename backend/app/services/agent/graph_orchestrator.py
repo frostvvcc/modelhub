@@ -191,7 +191,7 @@ class LangGraphOrchestrator:
 
         from app.utils.async_embedding import get_query_embedding_async
         from app.database_async import AsyncSessionLocal
-        from app.mapper.async_mapper import AsyncVectorMapper
+        from app.mappers.vector_mapper import AsyncVectorMapper
 
         query_emb = await get_query_embedding_async(query)
 
