@@ -98,14 +98,3 @@ export const deleteBot = async (id: number): Promise<void> => {
   await api.delete(`/bots/${id}`);
 };
 
-export const botChat = async (
-  botId: number,
-  message: string,
-  conversationId?: string,
-): Promise<BotChatResponse> => {
-  const response = await api.post(`/bots/${botId}/chat`, {
-    message,
-    conversation_id: conversationId,
-  });
-  return response.data;
-};

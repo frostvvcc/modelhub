@@ -11,7 +11,7 @@ from app.database_async import get_async_db
 from app.utils.auth import get_current_user
 from app.services.bot_service import AsyncBotService
 from app.services.stream_chat_service import StreamChatService
-from app.schemas.bot import BotCreate, BotUpdate, BotResponse, BotChatRequest, BotChatResponse
+from app.schemas.bot import BotCreate, BotUpdate, BotResponse
 from app.utils.logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -122,31 +122,6 @@ async def delete_bot(
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
-
-
-@router.post("/{bot_id}/chat", response_model=BotChatResponse)
-async def bot_chat(
-    bot_id: int,
-    payload: BotChatRequest,
-    db: AsyncSession = Depends(get_async_db),
-    current_user=Depends(get_current_user),
-):
-    try:
-        result = await AsyncBotService.chat(
-            db=db,
-            bot_id=bot_id,
-            user=current_user,
-            message=payload.message,
-            conversation_id=payload.conversation_id,
-        )
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except Exception as e:
-        logger.error(f"Bot 对话失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"对话失败: {str(e)}")
 
 
 @router.post("/{bot_id}/chat/stream")

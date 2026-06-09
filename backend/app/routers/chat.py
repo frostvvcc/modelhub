@@ -136,17 +136,3 @@ async def evaluate_rag_quality(
     )
 
 
-@router.post(
-    "/rechat",
-    response_model=SuccessResponse[dict],
-    summary="重新回答"
-)
-async def rechat(
-    conversation_id: int = Form(...),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_db)
-):
-    """重新回答该问题"""
-    # 异常由中间件统一处理
-    response = await AsyncChatService.rechat(db, conversation_id, current_user.id)
-    return SuccessResponse(message="对话成功", data=response)
