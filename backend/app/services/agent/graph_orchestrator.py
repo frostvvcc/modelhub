@@ -193,14 +193,18 @@ class LangGraphOrchestrator:
         query = state["query"]
         all_results = []
 
-        for vdb_id in self.vector_db_ids[:3]:
+        async def _query_one(vdb_id: int):
             try:
-                results = await VectorRetriever.enhanced_query(
+                return await VectorRetriever.enhanced_query(
                     vector_db_id=vdb_id, query_text=query, n_results=5,
                 )
-                all_results.extend(results)
             except Exception as e:
                 logger.warning(f"[LangGraph:retrieve] vdb_id={vdb_id} 失败: {e}")
+                return []
+
+        batch_results = await asyncio.gather(*[_query_one(v) for v in self.vector_db_ids])
+        for results in batch_results:
+            all_results.extend(results)
 
         all_results.sort(key=lambda r: r.similarity, reverse=True)
         top_results = all_results[:5]
@@ -355,7 +359,7 @@ class LangGraphOrchestrator:
                 return {"corrective_context": "", "events": []}
 
             all_triples = []
-            for vdb_id in self.vector_db_ids[:2]:
+            for vdb_id in self.vector_db_ids:
                 triples = await asyncio.to_thread(query_subgraph, entities, vdb_id)
                 all_triples.extend(triples)
 
