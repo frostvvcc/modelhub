@@ -1,19 +1,17 @@
 """
-Circuit Breaker + Bulkhead 弹性工程模块
+Circuit Breaker 弹性工程模块
 
 - Circuit Breaker (熔断器): 外部依赖连续失败时快速失败，防止资源耗尽和级联故障
   状态机: CLOSED → (N次失败) → OPEN → (冷却后) → HALF_OPEN → (成功) → CLOSED
-- Bulkhead (舱壁隔离): 为每个 LLM Provider 分配独立的并发信号量，
-  一个 Provider 故障不影响其他 Provider
 
 参考: Netflix Hystrix / Resilience4j
 """
 import asyncio
 import time
 import logging
-from collections import deque, defaultdict
+from collections import deque
 from enum import Enum
-from typing import Dict, Callable, Any, Optional
+from typing import Dict, Callable, Any
 
 logger = logging.getLogger(__name__)
 
@@ -127,53 +125,10 @@ class CircuitBreaker:
         }
 
 
-class BulkheadIsolation:
-    """
-    Bulkhead 舱壁隔离 — 为每个 Provider 分配独立的并发信号量。
-
-    一个慢 Provider 最多占用 max_concurrent 个并发槽位，
-    不会影响其他 Provider 的可用性。
-    """
-    def __init__(self, max_concurrent_per_provider: int = 10, acquire_timeout: float = 5.0):
-        self._semaphores: Dict[str, asyncio.Semaphore] = {}
-        self._max = max_concurrent_per_provider
-        self._acquire_timeout = acquire_timeout
-
-    def _get_semaphore(self, provider: str) -> asyncio.Semaphore:
-        if provider not in self._semaphores:
-            self._semaphores[provider] = asyncio.Semaphore(self._max)
-        return self._semaphores[provider]
-
-    async def call(self, provider: str, func: Callable, *args, **kwargs) -> Any:
-        sem = self._get_semaphore(provider)
-        try:
-            await asyncio.wait_for(sem.acquire(), timeout=self._acquire_timeout)
-        except asyncio.TimeoutError:
-            raise RuntimeError(
-                f"Provider '{provider}' 并发已满 ({self._max})，请稍后重试"
-            )
-        try:
-            return await func(*args, **kwargs)
-        finally:
-            sem.release()
-
-    @property
-    def stats(self) -> dict:
-        return {
-            name: {
-                "available": sem._value,
-                "max": self._max,
-                "in_use": self._max - sem._value,
-            }
-            for name, sem in self._semaphores.items()
-        }
-
-
 # ---------------------------------------------------------------------------
 # 全局实例
 # ---------------------------------------------------------------------------
 _circuit_breakers: Dict[str, CircuitBreaker] = {}
-_bulkhead = BulkheadIsolation(max_concurrent_per_provider=10)
 
 
 def get_circuit_breaker(provider: str) -> CircuitBreaker:
@@ -182,23 +137,7 @@ def get_circuit_breaker(provider: str) -> CircuitBreaker:
     return _circuit_breakers[provider]
 
 
-async def call_llm_resilient(provider: str, func: Callable, *args, **kwargs) -> Any:
-    """
-    弹性 LLM 调用入口：Circuit Breaker + Bulkhead 双重防护。
-
-    使用方式:
-        result = await call_llm_resilient("openai", client.chat, messages=messages)
-    """
-    breaker = get_circuit_breaker(provider)
-
-    async def guarded():
-        return await breaker.call(func, *args, **kwargs)
-
-    return await _bulkhead.call(provider, guarded)
-
-
 def get_all_circuit_stats() -> dict:
     return {
         "circuit_breakers": {name: cb.stats for name, cb in _circuit_breakers.items()},
-        "bulkhead": _bulkhead.stats,
     }

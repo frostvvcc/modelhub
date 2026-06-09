@@ -327,26 +327,3 @@ def get_default_tools(
         DateTimeTool(),
     ])
     return tools
-
-
-def get_tools_for_query(
-    message: str,
-    session: AsyncSession,
-    model_config_id: int,
-    user_id: int,
-    vector_db_ids: Optional[List[int]] = None,
-) -> List[BaseTool]:
-    """
-    动态工具注册：根据用户消息语义按需加载工具，
-    减少每次 LLM 调用携带的工具定义 token 开销。
-    """
-    tools: List[BaseTool] = [
-        KnowledgeSearchTool(session, model_config_id, user_id, vector_db_ids),
-    ]
-    if any(kw in message for kw in ("学院", "专业", "班级", "组织", "院系", "学校")):
-        tools.append(DatabaseQueryTool(session, user_id))
-    if any(kw in message for kw in ("计算", "算", "等于", "求解", "加", "减", "乘", "除", "%")):
-        tools.append(CalculatorTool())
-    if any(kw in message for kw in ("几点", "几号", "日期", "时间", "星期", "今天", "明天", "昨天")):
-        tools.append(DateTimeTool())
-    return tools
