@@ -272,12 +272,25 @@ const truncateQuote = (text: string, max = 60) => {
   return single.length > max ? single.slice(0, max) + '…' : single;
 };
 
-const renderMarkdown = (content: string) => {
-  // 触发响应式更新
+const renderMarkdown = (content: string, isStreaming = false) => {
   void renderKey.value;
   if (!content) return '';
+
+  // 非流式消息：缓存命中直接返回，避免重复解析
+  if (!isStreaming) {
+    const cache = chatStore.getMarkdownCache()
+    const cached = cache.get(content)
+    if (cached) return cached
+  }
+
   let html = DOMPurify.sanitize(marked.parse(content) as string, { ADD_ATTR: ['data-cite-index'] });
   html = html.replace(/\[来源(\d+)\]/g, '<span class="cite-inline" data-cite-index="$1">来源$1</span>');
+
+  // 非流式消息写入缓存
+  if (!isStreaming) {
+    chatStore.getMarkdownCache().set(content, html)
+  }
+
   return html;
 };
 
@@ -549,6 +562,7 @@ const scrollToBottom = () => {
         <div
           v-for="(message, index) in messages"
           :key="`${message.create_at}-${index}`"
+          v-memo="[message.content, message.isStreaming, message.sources, message.agentState, message.toolCalls?.length, message.retrievalProcess?.length, message.grounded_level]"
           class="msg"
           :class="[message.role]"
           :data-msg-index="index"
@@ -750,7 +764,7 @@ const scrollToBottom = () => {
                   </div>
 
                   <!-- Markdown 内容（流式渲染） -->
-                  <div class="markdown-body" v-if="message.content" v-html="renderMarkdown(message.content)" @click="handleCiteClick"></div>
+                  <div class="markdown-body" v-if="message.content" v-html="renderMarkdown(message.content, message.isStreaming)" @click="handleCiteClick"></div>
 
                   <!-- 流式光标 -->
                   <span v-if="message.isStreaming && message.content" class="typing-cursor"></span>

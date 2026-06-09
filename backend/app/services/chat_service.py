@@ -573,15 +573,8 @@ class AsyncChatService:
         """
         logger.debug(f"获取对话列表: user_id={user_id}")
         try:
-            conversation_id_list = await AsyncChatMapper.get_conversation_id(session, user_id)
-            histories = []
-            for item in conversation_id_list:
-                conversation_id = item["conversation_id"]
-                try:
-                    history = await AsyncChatMapper.get_conversation(session, conversation_id, 10)
-                    histories.append(history)
-                except Exception as e:
-                    logger.warning(f"跳过加载失败的对话 {conversation_id}: {e}")
+            # 批量查询：2 次 SQL 代替 N+1 次
+            histories = await AsyncChatMapper.get_conversations_batch(session, user_id, msg_per_conv=10)
             logger.debug(f"成功获取对话列表: user_id={user_id}, 共 {len(histories)} 个对话")
             return histories
         except Exception as e:

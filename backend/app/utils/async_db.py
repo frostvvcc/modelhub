@@ -1,112 +1,139 @@
 """
-异步数据库工具
-提供异步数据库查询的辅助函数
+异步数据库工具 — 带分页支持 + 安全硬上限
+
+- get_all / filter_by 加入 limit/offset 参数
+- 硬上限 1000 条兜底（即使调用方忘记传分页参数）
+- 新增 paginate() 方法支持 Keyset Pagination
 """
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from typing import Type, TypeVar, Optional, List
+from sqlalchemy import select, func, or_, and_
+from typing import Type, TypeVar, Optional, List, Any, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
 
+_HARD_LIMIT = 1000
+
 
 class AsyncDB:
     """异步数据库操作工具类"""
-    
+
     @staticmethod
     async def get_by_id(session: AsyncSession, model: Type[T], id: int) -> Optional[T]:
-        """
-        根据 ID 获取单个记录
-        
-        Args:
-            session: 异步会话
-            model: 模型类
-            id: 记录 ID
-        
-        Returns:
-            模型实例或 None
-        """
-        result = await session.get(model, id)
-        return result
-    
+        return await session.get(model, id)
+
     @staticmethod
     async def get_by_field(
         session: AsyncSession,
         model: Type[T],
         field_name: str,
-        field_value: any
+        field_value: Any,
     ) -> Optional[T]:
-        """
-        根据字段值获取单个记录
-        
-        Args:
-            session: 异步会话
-            model: 模型类
-            field_name: 字段名
-            field_value: 字段值
-        
-        Returns:
-            模型实例或 None
-        """
         field = getattr(model, field_name)
         stmt = select(model).where(field == field_value)
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
-    
+
     @staticmethod
-    async def get_all(session: AsyncSession, model: Type[T]) -> List[T]:
-        """
-        获取所有记录
-        
-        Args:
-            session: 异步会话
-            model: 模型类
-        
-        Returns:
-            记录列表
-        """
-        stmt = select(model)
+    async def get_all(
+        session: AsyncSession,
+        model: Type[T],
+        limit: int = _HARD_LIMIT,
+        offset: int = 0,
+    ) -> List[T]:
+        safe_limit = min(limit, _HARD_LIMIT)
+        stmt = select(model).limit(safe_limit).offset(offset)
         result = await session.execute(stmt)
-        return list(result.scalars().all())
-    
+        rows = list(result.scalars().all())
+        if len(rows) >= _HARD_LIMIT:
+            logger.warning(
+                f"AsyncDB.get_all({model.__name__}) 命中硬上限 {_HARD_LIMIT}，"
+                f"可能存在未分页的全量查询"
+            )
+        return rows
+
     @staticmethod
     async def filter_by(
         session: AsyncSession,
         model: Type[T],
-        **filters
+        limit: int = _HARD_LIMIT,
+        offset: int = 0,
+        **filters,
     ) -> List[T]:
-        """
-        根据条件过滤记录
-        
-        Args:
-            session: 异步会话
-            model: 模型类
-            **filters: 过滤条件
-        
-        Returns:
-            记录列表
-        """
+        safe_limit = min(limit, _HARD_LIMIT)
         stmt = select(model)
         for field_name, field_value in filters.items():
             field = getattr(model, field_name)
             stmt = stmt.where(field == field_value)
+        stmt = stmt.limit(safe_limit).offset(offset)
         result = await session.execute(stmt)
-        return list(result.scalars().all())
-    
+        rows = list(result.scalars().all())
+        if len(rows) >= _HARD_LIMIT:
+            logger.warning(
+                f"AsyncDB.filter_by({model.__name__}, {filters}) 命中硬上限 {_HARD_LIMIT}"
+            )
+        return rows
+
+    @staticmethod
+    async def count(session: AsyncSession, model: Type[T], **filters) -> int:
+        """计算满足条件的记录总数。"""
+        stmt = select(func.count()).select_from(model)
+        for field_name, field_value in filters.items():
+            field = getattr(model, field_name)
+            stmt = stmt.where(field == field_value)
+        result = await session.scalar(stmt)
+        return result or 0
+
+    @staticmethod
+    async def paginate(
+        session: AsyncSession,
+        model: Type[T],
+        page: int = 1,
+        page_size: int = 20,
+        order_by=None,
+        filters=None,
+        include_total: bool = True,
+    ) -> dict:
+        """
+        Offset 分页（适合浅翻页场景）。
+
+        Returns:
+            {"items": [...], "total": N, "page": P, "page_size": S, "has_more": bool}
+        """
+        safe_page_size = min(page_size, 100)
+        offset = (max(1, page) - 1) * safe_page_size
+
+        stmt = select(model)
+        count_stmt = select(func.count()).select_from(model)
+
+        if filters:
+            for f in filters:
+                stmt = stmt.where(f)
+                count_stmt = count_stmt.where(f)
+
+        if order_by is not None:
+            stmt = stmt.order_by(order_by)
+
+        stmt = stmt.limit(safe_page_size).offset(offset)
+        result = await session.execute(stmt)
+        items = list(result.scalars().all())
+
+        total = None
+        if include_total:
+            total = await session.scalar(count_stmt)
+
+        return {
+            "items": items,
+            "total": total,
+            "page": page,
+            "page_size": safe_page_size,
+            "has_more": len(items) == safe_page_size,
+        }
+
     @staticmethod
     async def create(session: AsyncSession, instance: T) -> T:
-        """
-        创建新记录
-        
-        Args:
-            session: 异步会话
-            instance: 模型实例
-        
-        Returns:
-            创建的模型实例
-        """
         try:
             session.add(instance)
             await session.flush()
@@ -116,19 +143,9 @@ class AsyncDB:
             logger.error(f"创建失败: {e}")
             await session.rollback()
             raise
-    
+
     @staticmethod
     async def update(session: AsyncSession, instance: T) -> T:
-        """
-        更新记录
-        
-        Args:
-            session: 异步会话
-            instance: 模型实例
-        
-        Returns:
-            更新的模型实例
-        """
         try:
             await session.flush()
             await session.refresh(instance)
@@ -137,19 +154,9 @@ class AsyncDB:
             logger.error(f"更新失败: {e}")
             await session.rollback()
             raise
-    
+
     @staticmethod
     async def delete(session: AsyncSession, instance: T) -> bool:
-        """
-        删除记录
-        
-        Args:
-            session: 异步会话
-            instance: 模型实例
-        
-        Returns:
-            是否删除成功
-        """
         try:
             await session.delete(instance)
             await session.flush()
@@ -158,19 +165,16 @@ class AsyncDB:
             logger.error(f"删除失败: {e}")
             await session.rollback()
             return False
-    
+
     @staticmethod
     async def commit(session: AsyncSession):
-        """提交事务"""
         try:
             await session.commit()
         except Exception as e:
             logger.error(f"提交失败: {e}")
             await session.rollback()
             raise
-    
+
     @staticmethod
     async def rollback(session: AsyncSession):
-        """回滚事务"""
         await session.rollback()
-

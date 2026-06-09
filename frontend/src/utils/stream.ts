@@ -82,7 +82,10 @@ export async function streamBotChat(
 }
 
 /**
- * 处理 SSE 流
+ * 处理 SSE 流 — Frame-Budget-Aware Batching
+ *
+ * 在每一帧（16.6ms）内尽量多处理 SSE 事件，
+ * 快超出帧预算时让出主线程给渲染管线，避免 UI 冻结。
  */
 async function processSSEStream(
   response: Response,
@@ -101,6 +104,8 @@ async function processSSEStream(
   let eventData = ''
   let normallyDone = false
 
+  const FRAME_BUDGET_MS = 12 // 留 4.6ms 给 Layout + Paint
+
   try {
     while (true) {
       const { done, value } = await reader.read()
@@ -112,6 +117,8 @@ async function processSSEStream(
       buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
+
+      const frameStart = performance.now()
 
       for (const line of lines) {
         if (line.startsWith('event: ')) {
@@ -127,6 +134,11 @@ async function processSSEStream(
           }
           eventType = ''
           eventData = ''
+        }
+
+        // 帧预算耗尽 → 让出主线程给渲染
+        if (performance.now() - frameStart > FRAME_BUDGET_MS) {
+          await new Promise<void>((r) => requestAnimationFrame(() => r()))
         }
       }
     }
