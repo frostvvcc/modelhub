@@ -184,6 +184,39 @@ class LangGraphOrchestrator:
 
     # ── Retrieve Node ──
 
+    async def _select_relevant_vdb_ids(self, query: str, max_count: int = 5) -> List[int]:
+        """语义选库：用 query 与知识库名称/描述的 embedding 相似度选 top-N，毫秒级。"""
+        if len(self.vector_db_ids) <= max_count:
+            return self.vector_db_ids
+
+        from app.utils.async_embedding import get_query_embedding_async
+        from app.database_async import AsyncSessionLocal
+        from app.mapper.async_mapper import AsyncVectorMapper
+
+        query_emb = await get_query_embedding_async(query)
+
+        async with AsyncSessionLocal() as session:
+            scored = []
+            for vdb_id in self.vector_db_ids:
+                vdb = await AsyncVectorMapper.get_vector_db(session, vdb_id)
+                if not vdb:
+                    continue
+                desc_text = f"{vdb.name or ''} {vdb.describe or ''}"
+                desc_emb = await get_query_embedding_async(desc_text)
+                dot = sum(a * b for a, b in zip(query_emb, desc_emb))
+                norm_a = sum(a * a for a in query_emb) ** 0.5
+                norm_b = sum(b * b for b in desc_emb) ** 0.5
+                sim = dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
+                scored.append((sim, vdb_id, vdb.name))
+            scored.sort(key=lambda x: x[0], reverse=True)
+
+        selected = scored[:max_count]
+        logger.info(
+            f"🔀 [LangGraph Router] {len(self.vector_db_ids)} 库 → {len(selected)} 库 | "
+            + ", ".join(f"{name}({sim:.3f})" for sim, _, name in selected)
+        )
+        return [vdb_id for _, vdb_id, _ in selected]
+
     async def _node_retrieve(self, state: OrchestratorState) -> dict:
         writer = get_stream_writer()
         writer({"type": "state_change", "state": "retrieving", "label": "检索知识库..."})
@@ -192,6 +225,8 @@ class LangGraphOrchestrator:
 
         query = state["query"]
         all_results = []
+
+        selected_ids = await self._select_relevant_vdb_ids(query, max_count=5)
 
         async def _query_one(vdb_id: int):
             try:
@@ -202,7 +237,7 @@ class LangGraphOrchestrator:
                 logger.warning(f"[LangGraph:retrieve] vdb_id={vdb_id} 失败: {e}")
                 return []
 
-        batch_results = await asyncio.gather(*[_query_one(v) for v in self.vector_db_ids])
+        batch_results = await asyncio.gather(*[_query_one(v) for v in selected_ids])
         for results in batch_results:
             all_results.extend(results)
 

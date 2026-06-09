@@ -2007,8 +2007,10 @@ class AsyncVectorService:
                 has_user_selected = True
 
         if has_user_selected:
-            # Bot 明确绑定的知识库全部参与检索，不做 router 裁剪
-            logger.info(f"📚 [user_selected] 使用全部 {len(candidates)} 个知识库")
+            if query and len(candidates) > 5:
+                candidates = await AsyncVectorService._route_knowledge_bases(
+                    query, candidates, max_count=5,
+                )
             return candidates
 
         # 回退：搜索用户有权访问的所有知识库（私有 + 组织级 + 教学空间）
