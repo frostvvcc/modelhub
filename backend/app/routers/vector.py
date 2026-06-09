@@ -191,8 +191,9 @@ async def upload_file(
 
     if not files or all(file.filename == '' for file in files):
         raise ValidationError("未选择文件")
-    if chunk_strategy not in {"fixed", "sentence", "markdown"}:
-        raise ValidationError("切块策略必须是 fixed、sentence 或 markdown")
+    from app.services.rag.chunking import ChunkStrategy
+    if chunk_strategy not in {s.value for s in ChunkStrategy}:
+        raise ValidationError(f"切块策略必须是 {', '.join(s.value for s in ChunkStrategy)} 之一")
     if chunk_size < 100 or chunk_size > 4000:
         raise ValidationError("chunk_size 必须在 100 到 4000 之间")
     if chunk_overlap < 0 or chunk_overlap >= chunk_size:

@@ -125,6 +125,39 @@ def process_document_task(
                 "progress": 90, "step": "embedding",
                 "current": total, "total_chunks": total,
             })
+        elif strategy == ChunkStrategy.SEMANTIC:
+            from app.services.rag.chunking import split_semantic
+            chunks = split_semantic(
+                text_content,
+                embedding_fn=embedding_model._get_text_embeddings,
+                max_chunk_size=safe_chunk_size,
+            )
+            total = len(chunks)
+            self.update_state(state="PROGRESS", meta={"progress": 30, "step": "embedding", "total_chunks": total})
+
+            all_embeddings = embedding_model._get_text_embeddings(chunks)
+            all_ids = [f"{document_id}_chunk_{i}" for i in range(total)]
+            all_metadatas = []
+            for i in range(total):
+                metadata = {
+                    "source": os.path.basename(file_path),
+                    "chunk_id": i,
+                    "total_chunks": total,
+                    "document_id": str(document_id),
+                    "chunk_strategy": "semantic",
+                }
+                if folder_hierarchy:
+                    metadata["folder_hierarchy"] = folder_hierarchy
+                if parent_id:
+                    metadata["parent_id"] = str(parent_id)
+                all_metadatas.append(metadata)
+
+            store.add(collection_name, all_ids, all_embeddings, chunks, all_metadatas)
+
+            self.update_state(state="PROGRESS", meta={
+                "progress": 90, "step": "embedding",
+                "current": total, "total_chunks": total,
+            })
         elif strategy == ChunkStrategy.CONTEXTUAL:
             import asyncio
             _ctx_loop = asyncio.new_event_loop()
