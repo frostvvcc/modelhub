@@ -1,14 +1,14 @@
 """
 用户相关数据模型
 """
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator, Field
 from typing import Optional
 
 
 class RegisterRequest(BaseModel):
     """用户注册请求"""
     name: str
-    password: str
+    password: str = Field(..., min_length=6, max_length=128)
     email: Optional[EmailStr] = None
     describe: Optional[str] = None
     role: Optional[str] = None
@@ -16,6 +16,13 @@ class RegisterRequest(BaseModel):
     organization_id: Optional[int] = None
     student_id: Optional[str] = None
     employee_id: Optional[str] = None
+
+    @field_validator('role')
+    @classmethod
+    def validate_role(cls, v):
+        if v and v not in ('student', 'teacher'):
+            raise ValueError('自注册仅支持 student 或 teacher 角色')
+        return v
 
 
 class LoginRequest(BaseModel):

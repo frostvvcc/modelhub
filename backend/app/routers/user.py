@@ -244,26 +244,28 @@ async def update_avatar(
 ):
     """更新用户头像"""
     from app.utils.error_handler import ValidationError, InternalServerError
-    
+    import uuid
+
     if not file:
         raise ValidationError("请上传文件")
-    
-    # 异步读取文件内容
+
     file_content = await file.read()
-    # 重置文件指针
-    await file.seek(0)
-    
-    # 保存文件（同步操作异步化）
-    save_path = await AsyncService.run_sync(
-        save_uploaded_file,
-        file,
-        str(settings.uploads_dir)
-    )
-    
-    if not save_path:
+    if not file_content:
+        raise ValidationError("文件内容为空")
+
+    ext = os.path.splitext(file.filename or "upload.png")[1] or ".png"
+    filename = f"avatar_{current_user.id}_{uuid.uuid4().hex[:8]}{ext}"
+    save_path = os.path.join(str(settings.uploads_dir), filename)
+
+    def _write_bytes():
+        with open(save_path, "wb") as f:
+            f.write(file_content)
+        return filename
+
+    saved_name = await AsyncService.run_sync(_write_bytes)
+    if not saved_name:
         raise InternalServerError("文件保存失败")
-    
-    # 异常由中间件统一处理
-    avatar = await AsyncUserService.update_avatar(db, current_user.id, save_path)
+
+    avatar = await AsyncUserService.update_avatar(db, current_user.id, saved_name)
     return SuccessResponse(message="更新成功", data=avatar)
 

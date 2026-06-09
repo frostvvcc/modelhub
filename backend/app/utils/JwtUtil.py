@@ -15,11 +15,12 @@ def get_password_hash(password: str) -> str:
     """生成密码哈希"""
     return pwd_context.hash(password)
 
-def generate_jwt(id: int, name: str, email: str) -> str:
+def generate_jwt(id: int, name: str, email: str, token_version: int = 0) -> str:
     payload = {
         'id': id,
         'name': name,
         'email': email,
+        'tv': token_version,
         'exp': datetime.utcnow() + timedelta(minutes=settings.access_token_expire_minutes)
     }
     return jwt.encode(payload, settings.secret_key, settings.algorithm)
