@@ -562,7 +562,7 @@ const scrollToBottom = () => {
         <div
           v-for="(message, index) in messages"
           :key="`${message.create_at}-${index}`"
-          v-memo="[message.content, message.isStreaming, message.sources, message.agentState, message.toolCalls?.length, message.retrievalProcess?.length, message.grounded_level]"
+          v-memo="[message.content, message.isStreaming, message.sources, message.agentState, message.toolCalls?.length, message.retrievalProcess?.length, message.grounded_level, message.isStreaming ? elapsedNow : 0]"
           class="msg"
           :class="[message.role]"
           :data-msg-index="index"
