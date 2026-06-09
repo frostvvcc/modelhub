@@ -182,6 +182,8 @@ class ChromaDBStore(VectorStore):
 class MilvusStore(VectorStore):
     """Milvus 实现（生产环境，支持十亿级向量 + HNSW 索引 + 分布式部署）"""
 
+    SCALAR_FIELDS = ("document_id", "source", "folder_hierarchy", "parent_id")
+
     def __init__(self):
         from pymilvus import connections, Collection, utility, FieldSchema, CollectionSchema, DataType
         self._connections = connections
@@ -204,6 +206,10 @@ class MilvusStore(VectorStore):
                 self._FieldSchema(name="id", dtype=self._DataType.VARCHAR, is_primary=True, max_length=256),
                 self._FieldSchema(name="embedding", dtype=self._DataType.FLOAT_VECTOR, dim=self._dim),
                 self._FieldSchema(name="document", dtype=self._DataType.VARCHAR, max_length=65535),
+                self._FieldSchema(name="document_id", dtype=self._DataType.VARCHAR, max_length=64, default_value=""),
+                self._FieldSchema(name="source", dtype=self._DataType.VARCHAR, max_length=512, default_value=""),
+                self._FieldSchema(name="folder_hierarchy", dtype=self._DataType.VARCHAR, max_length=256, default_value=""),
+                self._FieldSchema(name="parent_id", dtype=self._DataType.VARCHAR, max_length=64, default_value=""),
                 self._FieldSchema(name="metadata_json", dtype=self._DataType.VARCHAR, max_length=65535),
             ]
             schema = self._CollectionSchema(fields, description=name)
@@ -245,35 +251,59 @@ class MilvusStore(VectorStore):
             ids,
             embeddings,
             documents,
+            [str(m.get("document_id", "")) for m in metadatas],
+            [str(m.get("source", "")) for m in metadatas],
+            [str(m.get("folder_hierarchy", "")) for m in metadatas],
+            [str(m.get("parent_id", "")) for m in metadatas],
             [json.dumps(m, ensure_ascii=False) for m in metadatas],
         ])
         col.flush()
+
+    def _build_filter_expr(self, where: Optional[Dict]) -> Optional[str]:
+        if not where:
+            return None
+        if "$and" in where:
+            parts = [self._build_filter_expr(sub) for sub in where["$and"]]
+            return " and ".join(f"({p})" for p in parts if p)
+        conditions = []
+        for k, v in where.items():
+            if k.startswith("$"):
+                continue
+            if k in self.SCALAR_FIELDS:
+                escaped = str(v).replace('"', '\\"')
+                conditions.append(f'{k} == "{escaped}"')
+            else:
+                escaped = str(v).replace('"', '\\"')
+                conditions.append(f'metadata_json like \'%"{k}": "{escaped}"%\'')
+        return " and ".join(conditions) if conditions else None
 
     def query(self, collection_name, query_embedding, n_results=5, where=None):
         import json
         col = self._ensure_collection(collection_name)
         search_params = {"metric_type": "COSINE", "params": {"ef": 128}}
-        expr = None
-        if where:
-            conditions = []
-            for k, v in where.items():
-                conditions.append(f'metadata_json like "%\\"{k}\\\": \\\"{v}\\\"%" ')
-            expr = " and ".join(conditions) if conditions else None
+        expr = self._build_filter_expr(where)
 
+        output_fields = ["id", "document", "document_id", "source",
+                         "folder_hierarchy", "parent_id", "metadata_json"]
         results = col.search(
             data=[query_embedding],
             anns_field="embedding",
             param=search_params,
             limit=n_results,
             expr=expr,
-            output_fields=["id", "document", "metadata_json"],
+            output_fields=output_fields,
         )
 
         ids, documents, metadatas, distances = [], [], [], []
         for hit in results[0]:
             ids.append(hit.entity.get("id"))
             documents.append(hit.entity.get("document"))
-            metadatas.append(json.loads(hit.entity.get("metadata_json") or "{}"))
+            meta = json.loads(hit.entity.get("metadata_json") or "{}")
+            for sf in self.SCALAR_FIELDS:
+                val = hit.entity.get(sf)
+                if val:
+                    meta[sf] = val
+            metadatas.append(meta)
             distances.append(hit.distance)
 
         return {
@@ -298,12 +328,9 @@ class MilvusStore(VectorStore):
             quoted = ", ".join(f'"{i}"' for i in ids)
             col.delete(f"id in [{quoted}]")
         elif where:
-            conditions = []
-            for k, v in where.items():
-                escaped_v = str(v).replace('"', '\\"')
-                conditions.append(f'metadata_json like \'%"{k}": "{escaped_v}"%\'')
-            if conditions:
-                col.delete(" and ".join(conditions))
+            expr = self._build_filter_expr(where)
+            if expr:
+                col.delete(expr)
         col.flush()
 
     def upsert(self, collection_name, ids, embeddings, documents, metadatas):
@@ -313,6 +340,10 @@ class MilvusStore(VectorStore):
             ids,
             embeddings,
             documents,
+            [str(m.get("document_id", "")) for m in metadatas],
+            [str(m.get("source", "")) for m in metadatas],
+            [str(m.get("folder_hierarchy", "")) for m in metadatas],
+            [str(m.get("parent_id", "")) for m in metadatas],
             [json.dumps(m, ensure_ascii=False) for m in metadatas],
         ])
         col.flush()
