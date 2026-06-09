@@ -212,24 +212,35 @@ class LangGraphOrchestrator:
         from app.services.rag.retrieval import VectorRetriever
 
         query = state["query"]
-        all_results = []
-
         selected_ids = await self._route_vector_db_ids(query, max_count=5)
+
+        # prepare 只调一次 LLM（改写+约束提取），结果复用给所有库
+        prepared = await VectorRetriever.prepare_query(
+            query, n_results=5, use_rewrite=True, use_rerank=True,
+            use_hyde=False, use_graph=False,
+        )
 
         async def _query_one(vdb_id: int):
             try:
-                return await VectorRetriever.enhanced_query(
-                    vector_db_id=vdb_id, query_text=query, n_results=5,
+                return await VectorRetriever.execute_prepared_query(
+                    vdb_id, prepared, n_results=10, skip_rerank=True,
                 )
             except Exception as e:
                 logger.warning(f"[LangGraph:retrieve] vdb_id={vdb_id} 失败: {e}")
                 return []
 
         batch_results = await asyncio.gather(*[_query_one(v) for v in selected_ids])
-        for results in batch_results:
-            all_results.extend(results)
+        all_results = [r for batch in batch_results for r in batch]
 
-        all_results.sort(key=lambda r: r.similarity, reverse=True)
+        # 跨库统一 rerank
+        if len(all_results) > 1:
+            try:
+                from app.services.rag.reranker import rerank
+                all_results = await rerank(query, all_results, top_k=5)
+            except Exception as e:
+                logger.warning(f"[LangGraph:retrieve] 统一 rerank 失败: {e}")
+                all_results.sort(key=lambda r: r.score, reverse=True)
+                all_results = all_results[:5]
         top_results = all_results[:5]
 
         context = "\n\n".join(f"[来源{i+1}] {r.content[:500]}" for i, r in enumerate(top_results))
