@@ -411,12 +411,10 @@ class AsyncVectorService:
         """
         ocr_text_path = None
         try:
-            # 获取向量存储（通过可插拔抽象层，支持 ChromaDB / Milvus 切换）
             from app.utils.vector_store import get_vector_store
             store = get_vector_store()
             collection_name = f"vector_db_{vector_db_id}"
-            # 保持向后兼容：如果是 ChromaDB，直接拿 collection 对象
-            collection = store.get_collection(collection_name)
+            store.get_collection(collection_name)
 
             # 检查是否为图片文件，如果是则进行OCR处理
             actual_file_path = file_path
@@ -515,12 +513,7 @@ class AsyncVectorService:
                     }
                     for i, pc in enumerate(pc_chunks)
                 ]
-                collection.add(
-                    embeddings=all_embeddings,
-                    documents=all_documents,
-                    metadatas=all_metadatas,
-                    ids=all_ids,
-                )
+                store.add(collection_name, all_ids, all_embeddings, all_documents, all_metadatas)
             elif strategy == ChunkStrategy.SEMANTIC:
                 from app.services.rag.chunking import split_semantic
                 chunks = split_semantic(
@@ -534,12 +527,7 @@ class AsyncVectorService:
                     {**base_meta, 'chunk_id': i, 'total_chunks': len(chunks)}
                     for i in range(len(chunks))
                 ]
-                collection.add(
-                    embeddings=all_embeddings,
-                    documents=chunks,
-                    metadatas=all_metadatas,
-                    ids=all_ids,
-                )
+                store.add(collection_name, all_ids, all_embeddings, chunks, all_metadatas)
             elif strategy == ChunkStrategy.CONTEXTUAL:
                 import asyncio as _ctx_aio
                 _ctx_loop = _ctx_aio.new_event_loop()
@@ -563,12 +551,7 @@ class AsyncVectorService:
                     }
                     for i, c in enumerate(ctx_chunks)
                 ]
-                collection.add(
-                    embeddings=all_embeddings,
-                    documents=all_documents,
-                    metadatas=all_metadatas,
-                    ids=all_ids,
-                )
+                store.add(collection_name, all_ids, all_embeddings, all_documents, all_metadatas)
                 chunks = all_documents
             else:
                 chunks = split_text_into_chunks(
@@ -590,12 +573,7 @@ class AsyncVectorService:
                     {**base_meta, 'chunk_id': i, 'total_chunks': len(chunks)}
                     for i in range(len(chunks))
                 ]
-                collection.add(
-                    embeddings=all_embeddings,
-                    documents=chunks,
-                    metadatas=all_metadatas,
-                    ids=all_ids,
-                )
+                store.add(collection_name, all_ids, all_embeddings, chunks, all_metadatas)
 
             # Elasticsearch 同步索引（ES 可用时写入，不可用时跳过）
             try:

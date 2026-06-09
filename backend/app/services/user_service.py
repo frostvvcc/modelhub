@@ -97,6 +97,8 @@ class AsyncUserService:
                 await AsyncPermissionMapper.assign_role_to_user(
                     session, user.id, rbac_role.id, school_id, "school"
                 )
+            else:
+                logger.warning(f"RBAC角色 '{rbac_code}' 在数据库中不存在，用户 {user.id} 未分配RBAC角色，请检查 Role 表是否已初始化")
 
             token = generate_jwt(user.id, user.name, user.email or "")
             logger.info(f"用户注册成功: user_id={user.id}, student_id={student_id}")

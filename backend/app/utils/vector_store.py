@@ -295,11 +295,15 @@ class MilvusStore(VectorStore):
     def delete(self, collection_name, where=None, ids=None):
         col = self._ensure_collection(collection_name)
         if ids:
-            expr = f'id in {ids}'
-            col.delete(expr)
+            quoted = ", ".join(f'"{i}"' for i in ids)
+            col.delete(f"id in [{quoted}]")
         elif where:
+            conditions = []
             for k, v in where.items():
-                col.delete(f'metadata_json like "%\\"{k}\\\": {v}%"')
+                escaped_v = str(v).replace('"', '\\"')
+                conditions.append(f'metadata_json like \'%"{k}": "{escaped_v}"%\'')
+            if conditions:
+                col.delete(" and ".join(conditions))
         col.flush()
 
     def upsert(self, collection_name, ids, embeddings, documents, metadatas):

@@ -1,25 +1,17 @@
 """
-LangGraph 多 Agent 编排器 — 基于 CRAG (Corrective RAG) 的状态图编排
+CRAG (Corrective RAG) 多 Agent 编排器
 
-使用 LangGraph StateGraph 实现可视化、可检查点的多 Agent 工作流：
-  classify → retrieve / analyze (并行) → synthesize → verify → [corrective_retrieve] → END
+执行流程（run() 手动编排各节点，实现合成阶段真正流式输出）：
+  classify → retrieve / analyze → stream_synthesize → verify → [corrective_retrieve → re-synthesize]
 
-相比手写状态机的优势：
-  - 图结构可序列化、可可视化（Mermaid 导出）
-  - 内置 checkpointing，支持 human-in-the-loop 断点续跑
-  - 条件边实现 CRAG 闭环：验证不通过 → 补充检索 → 重新合成
+CRAG 闭环：verify 不通过 → GraphRAG 补充检索 → 重新流式合成
 
-参考:
-  - Yan et al., "Corrective Retrieval Augmented Generation", 2024
-  - LangGraph Documentation: https://langchain-ai.github.io/langgraph/
+参考: Yan et al., "Corrective Retrieval Augmented Generation", 2024
 """
 import asyncio
 import json
 import logging
-from typing import List, Dict, Any, Optional, TypedDict, Annotated
-from enum import Enum
-
-from langgraph.graph import StateGraph, END
+from typing import List, Dict, Any, Optional
 
 from app.services.agent.engine import AgentEvent
 from app.config import settings
@@ -27,47 +19,9 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-# ── State Schema ──
-
-class AgentRole(str, Enum):
-    RETRIEVAL = "retrieval"
-    ANALYSIS = "analysis"
-
-
-def _merge_lists(left: list, right: list) -> list:
-    """Reducer: 合并两个 list（用于 LangGraph state 的 annotated reducer）"""
-    return left + right
-
-
-class OrchestratorState(TypedDict):
-    """LangGraph 状态定义 — 在节点之间流转的共享数据"""
-    query: str
-    conversation_messages: List[Dict[str, str]]
-    # 意图分类结果
-    active_agents: List[str]
-    intent_reasoning: str
-    # 检索结果
-    retrieval_context: str
-    retrieval_sources: Annotated[List[Dict[str, Any]], _merge_lists]
-    analysis_context: str
-    # 合成回答
-    answer: str
-    answer_tokens: List[str]
-    # CRAG 验证
-    grounded_ratio: float
-    grounding_detail: Dict[str, Any]
-    crag_triggered: bool
-    corrective_context: str
-    # 控制流
-    iteration: int
-    events: Annotated[List[Dict[str, Any]], _merge_lists]
-
-
-# ── Node Implementations ──
-
 class LangGraphOrchestrator:
     """
-    基于 LangGraph 的多 Agent 编排器。
+    CRAG 多 Agent 编排器。
 
     Graph 结构:
         classify → route → [retrieve, analyze] → synthesize → verify → route_verify → [END / corrective]
@@ -86,64 +40,6 @@ class LangGraphOrchestrator:
         self.vector_db_ids = vector_db_ids or []
         self.user_id = user_id
         self.session = session
-        self._graph = self._build_graph()
-
-    def _build_graph(self) -> StateGraph:
-        """构建 LangGraph 状态图"""
-        graph = StateGraph(OrchestratorState)
-
-        # 添加节点
-        graph.add_node("classify", self._node_classify)
-        graph.add_node("retrieve", self._node_retrieve)
-        graph.add_node("analyze", self._node_analyze)
-        graph.add_node("synthesize", self._node_synthesize)
-        graph.add_node("verify", self._node_verify)
-        graph.add_node("corrective_retrieve", self._node_corrective_retrieve)
-
-        # 入口 → 意图分类
-        graph.set_entry_point("classify")
-
-        # 意图分类 → 条件路由
-        graph.add_conditional_edges(
-            "classify",
-            self._route_after_classify,
-            {
-                "retrieve_only": "retrieve",
-                "analyze_only": "analyze",
-                "both": "retrieve",
-            },
-        )
-
-        # 检索完成后判断是否需要分析
-        graph.add_conditional_edges(
-            "retrieve",
-            self._route_after_retrieve,
-            {
-                "synthesize": "synthesize",
-                "analyze": "analyze",
-            },
-        )
-
-        # 分析 → 合成
-        graph.add_edge("analyze", "synthesize")
-
-        # 合成 → 验证
-        graph.add_edge("synthesize", "verify")
-
-        # 验证 → 条件路由（通过 → END，不通过 → 补充检索）
-        graph.add_conditional_edges(
-            "verify",
-            self._route_after_verify,
-            {
-                "pass": END,
-                "corrective": "corrective_retrieve",
-            },
-        )
-
-        # 补充检索 → 重新合成
-        graph.add_edge("corrective_retrieve", "synthesize")
-
-        return graph.compile()
 
     # ── Classify Node ──
 
@@ -271,60 +167,7 @@ class LangGraphOrchestrator:
             "events": [{"type": "sub_agent_done", "data": {"agent": "analysis"}}],
         }
 
-    # ── Synthesize Node ──
-
-    async def _node_synthesize(self, state: OrchestratorState) -> dict:
-        """合成回答：基于检索和分析结果生成回答"""
-        context_parts = []
-        if state.get("retrieval_context"):
-            context_parts.append(state["retrieval_context"])
-        if state.get("analysis_context"):
-            context_parts.append(state["analysis_context"])
-        if state.get("corrective_context"):
-            context_parts.append(f"【补充检索】\n{state['corrective_context']}")
-
-        combined = "\n\n".join(context_parts)
-
-        client = self.llm_client._get_client()
-        messages = [
-            {"role": "system", "content": (
-                "你是一个智能助手。基于以下参考资料回答用户问题，引用时标注[来源N]。\n"
-                "如果资料不足以回答，请如实说明。\n\n"
-                f"参考资料：\n{combined[:4000]}"
-            )},
-        ]
-        if state.get("conversation_messages"):
-            messages.extend(state["conversation_messages"][-6:])
-        messages.append({"role": "user", "content": state["query"]})
-
-        try:
-            response = await client.chat.completions.create(
-                model=self.llm_client.model,
-                messages=messages,
-                temperature=self.llm_client.temperature,
-                max_tokens=2048,
-                stream=True,
-            )
-            answer = ""
-            tokens = []
-            async for chunk in response:
-                delta = chunk.choices[0].delta if chunk.choices else None
-                if delta and delta.content:
-                    answer += delta.content
-                    tokens.append(delta.content)
-
-            return {
-                "answer": answer,
-                "answer_tokens": tokens,
-                "events": [{"type": "state_change", "data": {"state": "synthesizing", "label": "合成回答完成"}}],
-            }
-        except Exception as e:
-            logger.error(f"[LangGraph:synthesize] 失败: {e}")
-            return {
-                "answer": "抱歉，生成回答时出现错误。",
-                "answer_tokens": [],
-                "events": [{"type": "error", "data": {"message": f"合成失败: {e}"}}],
-            }
+    # _node_synthesize 已删除 — 合成阶段由 _stream_synthesize 实现真正流式输出
 
     # ── Verify Node (CRAG Core) ──
 
@@ -424,24 +267,6 @@ class LangGraphOrchestrator:
             return {"corrective_context": "", "events": []}
 
     # ── Routing Functions ──
-
-    def _route_after_classify(self, state: OrchestratorState) -> str:
-        agents = state.get("active_agents", ["retrieval"])
-        if "retrieval" in agents and "analysis" in agents:
-            return "both"
-        if "analysis" in agents:
-            return "analyze_only"
-        return "retrieve_only"
-
-    def _route_after_retrieve(self, state: OrchestratorState) -> str:
-        if "analysis" in state.get("active_agents", []):
-            return "analyze"
-        return "synthesize"
-
-    def _route_after_verify(self, state: OrchestratorState) -> str:
-        if state.get("crag_triggered", False):
-            return "corrective"
-        return "pass"
 
     # ── Streaming Synthesis ──
 
@@ -586,9 +411,3 @@ class LangGraphOrchestrator:
             "crag_triggered": state.get("crag_triggered", False),
         })
 
-    def get_graph_mermaid(self) -> str:
-        """导出 Mermaid 图表，用于文档和可视化"""
-        try:
-            return self._graph.get_graph().draw_mermaid()
-        except Exception:
-            return ""
