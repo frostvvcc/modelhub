@@ -247,16 +247,18 @@ class AgentEngine:
                         return tc, tool_name, tool_args, result, tool_span
 
                     if tool.safety_level == ToolSafetyLevel.SENSITIVE:
-                        if not self.user_id or not self._session:
+                        if not self.user_id:
                             result = {"blocked": True, "reason": "敏感操作需要用户身份验证"}
                             tool_span.finish(output=result)
                             return tc, tool_name, tool_args, result, tool_span
                         required_perm = self.TOOL_PERMISSION_MAP.get(tool_name)
                         if required_perm:
                             from app.services.permission_service import AsyncPermissionService
-                            has_perm = await AsyncPermissionService.check_permission(
-                                self._session, self.user_id, required_perm,
-                            )
+                            from app.database_async import AsyncSessionLocal
+                            async with AsyncSessionLocal() as _perm_db:
+                                has_perm = await AsyncPermissionService.check_permission(
+                                    _perm_db, self.user_id, required_perm,
+                                )
                             if not has_perm:
                                 result = {"blocked": True, "reason": f"权限不足：需要 {required_perm} 权限"}
                                 logger.warning(f"🟡 [安全拦截] 用户 {self.user_id} 缺少 {required_perm} 权限，工具 {tool_name} 被拦截")

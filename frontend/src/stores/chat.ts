@@ -33,6 +33,12 @@ export const useChatStore = defineStore('chat', () => {
     }, 50)
   }
 
+  // Markdown 渲染缓存：已完成消息的 content → rendered HTML
+  // 避免每次 renderKey 变化时重新解析所有历史消息
+  const _markdownCache = new Map<string, string>()
+  const getMarkdownCache = () => _markdownCache
+  const clearMarkdownCache = () => _markdownCache.clear()
+
   const isBotMode = computed(() => botId.value > 0 && !!currentBot.value)
 
   const stopGenerating = () => {
@@ -259,6 +265,8 @@ export const useChatStore = defineStore('chat', () => {
 
   const reset = () => {
     stopGenerating()
+    if (renderTimer) { clearTimeout(renderTimer); renderTimer = null }
+    _markdownCache.clear()
     messages.value = []
     conversationId.value = ''
     modelConfigId.value = ''
@@ -290,5 +298,7 @@ export const useChatStore = defineStore('chat', () => {
     reset,
     appendAssistantPlaceholder,
     triggerRender,
+    getMarkdownCache,
+    clearMarkdownCache,
   }
 })

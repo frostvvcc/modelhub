@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, computed } from "vue";
+import { nextTick, onMounted, onUnmounted, ref, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { Back, Promotion, Close, ChatRound, CopyDocument, Download } from "@element-plus/icons-vue";
@@ -20,9 +20,16 @@ renderer.code = ({ text, lang }) => {
 };
 marked.setOptions({ renderer, breaks: true, gfm: true });
 
-const renderMarkdown = (content: string) => {
+const _mdCache = new Map<string, string>();
+const renderMarkdown = (content: string, isStreaming = false) => {
+  if (!content) return '';
+  if (!isStreaming) {
+    const cached = _mdCache.get(content);
+    if (cached) return cached;
+  }
   let html = DOMPurify.sanitize(marked.parse(content) as string, { ADD_ATTR: ['data-cite-index'] });
   html = html.replace(/\[来源(\d+)\]/g, '<span class="cite-inline" data-cite-index="$1">来源$1</span>');
+  if (!isStreaming) _mdCache.set(content, html);
   return html;
 };
 
@@ -95,6 +102,14 @@ const scrollToBottom = () => {
 };
 
 const quotedMessage = ref<QuoteInfo | null>(null);
+const _abortController = ref<AbortController | null>(null);
+
+onUnmounted(() => {
+  if (_abortController.value) {
+    _abortController.value.abort();
+    _abortController.value = null;
+  }
+});
 
 const handleQuoteMessage = (content: string, role: 'user' | 'assistant') => {
   quotedMessage.value = { content, role };
@@ -247,7 +262,8 @@ const sendMessage = async () => {
     formData.append("message", content);
     if (conversationId.value) formData.append("conversation_id", conversationId.value);
     formData.append("use_agent", "true");
-    await streamBotChat(botId, formData, callbacks);
+    _abortController.value = new AbortController();
+    await streamBotChat(botId, formData, callbacks, _abortController.value.signal);
   } catch (error: unknown) {
     if (!messages.value[msgIndex].content) {
       messages.value[msgIndex].content = error?.message || "发送失败，请检查助理模型配置和知识库权限。";
@@ -325,6 +341,7 @@ onMounted(loadBot);
         <div
           v-for="(message, index) in messages"
           :key="index"
+          v-memo="[message.content, message.isStreaming, message.sources, message.toolCalls?.length]"
           class="ds-msg"
           :class="{ 'ds-msg--user': message.role === 'user', 'ds-msg--ai': message.role === 'assistant' }"
           :data-msg-index="index"

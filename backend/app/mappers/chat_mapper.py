@@ -110,6 +110,79 @@ class AsyncChatMapper:
         except Exception as e:
             logger.error(f"获取用户对话失败: {e}", exc_info=True)
             raise InternalServerError(f"获取用户对话失败: {str(e)}")
+
+    @staticmethod
+    async def get_conversations_batch(
+        session: AsyncSession,
+        user_id: int,
+        msg_per_conv: int = 10,
+    ) -> list:
+        """批量获取用户的所有对话 + 每条对话的最近 N 条消息。
+
+        用 2 次 SQL 代替 N+1 次：
+          1. SELECT * FROM conversation WHERE user_id = ? ORDER BY update_at DESC
+          2. SELECT * FROM message WHERE conversation_id IN (...) ORDER BY create_at DESC
+        然后在 Python 内存中按 conversation_id 分组截取。
+        """
+        try:
+            # 第 1 步：一次查出所有对话
+            conv_stmt = (
+                select(Conversation)
+                .where(Conversation.user_id == user_id)
+                .order_by(desc(Conversation.update_at))
+            )
+            conv_result = await session.execute(conv_stmt)
+            conversations = conv_result.scalars().all()
+
+            if not conversations:
+                return []
+
+            conv_ids = [c.id for c in conversations]
+
+            # 第 2 步：一次查出所有相关消息
+            msg_stmt = (
+                select(Message)
+                .where(Message.conversation_id.in_(conv_ids))
+                .order_by(desc(Message.create_at))
+            )
+            msg_result = await session.execute(msg_stmt)
+            all_messages = msg_result.scalars().all()
+
+            # 内存中分组 + 截取每组前 N 条
+            from collections import defaultdict
+            msg_map = defaultdict(list)
+            for m in all_messages:
+                if len(msg_map[m.conversation_id]) < msg_per_conv:
+                    msg_map[m.conversation_id].append(AsyncChatMapper._message_to_dict(m))
+
+            # 组装结果
+            histories = []
+            for conv in conversations:
+                messages = msg_map.get(conv.id, [])
+                histories.append({
+                    "conversation_info": {
+                        "id": conv.id,
+                        "user_id": conv.user_id,
+                        "name": conv.name,
+                        "model_config_id": conv.model_config_id,
+                        "bot_id": getattr(conv, "bot_id", None),
+                        "chat_history": conv.chat_history,
+                        "type": 0,
+                        "organization_id": conv.organization_id,
+                        "school_id": conv.school_id,
+                        "create_at": conv.create_at.isoformat() if conv.create_at else None,
+                        "update_at": conv.update_at.isoformat() if conv.update_at else None,
+                    },
+                    "history": {
+                        "messages": messages,
+                        "count": len(messages),
+                    },
+                })
+
+            return histories
+        except Exception as e:
+            logger.error(f"批量获取对话失败: {e}", exc_info=True)
+            raise InternalServerError(f"批量获取对话失败: {str(e)}")
     
     @staticmethod
     async def get_conversation_info(session: AsyncSession, conversation_id: int) -> dict:

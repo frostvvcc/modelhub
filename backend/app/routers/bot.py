@@ -175,11 +175,14 @@ async def bot_chat_stream(
         if not bot.model_config_id:
             raise ValueError("数字助理未关联模型配置")
 
+        MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB per file
         buffered_files = None
         if files:
             buffered_files = []
             for f in files:
                 data = await f.read()
+                if len(data) > MAX_FILE_SIZE:
+                    raise ValueError(f"文件 {f.filename} 超过大小限制（{MAX_FILE_SIZE // 1024 // 1024}MB）")
                 buffered_files.append(BufferedUploadFile(data, f.filename, f.content_type))
 
         return StreamingResponse(

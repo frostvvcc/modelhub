@@ -215,7 +215,7 @@ class StreamChatService:
                     llm_client=model,
                     vector_db_ids=all_vector_db_ids,
                     user_id=user.id,
-                    session=db,
+                    session=None,  # Agent 内部按需创建 Scoped Session
                 )
 
                 accumulated_content = ""
@@ -237,7 +237,7 @@ class StreamChatService:
             elif use_agent:
                 # === Agent 模式（ReAct Tool-Calling）===
                 tools = get_default_tools(db, model_config_id, user.id, all_vector_db_ids if all_vector_db_ids else None)
-                engine = AgentEngine(tools=tools, max_iterations=5, user_id=user.id, session=db)
+                engine = AgentEngine(tools=tools, max_iterations=5, user_id=user.id, session=None)
 
                 system_msgs = []
                 if system_prompt:
@@ -373,21 +373,27 @@ class StreamChatService:
 
             yield _sse_event("sources", source_citations)
 
-            # 先保存消息（在发 SSE 事件之前，防止连接断开导致消息丢失）
+            # ── Scoped Session: 流式后的持久化用独立短 Session ──
+            # 不再依赖路由层传入的长连接 Session，避免 SSE 流占用 DB 连接池
+            from app.database_async import AsyncSessionLocal
             safe_bot_metadata = json.loads(json.dumps(bot_metadata, ensure_ascii=False, default=str)) if bot_metadata else None
-            try:
-                await AsyncChatMapper.save_message(
-                    db, conv_id_int, "assistant", content,
-                    metadata=safe_bot_metadata,
-                )
-            except Exception as save_err:
-                logger.warning(f"Bot 消息保存失败: {save_err}")
 
             model_name = None
-            if model_config:
-                await db.refresh(model_config, ["base_model"])
-                if model_config.base_model:
-                    model_name = model_config.base_model.model_name
+            try:
+                async with AsyncSessionLocal() as save_db:
+                    async with save_db.begin():
+                        await AsyncChatMapper.save_message(
+                            save_db, conv_id_int, "assistant", content,
+                            metadata=safe_bot_metadata,
+                        )
+                    if model_config_id:
+                        _mc = await AsyncModelMapper.get_model_config_by_id(save_db, model_config_id)
+                        if _mc:
+                            await save_db.refresh(_mc, ["base_model"])
+                            if _mc.base_model:
+                                model_name = _mc.base_model.model_name
+            except Exception as save_err:
+                logger.warning(f"Bot 消息保存失败（Scoped Session）: {save_err}")
 
             yield _sse_event("metadata", {
                 "grounded_ratio": round(grounded_ratio, 4),
@@ -397,7 +403,7 @@ class StreamChatService:
                 "used_knowledge_base": used_kb,
             })
 
-            # Grounding 在消息保存之后执行
+            # Grounding 也用独立 Session
             if used_kb and source_citations:
                 try:
                     from app.services.rag.grounding import verify_grounding

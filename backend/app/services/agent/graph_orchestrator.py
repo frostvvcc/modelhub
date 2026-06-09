@@ -257,8 +257,10 @@ class LangGraphOrchestrator:
 
         query = state["query"]
         try:
-            tool = DatabaseQueryTool(session=self.session, user_id=self.user_id)
-            result = await tool.execute(query=query)
+            from app.database_async import AsyncSessionLocal
+            async with AsyncSessionLocal() as _analyze_db:
+                tool = DatabaseQueryTool(session=_analyze_db, user_id=self.user_id)
+                result = await tool.execute(query=query)
             content = str(result) if result else ""
         except Exception as e:
             content = f"数据查询失败: {e}"
