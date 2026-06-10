@@ -187,6 +187,7 @@ class StreamChatService:
             _TOTAL_CHAR_LIMIT = 12000
             attachment_context = ""
             _total_chars = 0
+            retrieval_steps = []
             for _fname, _text in (attachment_info.get("file_contents") or {}).items():
                 if len(_text) <= _INLINE_CHAR_LIMIT and _total_chars + len(_text) <= _TOTAL_CHAR_LIMIT:
                     attachment_context += f"\n\n【附件: {_fname}】\n{_text}"
@@ -205,11 +206,13 @@ class StreamChatService:
                         "char_count": len(_text),
                         "inline": len(_text) <= _INLINE_CHAR_LIMIT,
                     })
-                yield _sse_event("retrieval_info", {
+                _attachment_step = {
                     "step": "attachment_read",
                     "files": _file_details,
                     "total_chars": _total_chars,
-                })
+                }
+                retrieval_steps.append(_attachment_step)
+                yield _sse_event("retrieval_info", _attachment_step)
                 _preview_limit = 10000
                 _contents_payload = []
                 for _fname, _text in (attachment_info.get("file_contents") or {}).items():
@@ -389,6 +392,8 @@ class StreamChatService:
                 bot_metadata["toolCalls"] = agent_tool_calls
             if agent_thinking:
                 bot_metadata["thinkingContent"] = agent_thinking
+            if retrieval_steps:
+                bot_metadata["retrievalProcess"] = retrieval_steps
 
             yield _sse_event("sources", source_citations)
 
