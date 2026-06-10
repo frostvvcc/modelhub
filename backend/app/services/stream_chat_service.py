@@ -151,7 +151,7 @@ class StreamChatService:
                     if fn:
                         file_meta_map[fn] = {
                             "name": fn,
-                            "size": len(getattr(f, "data", b"")),
+                            "size": getattr(f, "size", 0),
                             "type": getattr(f, "content_type", "application/octet-stream"),
                         }
                 user_metadata = {
