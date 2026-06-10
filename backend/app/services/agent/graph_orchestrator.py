@@ -75,22 +75,10 @@ class LangGraphOrchestrator:
         graph = StateGraph(OrchestratorState)
         graph.add_node("retrieve", self._node_retrieve)
         graph.add_node("synthesize", self._node_synthesize)
-        graph.add_node("verify", self._node_verify)
-        graph.add_node("corrective_retrieve", self._node_corrective_retrieve)
 
         graph.set_entry_point("retrieve")
         graph.add_edge("retrieve", "synthesize")
-        graph.add_edge("synthesize", "verify")
-        graph.add_conditional_edges(
-            "verify",
-            self._route_after_verify,
-            {"pass": END, "corrective": "corrective_retrieve"},
-        )
-        graph.add_conditional_edges(
-            "corrective_retrieve",
-            self._route_after_corrective,
-            {"retry": "synthesize", "skip": END},
-        )
+        graph.add_edge("synthesize", END)
         return graph.compile()
 
     # ── Retrieve ──
@@ -285,25 +273,31 @@ class LangGraphOrchestrator:
 
         try:
             from app.services.rag.graph_rag import (
-                NEO4J_ENABLED, extract_query_entities, query_subgraph, format_triples_for_context,
+                NEO4J_ENABLED, extract_query_entities, query_subgraph_global,
+                format_triples_for_context,
             )
             if not NEO4J_ENABLED:
                 crag_span.finish(output={"skipped": "neo4j_disabled"})
                 return {"corrective_context": ""}
 
             claim_texts = [c.get("text", "") for c in unsupported[:3]]
-            entities = await extract_query_entities(" ".join(claim_texts))
+            entity_source = " ".join(claim_texts)
+            answer = state.get("answer", "")
+            if answer:
+                entity_source = f"{entity_source} {answer[:500]}"
+            query = state.get("query", "")
+            if query:
+                entity_source = f"{query} {entity_source}"
+
+            entities = await extract_query_entities(entity_source)
             if not entities:
                 crag_span.finish(output={"entities": 0})
                 return {"corrective_context": ""}
 
-            all_triples = []
-            for vdb_id in self.vector_db_ids[:2]:
-                triples = await asyncio.to_thread(query_subgraph, entities, vdb_id)
-                all_triples.extend(triples)
+            all_triples = await asyncio.to_thread(query_subgraph_global, entities)
 
             context = format_triples_for_context(all_triples)
-            crag_span.finish(output={"triples": len(all_triples)})
+            crag_span.finish(output={"triples": len(all_triples), "entities": entities})
 
             self._emit("state_change", {
                 "state": "tool_calling",
