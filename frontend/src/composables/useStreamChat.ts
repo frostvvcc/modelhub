@@ -35,6 +35,11 @@ export function useStreamChat() {
       opts.triggerRender()
       opts.scrollToBottom()
     },
+    onContentReset() {
+      messages[msgIndex].content = ''
+      messages[msgIndex].sources = undefined
+      opts.triggerRender()
+    },
     onStateChange(state, label) {
       messages[msgIndex].agentState = state
       messages[msgIndex].agentStateLabel = label

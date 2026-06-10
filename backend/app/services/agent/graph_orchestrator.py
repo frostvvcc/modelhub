@@ -86,7 +86,11 @@ class LangGraphOrchestrator:
             self._route_after_verify,
             {"pass": END, "corrective": "corrective_retrieve"},
         )
-        graph.add_edge("corrective_retrieve", "synthesize")
+        graph.add_conditional_edges(
+            "corrective_retrieve",
+            self._route_after_corrective,
+            {"retry": "synthesize", "skip": END},
+        )
         return graph.compile()
 
     # ── Retrieve ──
@@ -164,7 +168,12 @@ class LangGraphOrchestrator:
     # ── Synthesize ──
 
     async def _node_synthesize(self, state: OrchestratorState) -> dict:
-        self._emit("state_change", {"state": "responding", "label": "生成回答中..."})
+        is_crag_retry = state.get("iteration", 0) > 0
+        if is_crag_retry:
+            self._emit("content_reset", {})
+            self._emit("state_change", {"state": "responding", "label": "CRAG 补充后重新生成回答..."})
+        else:
+            self._emit("state_change", {"state": "responding", "label": "生成回答中..."})
 
         context_parts = []
         if state.get("retrieval_context"):
@@ -311,6 +320,13 @@ class LangGraphOrchestrator:
 
     def _route_after_verify(self, state: OrchestratorState) -> str:
         return "corrective" if state.get("crag_triggered", False) else "pass"
+
+    def _route_after_corrective(self, state: OrchestratorState) -> str:
+        if state.get("corrective_context"):
+            return "retry"
+        logger.info("[CRAG] 补充检索无有效数据，跳过重新生成，保留原始回答")
+        self._emit("state_change", {"state": "reflecting", "label": "补充检索无新数据，保留当前回答"})
+        return "skip"
 
     # ── Public API ──
 
