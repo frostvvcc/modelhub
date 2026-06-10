@@ -146,14 +146,19 @@ class StreamChatService:
                 attachment_names = "、".join(attachment_info["filenames"])
                 message_for_history = f"{message}\n\n[已上传附件：{attachment_names}]"
                 file_meta_map = {}
+                file_contents = attachment_info.get("file_contents") or {}
+                _CONTENT_SAVE_LIMIT = 10000
                 for f in (files or []):
                     fn = getattr(f, "filename", "")
                     if fn:
-                        file_meta_map[fn] = {
+                        entry = {
                             "name": fn,
                             "size": getattr(f, "size", 0),
                             "type": getattr(f, "content_type", "application/octet-stream"),
                         }
+                        if fn in file_contents:
+                            entry["content"] = file_contents[fn][:_CONTENT_SAVE_LIMIT]
+                        file_meta_map[fn] = entry
                 user_metadata = {
                     "attachments": [
                         file_meta_map.get(fn, {"name": fn}) for fn in attachment_info["filenames"]
