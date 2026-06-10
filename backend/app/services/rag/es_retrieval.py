@@ -170,6 +170,13 @@ async def index_chunks(
         return 0
 
 
+def _reset_es_client():
+    """重置 ES 客户端，强制下次请求时重新连接。"""
+    global _es_client, _es_last_failure
+    _es_client = None
+    _es_last_failure = _time.monotonic()
+
+
 async def search(
     vector_db_id: int,
     query: str,
@@ -295,8 +302,7 @@ async def search(
         return results
     except Exception as e:
         logger.warning(f"ES 检索失败: {e}")
-        _es_client = None
-        _es_last_failure = _time.monotonic()
+        _reset_es_client()
         return []
 
 
