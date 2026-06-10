@@ -160,7 +160,7 @@ export const useChatStore = defineStore('chat', () => {
         conversationId.value = String(info.conversation_id)
         conversationInfo.value.id = Number(info.conversation_id)
         if (info.conversation_name) conversationInfo.value.name = info.conversation_name
-        if (isBotMode.value) botConversationId.value = conversationId.value
+        botConversationId.value = conversationId.value
         routerReplace?.({
           conversation_id: conversationId.value,
           model_config_id: modelConfigId.value,
@@ -238,7 +238,8 @@ export const useChatStore = defineStore('chat', () => {
       const formData = new FormData()
       formData.append('message', query)
       formData.append('use_agent', String(useAgentMode.value))
-      if (botConversationId.value) formData.append('conversation_id', botConversationId.value)
+      const activeConversationId = botConversationId.value || conversationId.value
+      if (activeConversationId) formData.append('conversation_id', activeConversationId)
       files.forEach(file => formData.append('files', file))
 
       await streamBotChat(

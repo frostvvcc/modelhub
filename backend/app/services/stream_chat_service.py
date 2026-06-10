@@ -114,7 +114,11 @@ class StreamChatService:
                 try:
                     conv_id_int = int(conversation_id)
                     await AsyncChatService._assert_conversation_owner(db, conv_id_int, user.id)
-                except (ValueError, Exception):
+                except ValueError:
+                    logger.warning(f"conversation_id 非法: {conversation_id!r}")
+                    conv_id_int = None
+                except Exception as e:
+                    logger.warning(f"conversation_id={conversation_id} 校验失败，将创建新对话: {e}")
                     conv_id_int = None
 
             if not conv_id_int:
