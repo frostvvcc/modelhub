@@ -30,7 +30,6 @@ export interface SSEEvent {
 
 export interface StreamCallbacks {
   onToken?: (content: string) => void
-  onContentReset?: () => void
   onStateChange?: (state: string, label: string, meta?: StateChangePayload) => void
   onThinking?: (content: string) => void
   onToolCall?: (tool: string, args: Record<string, unknown>, callId: string) => void
@@ -144,9 +143,6 @@ async function processSSEStream(
 function dispatchEvent(event: SSEEvent, callbacks: StreamCallbacks): void {
   const d = event.data
   switch (event.type) {
-    case 'content_reset':
-      callbacks.onContentReset?.()
-      break
     case 'token':
       callbacks.onToken?.(String(d.content ?? ''))
       break

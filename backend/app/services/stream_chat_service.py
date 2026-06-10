@@ -251,9 +251,7 @@ class StreamChatService:
 
                 async for event in orchestrator.run(message, compressed, system_prompt=system_prompt):
                     yield _sse_event(event.type, event.data)
-                    if event.type == "content_reset":
-                        accumulated_content = ""
-                    elif event.type == "token":
+                    if event.type == "token":
                         accumulated_content += event.data.get("content", "")
                     elif event.type == "done":
                         accumulated_content = event.data.get("content", accumulated_content)
@@ -423,11 +421,7 @@ class StreamChatService:
             yield _sse_event("sources", source_citations)
 
             # 先保存消息（在发 SSE 事件之前，防止连接断开导致消息丢失）
-            try:
-                safe_bot_metadata = json.loads(json.dumps(bot_metadata, ensure_ascii=False, default=str)) if bot_metadata else None
-            except (TypeError, ValueError) as serial_err:
-                logger.warning(f"Bot 元数据序列化失败，保存空元数据: {serial_err}")
-                safe_bot_metadata = None
+            safe_bot_metadata = json.loads(json.dumps(bot_metadata, ensure_ascii=False, default=str)) if bot_metadata else None
             try:
                 await AsyncChatMapper.save_message(
                     db, conv_id_int, "assistant", content,

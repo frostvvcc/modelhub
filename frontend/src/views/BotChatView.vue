@@ -201,10 +201,6 @@ const sendMessage = async () => {
       messages.value[msgIndex].content += token;
       scrollToBottom();
     },
-    onContentReset() {
-      messages.value[msgIndex].content = '';
-      messages.value[msgIndex].sources = undefined;
-    },
     onStateChange(state, label) {
       messages.value[msgIndex].agentState = state;
       messages.value[msgIndex].agentStateLabel = label;

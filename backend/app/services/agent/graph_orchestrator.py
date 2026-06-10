@@ -164,13 +164,7 @@ class LangGraphOrchestrator:
     # ── Synthesize ──
 
     async def _node_synthesize(self, state: OrchestratorState) -> dict:
-        is_crag_retry = state.get("iteration", 0) > 0
-        if is_crag_retry:
-            self._emit("content_reset", {})
-            self._emit("state_change", {"state": "responding", "label": "CRAG 补充后重新生成回答..."}
-            )
-        else:
-            self._emit("state_change", {"state": "responding", "label": "生成回答中..."})
+        self._emit("state_change", {"state": "responding", "label": "生成回答中..."})
 
         context_parts = []
         if state.get("retrieval_context"):
@@ -244,11 +238,6 @@ class LangGraphOrchestrator:
             grounding_result = await verify_grounding(answer, sources)
 
             ratio = grounding_result.get("grounded_ratio", 1.0)
-            claims = grounding_result.get("claims", [])
-            all_unknown = claims and all(c.get("verdict") == "unknown" for c in claims)
-            if all_unknown:
-                logger.warning("[CRAG] 所有 claim 均为 unknown（验证服务不可用），跳过 CRAG")
-                ratio = 1.0
             threshold = getattr(settings, "grounding_threshold", 0.5)
             iteration = state.get("iteration", 0)
             needs_correction = ratio < threshold and iteration < self.MAX_CRAG_ITERATIONS

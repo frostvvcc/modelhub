@@ -102,8 +102,7 @@ async def _verify_claims(
     except Exception as e:
         logger.error(f"Claim 验证失败: {e}", exc_info=True)
 
-    # fail-open: 验证失败 ≠ 验证不通过，默认放行，避免误触发 CRAG
-    return [{"text": c, "supported": True, "verdict": "unknown", "source_idx": None, "reason": "验证服务不可用，默认放行"} for c in claims]
+    return [{"text": c, "supported": False, "verdict": "unknown", "source_idx": None, "reason": ""} for c in claims]
 
 
 async def verify_grounding(
