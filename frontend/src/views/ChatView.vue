@@ -278,6 +278,10 @@ const truncateQuote = (text: string, max = 60) => {
   return single.length > max ? single.slice(0, max) + '…' : single;
 };
 
+const stripAttachmentTag = (text: string) => {
+  return text.replace(/\n*\[已上传附件：[^\]]*\]/g, '').trim();
+};
+
 const renderMarkdown = (content: string) => {
   // 触发响应式更新
   void renderKey.value;
@@ -583,7 +587,7 @@ const scrollToBottom = () => {
                       <span class="msg-attachment-size">{{ formatFileSize(att.size) }}</span>
                     </div>
                   </div>
-                  {{ message.content }}
+                  {{ message.attachments ? stripAttachmentTag(message.content) : message.content }}
                 </div>
               </div>
             </div>
