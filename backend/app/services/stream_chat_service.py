@@ -141,11 +141,26 @@ class StreamChatService:
             )
 
             message_for_history = message
+            user_metadata = None
             if attachment_info.get("filenames"):
                 attachment_names = "、".join(attachment_info["filenames"])
                 message_for_history = f"{message}\n\n[已上传附件：{attachment_names}]"
+                file_meta_map = {}
+                for f in (files or []):
+                    fn = getattr(f, "filename", "")
+                    if fn:
+                        file_meta_map[fn] = {
+                            "name": fn,
+                            "size": len(getattr(f, "data", b"")),
+                            "type": getattr(f, "content_type", "application/octet-stream"),
+                        }
+                user_metadata = {
+                    "attachments": [
+                        file_meta_map.get(fn, {"name": fn}) for fn in attachment_info["filenames"]
+                    ]
+                }
 
-            await AsyncChatMapper.save_message(db, conv_id_int, "user", message_for_history)
+            await AsyncChatMapper.save_message(db, conv_id_int, "user", message_for_history, metadata=user_metadata)
 
             conversation = await AsyncChatMapper.get_conversation(db, conv_id_int)
             history_messages = conversation["history"]["messages"] if conversation else []
