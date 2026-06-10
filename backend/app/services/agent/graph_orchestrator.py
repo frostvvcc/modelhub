@@ -235,8 +235,7 @@ class LangGraphOrchestrator:
 
         try:
             from app.services.rag.grounding import verify_grounding
-            source_texts = [s.get("content", "") for s in sources if s.get("content")]
-            grounding_result = await verify_grounding(answer, source_texts)
+            grounding_result = await verify_grounding(answer, sources)
 
             ratio = grounding_result.get("grounded_ratio", 1.0)
             threshold = getattr(settings, "grounding_threshold", 0.5)
