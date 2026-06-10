@@ -233,23 +233,23 @@ class StreamChatService:
             agent_thinking = ""
 
             if use_agent and USE_LANGGRAPH and all_vector_db_ids:
-                # === LangGraph 编排模式 ===
-                # 多 Agent 编排：LLM 意图分类 → 并行检索/分析 → 合成 → CRAG 验证闭环
+                # === LangGraph CRAG 编排模式 ===
                 from app.services.agent.graph_orchestrator import LangGraphOrchestrator
-                logger.info(f"🔀 [路由] LangGraph 编排模式, vector_db_ids={all_vector_db_ids}")
+                logger.info(f"🔀 [路由] LangGraph CRAG 编排模式, vector_db_ids={all_vector_db_ids}")
 
                 orchestrator = LangGraphOrchestrator(
                     llm_client=model,
                     vector_db_ids=all_vector_db_ids,
                     user_id=user.id,
                     session=db,
+                    model_config_id=model_config_id,
                 )
 
                 accumulated_content = ""
                 rag_result = None
                 trace_data = None
 
-                async for event in orchestrator.run(message, compressed):
+                async for event in orchestrator.run(message, compressed, system_prompt=system_prompt):
                     yield _sse_event(event.type, event.data)
                     if event.type == "token":
                         accumulated_content += event.data.get("content", "")
@@ -260,6 +260,24 @@ class StreamChatService:
                             "used_knowledge_base": bool(event.data.get("sources")),
                             "avg_similarity": 0.0,
                         }
+                    elif event.type == "trace":
+                        trace_data = event.data
+                    elif event.type == "tool_call":
+                        agent_tool_calls.append({
+                            "tool": event.data.get("tool"),
+                            "args": event.data.get("args"),
+                            "call_id": event.data.get("call_id"),
+                        })
+                    elif event.type == "tool_result":
+                        tc = next((t for t in agent_tool_calls if t.get("call_id") == event.data.get("call_id")), None)
+                        if tc:
+                            tc["result"] = event.data.get("result")
+                            tc["latency_ms"] = event.data.get("latency_ms")
+                        if event.data.get("tool") == "knowledge_search":
+                            _early_src = (event.data.get("result") or {}).get("sources", [])
+                            if _early_src:
+                                _ct = getattr(model_config, "citation_template", None) if model_config else None
+                                yield _sse_event("sources", _build_source_citations(_early_src, _ct))
 
             elif use_agent:
                 # === Agent 模式（ReAct Tool-Calling）===
