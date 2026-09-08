@@ -30,8 +30,26 @@ INTEGRATION_TESTS=1 pytest tests/
 
 | 层级 | 目录 | 数量 | 外部依赖 |
 |------|------|------|---------|
-| 单元测试 | `tests/unit/` | 68 | 无（全部 mock） |
+| 单元测试 | `tests/unit/` | 97 | 无（全部 mock） |
 | 集成测试 | `tests/integration/` | 60 | 无（内存 SQLite） |
+
+---
+
+## 单元测试新增用例（2026-09）
+
+### CRAG 编排器 `test_graph_orchestrator.py`（8）
+- `test_good_retrieval_skips_correction` — 检索质量高时直通生成，不触发纠错
+- `test_low_score_triggers_single_correction_and_single_synthesis` — 低分触发查询改写+补充检索，且**生成只执行一次**（防回答重复生成回归）
+- `test_correction_bounded_when_still_insufficient` — 纠错次数受 `RAG_CRAG_MAX_RETRIES` 限制，用尽后仍生成兜底回答
+- `test_duplicate_chunks_deduped_on_corrective_round` — 补充检索与首轮来源合并去重、编号连续
+- `test_crag_disabled_bypasses_grading` — `RAG_CRAG_ENABLED=false` 时完全旁路
+- `TestHeuristicGrade`（3）— 启发式评分：空结果 / 低分 / 高分
+
+### Prometheus 指标 `test_prometheus_metrics.py`（4）
+- 计数器/直方图更新、低置信度计数、CRAG 触发与 grounding 比率、RAGMonitor 联动
+
+### 文档解析 `test_document_parser.py` 新增（1）
+- `test_table_preserved_as_markdown_in_position` — Word 表格按正文位置输出 Markdown 结构
 
 ---
 
