@@ -121,6 +121,14 @@ class Settings(BaseSettings):
 
     # CRAG (Corrective RAG) 配置
     grounding_threshold: float = float(os.getenv("GROUNDING_THRESHOLD", "0.6"))
+    # 生成前文档质量评估 + 查询改写纠错循环（graph_orchestrator）
+    crag_enabled: bool = os.getenv("RAG_CRAG_ENABLED", "true").lower() in ("true", "1", "yes")
+    crag_max_retries: int = int(os.getenv("RAG_CRAG_MAX_RETRIES", "1"))
+    crag_min_sources: int = int(os.getenv("RAG_CRAG_MIN_SOURCES", "1"))
+    crag_score_threshold: float = float(os.getenv("RAG_CRAG_SCORE_THRESHOLD", "0.35"))
+    # 可选：temperature=0 的 LLM 文档相关性二次判定（每次查询最多多 1 次轻量调用）
+    crag_llm_grader: bool = os.getenv("RAG_CRAG_LLM_GRADER", "false").lower() in ("true", "1", "yes")
+    crag_llm_grader_top_k: int = int(os.getenv("RAG_CRAG_LLM_GRADER_TOP_K", "5"))
 
     # Neo4j GraphRAG 配置
     neo4j_enabled: bool = os.getenv("NEO4J_ENABLED", "false").lower() in ("true", "1", "yes")
