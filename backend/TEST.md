@@ -21,7 +21,11 @@ INTEGRATION_TESTS=1 pytest tests/integration/
 ### 全量运行
 
 ```bash
-INTEGRATION_TESTS=1 pytest tests/
+# 必须分两个进程跑：unit 的 conftest 会把 aiosqlite/redis/chromadb 等
+# 替换成 MagicMock（进程级 sys.modules 污染），同进程混跑会让集成测试
+# 拿到 mock 模块而大面积报错
+pytest tests/unit/
+INTEGRATION_TESTS=1 pytest tests/integration/
 ```
 
 ---
