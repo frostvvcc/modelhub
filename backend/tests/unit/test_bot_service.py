@@ -77,15 +77,17 @@ class TestCreateBot:
             mock_create.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_student_cannot_create_public(self):
+    async def test_visibility_field_stripped_from_payload(self):
         db = AsyncMock()
         user = make_user(role="student")
         with patch("app.services.bot_service.SimplePermissionService.get_user_role",
                    return_value=UserRole.STUDENT), \
              patch("app.services.bot_service.AsyncBotService._get_user_org_ids",
-                   AsyncMock(return_value=[])):
-            with pytest.raises(PermissionError):
-                await AsyncBotService.create_bot(db, user, {"name": "test", "visibility": "public"})
+                   AsyncMock(return_value=[])), \
+             patch("app.services.bot_service.AsyncBotMapper.create",
+                   return_value=make_bot()) as mock_create:
+            await AsyncBotService.create_bot(db, user, {"name": "test", "visibility": "public"})
+            assert "visibility" not in mock_create.await_args.kwargs
 
     @pytest.mark.asyncio
     async def test_teacher_can_create_public(self):

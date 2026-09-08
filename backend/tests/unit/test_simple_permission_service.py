@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.services.simple_permission_service import (
     SimplePermissionService,
     UserRole,
-    Visibility,
     check_resource_access,
     check_operation_permission,
 )
@@ -110,13 +109,16 @@ class TestCheckResourceAccess:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_public_resource_accessible_to_all(self):
+    async def test_org_member_can_access_org_resource(self):
         db = AsyncMock()
         user = make_user(uid=10, role="student")
-        resource = make_vector_db(uid=99, scope="public")
-        result = await SimplePermissionService.check_resource_access(
-            db, user, resource, UserRole.STUDENT
-        )
+        resource = make_vector_db(uid=99, org_id=5)
+        with patch.object(
+            SimplePermissionService, "_user_belongs_to_org", AsyncMock(return_value=True)
+        ):
+            result = await SimplePermissionService.check_resource_access(
+                db, user, resource, UserRole.STUDENT
+            )
         assert result is True
 
     @pytest.mark.asyncio
@@ -124,9 +126,12 @@ class TestCheckResourceAccess:
         db = AsyncMock()
         user = make_user(uid=10, role="student")
         resource = make_vector_db(uid=99, scope="private")
-        result = await SimplePermissionService.check_resource_access(
-            db, user, resource, UserRole.STUDENT
-        )
+        with patch.object(
+            SimplePermissionService, "_user_has_teaching_space_access", AsyncMock(return_value=False)
+        ):
+            result = await SimplePermissionService.check_resource_access(
+                db, user, resource, UserRole.STUDENT
+            )
         assert result is False
 
 
@@ -189,49 +194,37 @@ class TestCheckOperationPermission:
 
 class TestVectorDbCreationPermission:
     @pytest.mark.asyncio
-    async def test_any_role_can_create_private(self):
+    async def test_student_cannot_create(self):
         db = AsyncMock()
         with patch.object(
             SimplePermissionService, "_resolve_role_string", AsyncMock(return_value="student")
         ):
             result = await SimplePermissionService.check_vector_db_creation_permission(
-                db, user_id=1, scope="private"
-            )
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_student_cannot_create_public(self):
-        db = AsyncMock()
-        with patch.object(
-            SimplePermissionService, "_resolve_role_string", AsyncMock(return_value="student")
-        ):
-            result = await SimplePermissionService.check_vector_db_creation_permission(
-                db, user_id=1, scope="public"
+                db, user_id=1
             )
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_teacher_can_create_public(self):
+    async def test_teacher_can_create(self):
         db = AsyncMock()
         with patch.object(
             SimplePermissionService, "_resolve_role_string", AsyncMock(return_value="teacher")
         ):
             result = await SimplePermissionService.check_vector_db_creation_permission(
-                db, user_id=2, scope="public"
+                db, user_id=2
             )
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_admin_can_create_any_scope(self):
+    async def test_admin_can_create(self):
         db = AsyncMock()
         with patch.object(
             SimplePermissionService, "_resolve_role_string", AsyncMock(return_value="admin")
         ):
-            for scope in ("private", "teacher", "public"):
-                result = await SimplePermissionService.check_vector_db_creation_permission(
-                    db, user_id=3, scope=scope
-                )
-                assert result is True, f"admin should be able to create {scope}"
+            result = await SimplePermissionService.check_vector_db_creation_permission(
+                db, user_id=3, organization_id=5
+            )
+        assert result is True
 
 
 # ------------------------------------------------------------------
