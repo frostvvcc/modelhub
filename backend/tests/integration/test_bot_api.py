@@ -17,14 +17,16 @@ async def test_create_bot_api(db_session, test_user, auth_headers, override_get_
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(
             "/bots",
-            json={"name": "API测试Bot", "description": "测试", "visibility": "private"},
+            json={"name": "API测试Bot", "description": "测试"},
             headers=auth_headers
         )
 
     assert response.status_code == 201
     data = response.json()
     assert data["name"] == "API测试Bot"
-    assert data["visibility"] == "private"
+    # visibility 字段已删除，organization_id 为 NULL 即私有
+    assert "visibility" not in data
+    assert data["organization_id"] is None
     assert data["user_id"] == test_user.id
 
 
@@ -37,14 +39,16 @@ async def test_list_bots_api(db_session, test_user, auth_headers, override_get_d
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await client.post(
             "/bots",
-            json={"name": "列表Bot", "visibility": "private"},
+            json={"name": "列表Bot"},
             headers=auth_headers
         )
         response = await client.get("/bots", headers=auth_headers)
 
     assert response.status_code == 200
-    assert isinstance(response.json(), list)
-    assert len(response.json()) >= 1
+    body = response.json()
+    # 现行接口返回 SuccessResponse 包装：{"message": ..., "data": [...]}
+    assert isinstance(body["data"], list)
+    assert len(body["data"]) >= 1
 
 
 @pytest.mark.asyncio
@@ -56,7 +60,7 @@ async def test_get_bot_api(db_session, test_user, auth_headers, override_get_db)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         create_resp = await client.post(
             "/bots",
-            json={"name": "详情Bot", "visibility": "private"},
+            json={"name": "详情Bot"},
             headers=auth_headers
         )
         bot_id = create_resp.json()["id"]
@@ -87,7 +91,7 @@ async def test_update_bot_api(db_session, test_user, auth_headers, override_get_
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         create_resp = await client.post(
             "/bots",
-            json={"name": "原始名称", "visibility": "private"},
+            json={"name": "原始名称"},
             headers=auth_headers
         )
         bot_id = create_resp.json()["id"]
@@ -110,7 +114,7 @@ async def test_delete_bot_api(db_session, test_user, auth_headers, override_get_
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         create_resp = await client.post(
             "/bots",
-            json={"name": "待删除Bot", "visibility": "private"},
+            json={"name": "待删除Bot"},
             headers=auth_headers
         )
         bot_id = create_resp.json()["id"]

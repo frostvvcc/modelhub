@@ -1,5 +1,6 @@
 """
 模型服务集成测试（ModelInfo + ModelConfig）
+现行语义：ModelConfig 无 is_private/scope 字段，organization_id 为 NULL 即私有
 """
 import uuid
 import pytest
@@ -43,8 +44,8 @@ async def test_get_model_info_not_found(db_session):
 # ── ModelConfig 测试 ────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_create_model_config(db_session, test_user, test_model_info, test_vector_db):
-    """测试创建模型配置"""
+async def test_create_model_config(db_session, test_user, test_model_info):
+    """测试创建模型配置（未传 organization_id 即私有）"""
     share_id = str(uuid.uuid4())
     config = await AsyncModelService.create_model_config(
         db_session,
@@ -55,20 +56,17 @@ async def test_create_model_config(db_session, test_user, test_model_info, test_
         temperature=0.7,
         top_p=0.9,
         prompt="你是一个助手",
-
-        is_private=True,
         describe="测试用配置",
-        scope="private",
     )
 
     assert config["name"] == "测试配置"
     assert config["base_model_id"] == test_model_info.id
-    assert config["is_private"] is True
-    assert config["scope"] == "private"
+    assert config["organization_id"] is None
+    assert abs(config["temperature"] - 0.7) < 0.01
 
 
 @pytest.mark.asyncio
-async def test_get_model_config_by_id(db_session, test_user, test_model_info, test_vector_db):
+async def test_get_model_config_by_id(db_session, test_user, test_model_info):
     """测试根据 ID 获取模型配置"""
     share_id = str(uuid.uuid4())
     created = await AsyncModelService.create_model_config(
@@ -80,10 +78,6 @@ async def test_get_model_config_by_id(db_session, test_user, test_model_info, te
         temperature=0.5,
         top_p=0.8,
         prompt=None,
-
-        is_private=False,
-        describe=None,
-        scope="private",
     )
 
     fetched = await AsyncModelService.get_model_config_by_id(db_session, created["id"])
@@ -99,7 +93,7 @@ async def test_get_model_config_not_found(db_session):
 
 
 @pytest.mark.asyncio
-async def test_update_model_config(db_session, test_user, test_model_info, test_vector_db):
+async def test_update_model_config(db_session, test_user, test_model_info):
     """测试更新模型配置"""
     share_id = str(uuid.uuid4())
     created = await AsyncModelService.create_model_config(
@@ -111,10 +105,7 @@ async def test_update_model_config(db_session, test_user, test_model_info, test_
         temperature=0.7,
         top_p=0.9,
         prompt=None,
-
-        is_private=True,
         describe="原始描述",
-        scope="private",
     )
 
     updated = await AsyncModelService.update_model_config(
@@ -131,7 +122,7 @@ async def test_update_model_config(db_session, test_user, test_model_info, test_
 
 
 @pytest.mark.asyncio
-async def test_delete_model_config(db_session, test_user, test_model_info, test_vector_db):
+async def test_delete_model_config(db_session, test_user, test_model_info):
     """测试删除模型配置"""
     share_id = str(uuid.uuid4())
     created = await AsyncModelService.create_model_config(
@@ -143,10 +134,6 @@ async def test_delete_model_config(db_session, test_user, test_model_info, test_
         temperature=0.7,
         top_p=0.9,
         prompt=None,
-
-        is_private=True,
-        describe=None,
-        scope="private",
     )
 
     deleted = await AsyncModelService.delete_model_config(db_session, created["id"])
@@ -164,7 +151,7 @@ async def test_get_public_config_empty(db_session):
 
 
 @pytest.mark.asyncio
-async def test_get_user_config(db_session, test_user, test_model_info, test_vector_db):
+async def test_get_user_config(db_session, test_user, test_model_info):
     """测试获取用户配置"""
     share_id = str(uuid.uuid4())
     await AsyncModelService.create_model_config(
@@ -176,10 +163,6 @@ async def test_get_user_config(db_session, test_user, test_model_info, test_vect
         temperature=0.7,
         top_p=0.9,
         prompt=None,
-
-        is_private=True,
-        describe=None,
-        scope="private",
     )
 
     configs = await AsyncModelService.get_user_config(db_session, test_user)

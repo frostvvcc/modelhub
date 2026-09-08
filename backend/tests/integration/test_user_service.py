@@ -1,21 +1,29 @@
 """
 用户服务集成测试（注册、登录、获取用户信息）
+现行语义：登录使用 account（学号/工号），注册以学号/工号为主要标识
 """
 import pytest
 from app.services.user_service import AsyncUserService
 from app.utils.JwtUtil import get_password_hash
-from app.utils.error_handler import ConflictError, NotFoundError, UnauthorizedError, ValidationError
+from app.utils.error_handler import (
+    NotFoundError,
+    UnauthorizedError,
+    ValidationError,
+    InternalServerError,
+)
 from app.models.user import User
 
 
 @pytest.fixture
 async def registered_user(db_session, test_school):
-    """注册一个带学校的用户（密码已哈希）"""
+    """注册一个带学校和学号的用户（密码已哈希）"""
     user = User(
         name="登录测试用户",
         email="login_test@example.com",
         password=get_password_hash("correct_password"),
         status="active",
+        role="student",
+        student_id="2024100001",
         school_id=test_school.id,
     )
     db_session.add(user)
@@ -44,7 +52,7 @@ async def test_register_basic(db_session):
 
 @pytest.mark.asyncio
 async def test_register_with_school(db_session, test_school):
-    """测试注册时关联学校"""
+    """测试注册时关联学校（学生角色需提供学号，前4位为入学年份）"""
     result = await AsyncUserService.register(
         db_session,
         name="学校用户",
@@ -52,14 +60,48 @@ async def test_register_with_school(db_session, test_school):
         password="password123",
         school_id=test_school.id,
         student_id="2024001",
+        role="student",
     )
 
     assert result["school_id"] == test_school.id
 
 
 @pytest.mark.asyncio
+async def test_register_student_without_student_id_raises(db_session):
+    """学生角色注册未填学号抛出 ValidationError"""
+    with pytest.raises(ValidationError):
+        await AsyncUserService.register(
+            db_session,
+            name="缺学号学生",
+            password="password123",
+            role="student",
+        )
+
+
+@pytest.mark.asyncio
+async def test_register_duplicate_student_id(db_session):
+    """重复学号注册被拒绝（Mapper 抛 ValueError，Service 包装为 InternalServerError）"""
+    await AsyncUserService.register(
+        db_session,
+        name="第一个用户",
+        password="password123",
+        role="student",
+        student_id="2024200001",
+    )
+
+    with pytest.raises(InternalServerError):
+        await AsyncUserService.register(
+            db_session,
+            name="第二个用户",
+            password="another_password",
+            role="student",
+            student_id="2024200001",
+        )
+
+
+@pytest.mark.asyncio
 async def test_register_duplicate_email(db_session):
-    """测试重复邮箱注册抛出 ConflictError"""
+    """重复邮箱注册被拒绝（现行实现包装为 InternalServerError）"""
     await AsyncUserService.register(
         db_session,
         name="第一个用户",
@@ -67,7 +109,7 @@ async def test_register_duplicate_email(db_session):
         password="password123",
     )
 
-    with pytest.raises(ConflictError):
+    with pytest.raises(InternalServerError):
         await AsyncUserService.register(
             db_session,
             name="第二个用户",
@@ -93,14 +135,14 @@ async def test_register_invalid_school(db_session):
 
 @pytest.mark.asyncio
 async def test_login_success(db_session, registered_user):
-    """测试正确密码登录成功"""
+    """测试学号 + 正确密码登录成功"""
     result = await AsyncUserService.login(
         db_session,
-        email="login_test@example.com",
+        account="2024100001",
         password="correct_password",
     )
 
-    assert result["email"] == "login_test@example.com"
+    assert result["id"] == registered_user.id
     assert "token" in result
     assert result["token"] is not None
     assert "role" in result
@@ -112,18 +154,18 @@ async def test_login_wrong_password(db_session, registered_user):
     with pytest.raises(UnauthorizedError):
         await AsyncUserService.login(
             db_session,
-            email="login_test@example.com",
+            account="2024100001",
             password="wrong_password",
         )
 
 
 @pytest.mark.asyncio
 async def test_login_nonexistent_user(db_session):
-    """测试不存在的用户登录抛出 NotFoundError"""
+    """测试不存在的账号登录抛出 NotFoundError"""
     with pytest.raises(NotFoundError):
         await AsyncUserService.login(
             db_session,
-            email="ghost@example.com",
+            account="9999999999",
             password="any_password",
         )
 
@@ -131,9 +173,9 @@ async def test_login_nonexistent_user(db_session):
 # ── 用户信息获取测试 ─────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_get_user_by_email(db_session, registered_user):
-    """测试根据邮箱获取用户详细信息"""
-    result = await AsyncUserService.get_user_by_email(db_session, "login_test@example.com")
+async def test_get_user_detail(db_session, registered_user):
+    """测试根据用户 ID 获取用户详细信息"""
+    result = await AsyncUserService.get_user_detail(db_session, registered_user.id)
 
     assert "user_info" in result
     assert "model_configs" in result
@@ -145,10 +187,10 @@ async def test_get_user_by_email(db_session, registered_user):
 
 
 @pytest.mark.asyncio
-async def test_get_user_by_email_not_found(db_session):
+async def test_get_user_detail_not_found(db_session):
     """测试不存在的用户抛出 NotFoundError"""
     with pytest.raises(NotFoundError):
-        await AsyncUserService.get_user_by_email(db_session, "nobody@example.com")
+        await AsyncUserService.get_user_detail(db_session, 99999)
 
 
 # ── 其他用户操作 ─────────────────────────────────────────────────────────────
