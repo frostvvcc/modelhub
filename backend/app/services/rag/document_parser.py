@@ -261,19 +261,47 @@ def _extract_docx(file_path: str) -> Optional[str]:
 
         # .docx 或 doc2text 失败后的 fallback
         from docx import Document
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
         doc = Document(file_path)
-        paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
-        for table in doc.tables:
-            for row in table.rows:
-                row_text = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-                if row_text:
-                    paragraphs.append(' | '.join(row_text))
-        text = '\n'.join(paragraphs)
-        logger.info(f"Word 文档解析完成: {len(paragraphs)} 段落, {len(text)} 字符")
+
+        # 按文档正文原始顺序遍历段落与表格，保持表格出现位置；
+        # 表格输出为 Markdown（首行为表头 + 分隔行），保留行列结构
+        blocks = []
+        table_count = 0
+        for child in doc.element.body.iterchildren():
+            if child.tag.endswith('}p'):
+                text_ = Paragraph(child, doc).text.strip()
+                if text_:
+                    blocks.append(text_)
+            elif child.tag.endswith('}tbl'):
+                md = _docx_table_to_markdown(Table(child, doc))
+                if md:
+                    blocks.append(md)
+                    table_count += 1
+        text = '\n'.join(blocks)
+        logger.info(f"Word 文档解析完成: {len(blocks)} 块（含 {table_count} 个表格）, {len(text)} 字符")
         return text or None
     except Exception as e:
         logger.error(f"Word 文档解析失败 ({file_path}): {e}")
         return None
+
+
+def _docx_table_to_markdown(table) -> str:
+    """将 python-docx 表格转为 Markdown，单元格内换行折叠为空格"""
+    rows = []
+    for row in table.rows:
+        cells = [' '.join(cell.text.split()) for cell in row.cells]
+        if any(cells):
+            rows.append(cells)
+    if not rows:
+        return ""
+    width = max(len(r) for r in rows)
+    rows = [r + [''] * (width - len(r)) for r in rows]
+    lines = ['| ' + ' | '.join(rows[0]) + ' |',
+             '| ' + ' | '.join(['---'] * width) + ' |']
+    lines += ['| ' + ' | '.join(r) + ' |' for r in rows[1:]]
+    return '\n'.join(lines)
 
 
 # ------------------------------------------------------------------

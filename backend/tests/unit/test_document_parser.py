@@ -174,3 +174,33 @@ class TestDocumentParserClass:
             assert "DocumentParser" in result
         finally:
             os.unlink(tmp_path)
+
+
+# ------------------------------------------------------------------
+# Word 表格结构化提取
+# ------------------------------------------------------------------
+
+class TestDocxTableExtraction:
+    def _build_docx(self, tmp_path):
+        from docx import Document
+        doc = Document()
+        doc.add_paragraph("表格前的说明文字")
+        table = doc.add_table(rows=2, cols=2)
+        table.rows[0].cells[0].text = "课程"
+        table.rows[0].cells[1].text = "学分"
+        table.rows[1].cells[0].text = "操作系统"
+        table.rows[1].cells[1].text = "4"
+        doc.add_paragraph("表格后的结论文字")
+        path = tmp_path / "sample.docx"
+        doc.save(str(path))
+        return str(path)
+
+    def test_table_preserved_as_markdown_in_position(self, tmp_path):
+        from app.services.rag.document_parser import _extract_docx
+        text = _extract_docx(self._build_docx(tmp_path))
+        assert text is not None
+        assert "| 课程 | 学分 |" in text
+        assert "| --- | --- |" in text
+        assert "| 操作系统 | 4 |" in text
+        # 表格位于前后两段文字之间，位置保留
+        assert text.index("表格前的说明文字") < text.index("| 课程 |") < text.index("表格后的结论文字")
