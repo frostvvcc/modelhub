@@ -222,6 +222,11 @@ class LangGraphOrchestrator:
 
         if triggered:
             logger.info(f"[CRAG] 检索结果不足（{reason}），触发纠错检索 (iteration={iteration})")
+            try:
+                from app.services.rag.prometheus_metrics import inc_crag_triggered
+                inc_crag_triggered()
+            except Exception:
+                pass
             self._emit("state_change", {
                 "state": "reflecting",
                 "label": f"检索质量评估：{reason} → 触发 CRAG 纠错检索",

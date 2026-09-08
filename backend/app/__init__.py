@@ -144,5 +144,16 @@ def create_app() -> FastAPI:
             "message": "API is running",
             "version": "2.0.0"
         }
-    
+
+    # Prometheus 指标（供 Prometheus / Grafana 抓取）
+    @app.get("/metrics", tags=["系统"], include_in_schema=False)
+    async def prometheus_metrics():
+        from fastapi import Response
+        from app.services.rag.prometheus_metrics import render_latest
+        rendered = render_latest()
+        if rendered is None:
+            return Response(content="prometheus_client not installed\n", status_code=501)
+        payload, content_type = rendered
+        return Response(content=payload, media_type=content_type)
+
     return app

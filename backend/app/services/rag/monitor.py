@@ -56,6 +56,11 @@ class RAGMonitor:
             )
         if self._persist:
             self._persist_to_jsonl(metrics)
+        try:
+            from app.services.rag.prometheus_metrics import observe_query
+            observe_query(metrics)
+        except Exception as e:
+            logger.debug(f"Prometheus 同步失败（非致命）: {e}")
 
     def _persist_to_jsonl(self, metrics: RAGQueryMetrics):
         """追加写入 JSON Lines 文件（按日期分片），零依赖、无阻塞风险"""

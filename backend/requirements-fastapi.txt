@@ -46,6 +46,7 @@ rank-bm25>=0.2.2     # BM25 关键词检索
 
 # Reranker（Cross-Encoder 精排）
 sentence-transformers>=3.0.0  # bge-reranker-v2-m3 等 Cross-Encoder 模型
+prometheus-client>=0.20.0  # /metrics 运行时监控
 
 # Token 计数
 tiktoken>=0.7.0      # OpenAI token 精确计数

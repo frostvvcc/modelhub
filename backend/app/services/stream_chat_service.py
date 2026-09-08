@@ -458,6 +458,11 @@ class StreamChatService:
                     if grounding_detail and grounding_detail.get("grounded_ratio") is not None:
                         real_ratio = round(grounding_detail["grounded_ratio"], 4)
                         real_level = AsyncChatService._grounding_summary(real_ratio)
+                        try:
+                            from app.services.rag.prometheus_metrics import observe_grounded_ratio
+                            observe_grounded_ratio(real_ratio)
+                        except Exception:
+                            pass
                         yield _sse_event("grounding_update", {
                             "grounded_ratio": real_ratio,
                             "grounded_level": real_level,
