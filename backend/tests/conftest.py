@@ -165,7 +165,7 @@ if not _IS_UNIT_ONLY:
                 embedding_id=test_embedding_model.id,
                 name="test_knowledge_base",
                 describe="测试知识库",
-                scope="private",
+                organization_id=None,
             )
             db_session.add(vdb)
             await db_session.commit()
