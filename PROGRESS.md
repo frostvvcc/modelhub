@@ -26,3 +26,8 @@
 ### 环境备注
 - 本机 `.git/worktrees` 只读、`.git/config` 被锁，无法创建 worktree，按 CLAUDE.md 回退规则直接在 main 分支工作。
 - 本机无 pip/venv 模块，用项目内 `backend/.tools/uv` 建 `backend/.venv` 跑测试（`.venv/bin/python -m pytest tests/unit/`）。
+
+### 5. 集成测试与现行 API 脱节 + 测试混跑陷阱（1e6c138 / 4ae879e / 9114acd）
+- **问题**：登录改为 account（学号/工号）、Bot 删除 visibility、VectorDb 删除 scope 后，集成测试从未同步，14 failed + 5 errors；且 unit conftest 全局 mock aiosqlite/redis/chromadb，与集成测试同进程混跑会大面积报错。
+- **解决**：按现行语义重写集成测试；TEST.md 明确两套测试必须分进程运行。
+- **教训**：删字段/改鉴权语义时全仓 grep 测试引用；基于 sys.modules mock 的测试体系不要与真实依赖测试同进程混跑。
